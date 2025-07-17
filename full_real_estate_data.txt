@@ -1,0 +1,228 @@
+Apartment Units:
+
+- Developer: Emaar
+- Type: Apartment
+- Size: 180 m²
+- Price: 120,000 USD
+- Bedrooms: 2
+- Location: New Cairo
+- Community: New Cairo / Fifth Settlement
+
+- Developer: Emaar
+- Type: Apartment
+- Size: 220 m²
+- Price: 145,000 USD
+- Bedrooms: 3
+- Location: New Cairo
+- Community: New Cairo / Mivida
+
+- Developer: Emaar
+- Type: Apartment
+- Size: 230 m²
+- Price: 165,000 USD
+- Bedrooms: 3
+- Location: 6th of October
+- Community: Zayed / Marassi
+
+- Developer: Mountain View
+- Type: Apartment
+- Size: 160 m²
+- Price: 115,000 USD
+- Bedrooms: 2
+- Location: New Cairo
+- Community: iCity New Cairo
+
+- Developer: Mountain View
+- Type: Apartment
+- Size: 180 m²
+- Price: 135,000 USD
+- Bedrooms: 3
+- Location: New Cairo
+- Community: Mountain View Executive
+
+- Developer: Palm Hills
+- Type: Apartment
+- Size: 200 m²
+- Price: 150,000 USD
+- Bedrooms: 3
+- Location: 6th of October
+- Community: Palm Parks
+
+- Developer: Palm Hills
+- Type: Apartment
+- Size: 170 m²
+- Price: 125,000 USD
+- Bedrooms: 2
+- Location: New Cairo
+- Community: Palm Hills Katameya
+
+====================================
+
+Villa Units:
+
+- Developer: Emaar
+- Type: Villa
+- Size: 350 m²
+- Price: 320,000 USD
+- Bedrooms: 5
+- Location: Fifth Settlement
+- Community: New Cairo / Uptown Cairo
+
+- Developer: Mountain View
+- Type: Villa
+- Size: 300 m²
+- Price: 295,000 USD
+- Bedrooms: 4
+- Location: 6th of October
+- Community: iCity October
+
+- Developer: Palm Hills
+- Type: Villa
+- Size: 400 m²
+- Price: 390,000 USD
+- Bedrooms: 5
+- Location: Sheikh Zayed
+- Community: Palm Hills Golf View
+
+====================================
+
+Twinhouse Units:
+
+- Developer: Emaar
+- Type: Twinhouse
+- Size: 280 m²
+- Price: 250,000 USD
+- Bedrooms: 4
+- Location: Sheikh Zayed
+- Community: Zayed / Cairo Gate
+
+- Developer: Mountain View
+- Type: Twinhouse
+- Size: 285 m²
+- Price: 270,000 USD
+- Bedrooms: 4
+- Location: Mostakbal City
+- Community: Mountain View Mostakbal
+
+- Developer: Palm Hills
+- Type: Twinhouse
+- Size: 290 m²
+- Price: 295,000 USD
+- Bedrooms: 4
+- Location: New Cairo
+- Community: Palm Hills Katameya 2
+
+====================================
+
+Duplex Units:
+
+- Developer: Emaar
+- Type: Duplex
+- Size: 260 m²
+- Price: 275,000 USD
+- Bedrooms: 4
+- Location: New Cairo
+- Community: New Cairo / Lake View
+
+- Developer: Mountain View
+- Type: Duplex
+- Size: 245 m²
+- Price: 260,000 USD
+- Bedrooms: 4
+- Location: October City
+- Community: October Park
+
+- Developer: Palm Hills
+- Type: Duplex
+- Size: 310 m²
+- Price: 320,000 USD
+- Bedrooms: 4
+- Location: Mostakbal City
+- Community: Palm Hills New Cairo
+
+====================================
+
+Penthouse Units:
+
+- Developer: Emaar
+- Type: Penthouse
+- Size: 320 m²
+- Price: 365,000 USD
+- Bedrooms: 4
+- Location: Fifth Settlement
+- Community: New Cairo / Eastown
+
+- Developer: Mountain View
+- Type: Penthouse
+- Size: 275 m²
+- Price: 275,000 USD
+- Bedrooms: 3
+- Location: New Cairo
+- Community: Hyde Park / iCity
+
+- Developer: Palm Hills
+- Type: Penthouse
+- Size: 340 m²
+- Price: 350,000 USD
+- Bedrooms: 4
+- Location: Sheikh Zayed
+- Community: Palm Hills Bamboo
+
+====================================
+
+Townhouse Units:
+
+- Developer: Palm Hills
+- Type: Townhouse
+- Size: 280 m²
+- Price: 285,000 USD
+- Bedrooms: 4
+- Location: October City
+- Community: Palm Valley
+
+====================================
+
+# 💰 Payment Plans
+- Palm Hills: 10% down payment + 7-year installments
+- Mountain View: 15% down + 6 years
+- Palm Parks: 20% down, 5 years, 0% interest
+
+---
+
+# 📍 Area & Location Guide
+## New Cairo
+- Close to AUC, 90th Street, Cairo Festival City
+- Popular with young professionals and families
+## 6th of October
+- Quieter area, many gated villa communities
+- Close to Mall of Arabia and Smart Village
+
+---
+
+# 📆 Visit & Tour Booking
+-
+- WhatsApp: +20 123 456 789
+- Tours available Sat–Thu, 10 AM to 6 PM
+
+---
+
+Frequently Asked Questions (FAQs)
+
+Q: Can foreigners buy property in Egypt?
+A: Yes, foreigners are allowed to buy property in Egypt.
+
+Q: Are there cash discounts available?
+A: Yes, some projects offer cash discounts of up to 5%.
+
+Q: Are pets allowed in these communities?
+A: Yes, most compounds allow pets.
+
+Q: What is the delivery timeline for these units?
+A: Delivery is expected between 2024 and 2026, depending on the specific project.
+
+----
+
+# 🧑‍💼 Contact / Escalation
+- For direct agent help, WhatsApp us at: +20 123 456 789
+- Or email: sales@yourwebsite.com
+
