@@ -149,6 +149,24 @@ app.post("/webhook", async (req, res) => {
                     await sendMessengerReply(sender_psid, "⚠️ حصلت مشكلة. جرب تاني بعد شوية.");
                 }
             }
+            if (webhook_event.postback && webhook_event.postback.payload) {
+                const payload = webhook_event.postback.payload;
+
+                let responseText = "";
+
+                if (payload === "ICE_BREAKER_PROPERTIES") {
+                    responseText = "Sure! What type of property are you looking for and in which area?";
+                } else if (payload === "ICE_BREAKER_BOOK") {
+                    responseText = "You can book a visit by telling me the property you're interested in, and I’ll connect you with an agent.";
+                } else if (payload === "ICE_BREAKER_PAYMENT") {
+                    responseText = "Yes! We offer several payment plans. What’s your budget or preferred duration?";
+                }
+
+                if (responseText) {
+                    await sendMessengerReply(sender_psid, responseText);
+                }
+            }
+
         }
 
         res.status(200).send("EVENT_RECEIVED");
@@ -170,6 +188,39 @@ async function sendMessengerReply(sender_psid, response) {
         })
     });
 }
+// Set Ice Breakers (once)
+async function setupIceBreakers() {
+    const PAGE_ACCESS_TOKEN = process.env.PAGE_ACCESS_TOKEN;
+
+    try {
+        const response = await fetch(`https://graph.facebook.com/v18.0/me/messenger_profile?access_token=${PAGE_ACCESS_TOKEN}`, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+                ice_breakers: [
+                    {
+                        question: "What properties are available?",
+                        payload: "ICE_BREAKER_PROPERTIES"
+                    },
+                    {
+                        question: "How can I book a visit?",
+                        payload: "ICE_BREAKER_BOOK"
+                    },
+                    {
+                        question: "Do you offer payment plans?",
+                        payload: "ICE_BREAKER_PAYMENT"
+                    }
+                ]
+            })
+        });
+
+        const data = await response.json();
+        console.log("✅ Ice breakers setup result:", data);
+    } catch (error) {
+        console.error("❌ Error setting up ice breakers:", error.message);
+    }
+}
+
 
 // Test route
 app.get("/", (req, res) => {
@@ -178,6 +229,8 @@ app.get("/", (req, res) => {
 
 // Start server
 const PORT = process.env.PORT || 3000;
+setupIceBreakers();
+
 app.listen(PORT, () => {
     console.log(`✅ Server running at http://localhost:${PORT}`);
 });
