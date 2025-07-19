@@ -2,6 +2,7 @@ import express from "express";
 import cors from "cors";
 import dotenv from "dotenv";
 import fs from "fs";
+import fetch from "node-fetch";
 import { OpenAI } from "openai";
 
 // Load environment variables
@@ -17,12 +18,12 @@ const openai = new OpenAI({
     apiKey: process.env.OPENAI_API_KEY
 });
 
-// Load content files at startup
+// Load data files
 const listingsData = fs.readFileSync("./full_real_estate_data.txt", "utf8");
 const paymentPlans = fs.readFileSync("./payment-plans.txt", "utf8");
 const faqs = fs.readFileSync("./faqs.txt", "utf8");
 
-// Full system prompt as provided
+// System prompt
 const SYSTEM_PROMPT = `
 You are a helpful real estate assistant. Answer using only the uploaded files: listings, payment plans, and FAQs.
 
@@ -52,7 +53,6 @@ Price: $135,000
 Features: Balcony, Parking
 
 ---
-
 ### Example
 
 **Q:** عندك شقة غرفتين في التجمع الخامس بميزانية حوالي 150 ألف؟  
@@ -67,7 +67,6 @@ Features: Balcony, Parking
 
 تحب أظبطلك معاد معاينة أو تبعتلي رقمك للتواصل؟
 
----
 
 ### Listings  
 ${listingsData}
@@ -83,8 +82,7 @@ ${paymentPlans}
 ${faqs}
 `;
 
-
-// Handle POST /api/chat
+// Local chatbot (frontend widget)
 app.post("/api/chat", async (req, res) => {
     const userMessage = req.body.message;
 
@@ -105,11 +103,81 @@ app.post("/api/chat", async (req, res) => {
     }
 });
 
-// Start the server
-const PORT = process.env.PORT || 3000;
+// Facebook Messenger verification
+app.get("/webhook", (req, res) => {
+    const VERIFY_TOKEN = process.env.VERIFY_TOKEN;
+    const mode = req.query["hub.mode"];
+    const token = req.query["hub.verify_token"];
+    const challenge = req.query["hub.challenge"];
+
+    if (mode && token) {
+        if (mode === "subscribe" && token === VERIFY_TOKEN) {
+            console.log("✅ Messenger Webhook Verified");
+            res.status(200).send(challenge);
+        } else {
+            res.sendStatus(403);
+        }
+    }
+});
+
+// Facebook Messenger webhook handler
+app.post("/webhook", async (req, res) => {
+    const body = req.body;
+
+    if (body.object === "page") {
+        for (const entry of body.entry) {
+            const webhook_event = entry.messaging[0];
+            const sender_psid = webhook_event.sender.id;
+
+            if (webhook_event.message && webhook_event.message.text) {
+                const userMessage = webhook_event.message.text;
+
+                try {
+                    const completion = await openai.chat.completions.create({
+                        model: "gpt-4o",
+                        messages: [
+                            { role: "system", content: SYSTEM_PROMPT },
+                            { role: "user", content: userMessage }
+                        ]
+                    });
+
+                    const reply = completion.choices[0].message.content;
+
+                    await sendMessengerReply(sender_psid, reply);
+                } catch (error) {
+                    console.error("Messenger AI Error:", error);
+                    await sendMessengerReply(sender_psid, "⚠️ حصلت مشكلة. جرب تاني بعد شوية.");
+                }
+            }
+        }
+
+        res.status(200).send("EVENT_RECEIVED");
+    } else {
+        res.sendStatus(404);
+    }
+});
+
+// Messenger reply helper
+async function sendMessengerReply(sender_psid, response) {
+    const PAGE_ACCESS_TOKEN = process.env.PAGE_ACCESS_TOKEN;
+
+    await fetch(`https://graph.facebook.com/v18.0/me/messages?access_token=${PAGE_ACCESS_TOKEN}`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+            recipient: { id: sender_psid },
+            message: { text: response }
+        })
+    });
+}
+
+// Test route
 app.get("/", (req, res) => {
     res.send("✅ Real Estate Chatbot Backend is running");
 });
+
+// Start server
+const PORT = process.env.PORT || 3000;
 app.listen(PORT, () => {
-    console.log(`✅ Server running on http://localhost:${PORT}`);
+    console.log(`✅ Server running at http://localhost:${PORT}`);
 });
