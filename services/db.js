@@ -2,7 +2,7 @@ import { MongoClient } from "mongodb";
 
 const uri = process.env.MONGODB_URI || "your-mongodb-uri-here";
 const client = new MongoClient(uri);
-const dbName = "agents"; // or whatever your DB name is
+const dbName = "Agent"; // or whatever your DB name is
 
 let db;
 

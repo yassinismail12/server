@@ -15,6 +15,7 @@ router.post("/", async (req, res) => {
     try {
         // ⬇️ Find client by widget ID (which is now called clientId)
         const client = await getClientByWidgetId(clientId);
+        console.log("🧾 Client from DB:", client);
 
         if (!client || !client.systemPrompt) {
             return res.status(404).json({ reply: "⚠️ Client not found or missing system prompt." });
