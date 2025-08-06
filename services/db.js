@@ -19,7 +19,7 @@ export async function connectToDB() {
 // Fetch a client from the 'clients' collection using clientId
 export async function getClientById(clientId) {
     const db = await connectToDB();
-    const clientsCollection = db.collection("clients");
+    const clientsCollection = db.collection("Clients");
 
     console.log("📦 Looking for clientId:", clientId);
     const client = await clientsCollection.findOne({ clientId });
