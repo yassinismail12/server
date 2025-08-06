@@ -18,9 +18,9 @@ app.get("/", (req, res) => {
 });
 
 // MongoDB connection
-const MONGO_URI = process.env.MONGO_URI;
+const MONGODB_URI = process.env.MONGODB_URI;
 mongoose
-    .connect(MONGO_URI)
+    .connect(MONGODB_URI)
     .then(() => console.log("✅ MongoDB connected"))
     .catch((err) => console.error("❌ MongoDB connection error:", err));
 
