@@ -2,10 +2,13 @@ import { MongoClient } from "mongodb";
 
 const uri = process.env.MONGODB_URI;
 const client = new MongoClient(uri);
-const dbName = "Agent"; // change to your DB name
+const dbName = "Agent";
 
 export async function SYSTEM_PROMPT(slug) {
-    await client.connect();
+    if (!client.topology?.isConnected()) {
+        await client.connect();
+    }
+
     const db = client.db(dbName);
     const clients = db.collection("Clients");
 
@@ -15,9 +18,9 @@ export async function SYSTEM_PROMPT(slug) {
 
     const { systemPrompt, listingsData, paymentPlans, faqs } = clientData;
 
-    // Inject data into the systemPrompt where placeholders exist
+    // Inject placeholders dynamically
     const finalPrompt = systemPrompt
-        .replace("{{listings}}", listingsData || "")
+        .replace("{{listingsData}}", listingsData || "")
         .replace("{{paymentPlans}}", paymentPlans || "")
         .replace("{{faqs}}", faqs || "");
 

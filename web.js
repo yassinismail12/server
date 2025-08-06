@@ -13,16 +13,15 @@ router.post("/", async (req, res) => {
     }
 
     try {
-        // ⬇️ Find client by widget ID (which is now called clientId)
-        const client = await getClientById(clientId);
-        console.log("🧾 Client from DB:", client);
+        // ⬇️ Get final system prompt with data injected
+        const finalSystemPrompt = await SYSTEM_PROMPT(clientId);
 
-        if (!client || !client.systemPrompt) {
-            return res.status(404).json({ reply: "⚠️ Client not found or missing system prompt." });
-        }
+        // ✅ Confirm what's being sent (optional)
+        console.log("📄 Final System Prompt:\n", finalSystemPrompt);
+        console.log("🗣️ User Message:\n", userMessage);
 
-        // ⬇️ Use the system prompt from MongoDB
-        const reply = await getChatCompletion(client.systemPrompt, userMessage);
+        // ⬇️ Send to OpenAI
+        const reply = await getChatCompletion(finalSystemPrompt, userMessage);
 
         res.json({ reply });
     } catch (error) {
