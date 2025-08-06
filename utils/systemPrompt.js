@@ -4,25 +4,28 @@ const uri = process.env.MONGODB_URI;
 const client = new MongoClient(uri);
 const dbName = "Agent";
 
-export async function SYSTEM_PROMPT(slug) {
-    if (!client.topology?.isConnected()) {
+export async function SYSTEM_PROMPT(clientId) {
+    // Reuse connection if already established
+    if (!client.topology || !client.topology.isConnected()) {
         await client.connect();
     }
 
     const db = client.db(dbName);
     const clients = db.collection("Clients");
 
-    const clientData = await clients.findOne({ slug });
+    // Find client using clientId (not slug)
+    const clientData = await clients.findOne({ clientId });
 
     if (!clientData) throw new Error("Client not found");
 
-    const { systemPrompt, listingsData, paymentPlans, faqs } = clientData;
+    let finalPrompt = clientData.systemPrompt;
 
-    // Inject placeholders dynamically
-    const finalPrompt = systemPrompt
-        .replace("{{listingsData}}", listingsData || "")
-        .replace("{{paymentPlans}}", paymentPlans || "")
-        .replace("{{faqs}}", faqs || "");
+    // Dynamically replace all {{key}} placeholders with values from clientData
+    for (const [key, value] of Object.entries(clientData)) {
+        if (typeof value === "string") {
+            finalPrompt = finalPrompt.replaceAll(`{{${key}}}`, value);
+        }
+    }
 
     return finalPrompt;
 }
