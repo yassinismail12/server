@@ -1,7 +1,7 @@
 import express from "express";
 import { getChatCompletion } from "./services/openai.js";
 import { getClientByWidgetId } from "./services/db.js";
-import { getSystemPromptBySlug } from "./utils/systemPrompt.js"
+import { SYSTEM_PROMPT } from "./utils/systemPrompt.js"
 
 const router = express.Router();
 

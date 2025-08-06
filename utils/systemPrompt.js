@@ -4,7 +4,7 @@ const uri = process.env.MONGODB_URI;
 const client = new MongoClient(uri);
 const dbName = "agent"; // change to your DB name
 
-export async function getSystemPromptBySlug(slug) {
+export async function SYSTEM_PROMPT(slug) {
     await client.connect();
     const db = client.db(dbName);
     const clients = db.collection("clients");
