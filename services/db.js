@@ -2,10 +2,11 @@ import { MongoClient } from "mongodb";
 
 const uri = process.env.MONGODB_URI || "your-mongodb-uri-here";
 const client = new MongoClient(uri);
-const dbName = "Agent"; // or whatever your DB name is
+const dbName = "Agent"; // your database name
 
 let db;
 
+// Connect to the MongoDB database (only once)
 export async function connectToDB() {
     if (!db) {
         await client.connect();
@@ -15,10 +16,14 @@ export async function connectToDB() {
     return db;
 }
 
-export async function getClientByWidgetId(widgetId) {
+// Fetch a client from the 'clients' collection using clientId
+export async function getClientById(clientId) {
     const db = await connectToDB();
     const clientsCollection = db.collection("clients");
 
-    const client = await clientsCollection.findOne({ widgetId });
+    console.log("📦 Looking for clientId:", clientId);
+    const client = await clientsCollection.findOne({ clientId });
+    console.log("🔍 Found client:", client);
+
     return client;
 }
