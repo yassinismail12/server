@@ -14,7 +14,7 @@ router.get("/", (req, res) => {
 
     if (mode && token) {
         if (mode === "subscribe" && token === VERIFY_TOKEN) {
-            console.log("✅ Messenger Webhook Verified");
+
             res.status(200).send(challenge);
         } else {
             res.sendStatus(403);
@@ -38,8 +38,7 @@ router.post("/", async (req, res) => {
 
                 try {
                     const prompt = await SYSTEM_PROMPT({ pageId }); // ✅ FIXED // Use pageId to get the system prompt
-                    console.log("🔧 SYSTEM PROMPT:", prompt); // ✅ THIS is correct
-                    console.log("🗣️ User Message:", userMessage);
+
                     const reply = await getChatCompletion(prompt, userMessage);
                     await sendMessengerReply(sender_psid, reply);
                 } catch (error) {

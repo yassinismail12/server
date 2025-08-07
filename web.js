@@ -17,8 +17,7 @@ router.post("/", async (req, res) => {
         const finalSystemPrompt = await SYSTEM_PROMPT(clientId);
 
         // ✅ Confirm what's being sent (optional)
-        console.log("📄 Final System Prompt:\n", finalSystemPrompt);
-        console.log("🗣️ User Message:\n", userMessage);
+
 
         // ⬇️ Send to OpenAI
         const reply = await getChatCompletion(finalSystemPrompt, userMessage);

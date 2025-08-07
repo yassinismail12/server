@@ -6,8 +6,7 @@ const openai = new OpenAI({
 
 export async function getChatCompletion(systemPrompt, userMessage) {
     // Debug logs to make sure your system prompt and user message are correct
-    console.log("🔧 SYSTEM PROMPT:\n", systemPrompt);
-    console.log("🗣️ User Message:\n", userMessage);
+
 
     const completion = await openai.chat.completions.create({
         model: "gpt-4o",
