@@ -37,7 +37,9 @@ router.post("/", async (req, res) => {
                 const userMessage = webhook_event.message.text;
 
                 try {
-                    const prompt = await SYSTEM_PROMPT(pageId); // Use pageId to get the system prompt
+                    const prompt = await SYSTEM_PROMPT({ pageId }); // ✅ FIXED // Use pageId to get the system prompt
+                    console.log("🔧 SYSTEM PROMPT:", prompt); // ✅ THIS is correct
+                    console.log("🗣️ User Message:", userMessage);
                     const reply = await getChatCompletion(prompt, userMessage);
                     await sendMessengerReply(sender_psid, reply);
                 } catch (error) {
