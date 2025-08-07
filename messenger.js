@@ -28,6 +28,7 @@ router.post("/", async (req, res) => {
 
     if (body.object === "page") {
         for (const entry of body.entry) {
+            const pageId = entry.id; // Get the page ID from the entry
             const webhook_event = entry.messaging[0];
             const sender_psid = webhook_event.sender.id;
 
@@ -36,9 +37,11 @@ router.post("/", async (req, res) => {
                 const userMessage = webhook_event.message.text;
 
                 try {
-                    const reply = await getChatCompletion(SYSTEM_PROMPT, userMessage);
+                    const prompt = await SYSTEM_PROMPT(pageId); // Use pageId to get the system prompt
+                    const reply = await getChatCompletion(prompt, userMessage);
                     await sendMessengerReply(sender_psid, reply);
-                } catch {
+                } catch (error) {
+                    console.error("❌ Error handling message:", error);
                     await sendMessengerReply(sender_psid, "⚠️ حصلت مشكلة. جرب تاني بعد شوية.");
                 }
             }

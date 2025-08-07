@@ -1,11 +1,18 @@
+// utils/systemPrompt.js
+
 import { MongoClient } from "mongodb";
 
 const uri = process.env.MONGODB_URI;
 const client = new MongoClient(uri);
 const dbName = "Agent";
 
-export async function SYSTEM_PROMPT(clientId) {
-    // Reuse connection if already established
+/**
+ * Gets the system prompt for a client, using either clientId (Web) or pageId (Messenger).
+ * 
+ * @param {Object} params - Object containing either `clientId` or `pageId`
+ * @returns {string} Final prompt with {{placeholders}} replaced
+ */
+export async function SYSTEM_PROMPT({ clientId, pageId }) {
     if (!client.topology || !client.topology.isConnected()) {
         await client.connect();
     }
@@ -13,14 +20,16 @@ export async function SYSTEM_PROMPT(clientId) {
     const db = client.db(dbName);
     const clients = db.collection("Clients");
 
-    // Find client using clientId (not slug)
-    const clientData = await clients.findOne({ clientId });
+    // Use pageId if provided, otherwise fall back to clientId
+    const query = pageId ? { pageId } : { clientId };
+
+    const clientData = await clients.findOne(query);
 
     if (!clientData) throw new Error("Client not found");
 
     let finalPrompt = clientData.systemPrompt;
 
-    // Dynamically replace all {{key}} placeholders with values from clientData
+    // Replace placeholders like {{faqs}}, {{listingsData}}, etc.
     for (const [key, value] of Object.entries(clientData)) {
         if (typeof value === "string") {
             finalPrompt = finalPrompt.replaceAll(`{{${key}}}`, value);
