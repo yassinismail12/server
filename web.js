@@ -17,7 +17,7 @@ router.post("/", async (req, res) => {
 
     try {
         // ⬇️ Get final system prompt with data injected
-        const finalSystemPrompt = await SYSTEM_PROMPT(clientId);
+        const finalSystemPrompt = await SYSTEM_PROMPT({ clientId });
 
         // ⬇️ Send to OpenAI
         const reply = await getChatCompletion(finalSystemPrompt, userMessage);
