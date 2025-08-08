@@ -6,6 +6,7 @@ import { SYSTEM_PROMPT } from "./utils/systemPrompt.js";
 import { sendTourEmail } from "./sendEmail.js";
 import { extractTourData } from "./extractTourData.js";
 import { MongoClient } from "mongodb";
+import crypto from "crypto";
 
 const router = express.Router();
 
@@ -31,10 +32,15 @@ async function saveConversation(clientId, userId, history) {
 }
 
 router.post("/", async (req, res) => {
-    const { message: userMessage, clientId, userId } = req.body;
+    let { message: userMessage, clientId, userId } = req.body;
 
-    if (!userMessage || !clientId || !userId) {
-        return res.status(400).json({ reply: "⚠️ Missing message, client ID, or user ID." });
+    // ✅ Auto-generate userId if missing
+    if (!userId) {
+        userId = crypto.randomUUID();
+    }
+
+    if (!userMessage || !clientId) {
+        return res.status(400).json({ reply: "⚠️ Missing message or client ID." });
     }
 
     try {
@@ -63,7 +69,8 @@ router.post("/", async (req, res) => {
             await sendTourEmail(data);
         }
 
-        res.json({ reply });
+        // ✅ Return reply + userId so frontend can store it
+        res.json({ reply, userId });
     } catch (error) {
         console.error("❌ Error:", error);
         res.status(500).json({ reply: "⚠️ Sorry, something went wrong." });
