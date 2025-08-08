@@ -1,7 +1,10 @@
+// web.js
 import express from "express";
 import { getChatCompletion } from "./services/openai.js";
 import { getClientById } from "./services/db.js";
 import { SYSTEM_PROMPT } from "./utils/systemPrompt.js";
+import { sendTourEmail } from "./sendEmail.js";
+import { extractTourData } from "./extractTourData.js";
 
 const router = express.Router();
 
@@ -16,15 +19,18 @@ router.post("/", async (req, res) => {
         // ⬇️ Get final system prompt with data injected
         const finalSystemPrompt = await SYSTEM_PROMPT(clientId);
 
-        // ✅ Confirm what's being sent (optional)
-
-
         // ⬇️ Send to OpenAI
         const reply = await getChatCompletion(finalSystemPrompt, userMessage);
 
+        // 📨 Check if AI output contains a tour booking request
+        if (reply.includes("[TOUR_REQUEST]")) {
+            const data = extractTourData(reply);
+            await sendTourEmail(data);
+        }
+
         res.json({ reply });
     } catch (error) {
-        console.error("❌ OpenAI or DB Error:", error);
+        console.error("❌ Error:", error);
         res.status(500).json({ reply: "⚠️ Sorry, something went wrong." });
     }
 });

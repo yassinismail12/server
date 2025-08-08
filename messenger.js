@@ -1,11 +1,14 @@
+// messenger.js
 import express from "express";
 import { getChatCompletion } from "./services/openai.js";
 import { SYSTEM_PROMPT } from "./utils/systemPrompt.js";
 import { sendMessengerReply } from "./services/messenger.js";
+import { sendTourEmail } from "./sendEmail.js";
+import { extractTourData } from "./extractTourData.js";
 
 const router = express.Router();
 
-// Webhook verification
+// ✅ Webhook verification (Facebook requirement)
 router.get("/", (req, res) => {
     const VERIFY_TOKEN = process.env.VERIFY_TOKEN;
     const mode = req.query["hub.mode"];
@@ -14,7 +17,6 @@ router.get("/", (req, res) => {
 
     if (mode && token) {
         if (mode === "subscribe" && token === VERIFY_TOKEN) {
-
             res.status(200).send(challenge);
         } else {
             res.sendStatus(403);
@@ -22,32 +24,40 @@ router.get("/", (req, res) => {
     }
 });
 
-// Messenger message/postback handler
+// ✅ Messenger message/postback handler
 router.post("/", async (req, res) => {
     const body = req.body;
 
     if (body.object === "page") {
         for (const entry of body.entry) {
-            const pageId = entry.id; // Get the page ID from the entry
+            const pageId = entry.id;
             const webhook_event = entry.messaging[0];
             const sender_psid = webhook_event.sender.id;
 
-            // Text message
+            // 📩 Handle text message
             if (webhook_event.message?.text) {
                 const userMessage = webhook_event.message.text;
 
                 try {
-                    const prompt = await SYSTEM_PROMPT({ pageId }); // ✅ FIXED // Use pageId to get the system prompt
-
+                    const prompt = await SYSTEM_PROMPT({ pageId });
                     const reply = await getChatCompletion(prompt, userMessage);
+
+                    // 📨 If AI says it's a tour booking request, send email
+                    if (reply.includes("[TOUR_REQUEST]")) {
+                        const data = extractTourData(reply);
+                        await sendTourEmail(data);
+                    }
+
+                    // Send reply back to Messenger user
                     await sendMessengerReply(sender_psid, reply);
+
                 } catch (error) {
                     console.error("❌ Error handling message:", error);
                     await sendMessengerReply(sender_psid, "⚠️ حصلت مشكلة. جرب تاني بعد شوية.");
                 }
             }
 
-            // Ice Breaker postback
+            // 📌 Handle Ice Breaker postbacks
             if (webhook_event.postback?.payload) {
                 const payload = webhook_event.postback.payload;
 
