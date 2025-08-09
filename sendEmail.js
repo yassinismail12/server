@@ -17,7 +17,8 @@ export async function sendTourEmail(data) {
         from: `"Real Estate Agent" <${process.env.EMAIL_USER}>`,
         to: process.env.EMAIL_TO,
         subject: "New Tour Request",
-        text: `Tour request:\nName: ${data.name}\nPhone: ${data.phone}\nUnit Type: ${data.unitType}`,
+        text: `Tour request Interested:\nName: ${data.name}\nPhone: ${data.phone}\nEmail: ${data.email}\nDate: ${data.date}\nUnit Type: ${data.unitType}`
+
         // no html field
     };
 
