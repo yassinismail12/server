@@ -57,7 +57,8 @@ router.post("/", async (req, res) => {
         history.push({ role: "user", content: userMessage });
 
         // 4️⃣ Send to OpenAI with full history
-        const reply = await getChatCompletion(history);
+        const reply = await getChatCompletion(clientId, userId, finalSystemPrompt, userMessage);
+
 
         // Ensure reply is a string
         const assistantMessage = typeof reply === "string" ? reply : "";
