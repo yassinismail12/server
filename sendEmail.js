@@ -15,13 +15,10 @@ export async function sendTourEmail(data) {
 
     const mailOptions = {
         from: `"Real Estate Agent" <${process.env.EMAIL_USER}>`,
-        to: process.env.EMAIL_TO,  // recipient email
+        to: process.env.EMAIL_TO,
         subject: "New Tour Request",
-        text: `Tour request from ${data.name}, phone: ${data.phone}, unit type: ${data.unitType}`,
-        html: `<p><strong>Tour request:</strong></p>
-           <p>Name: ${data.name}</p>
-           <p>Phone: ${data.phone}</p>
-           <p>Unit Type: ${data.unitType}</p>`,
+        text: `Tour request:\nName: ${data.name}\nPhone: ${data.phone}\nUnit Type: ${data.unitType}`,
+        // no html field
     };
 
     try {

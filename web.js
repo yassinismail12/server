@@ -51,6 +51,8 @@ router.post("/", async (req, res) => {
         let convo = await getConversation(clientId, userId);
         let history = convo?.history || [{ role: "system", content: finalSystemPrompt }];
 
+        console.log("Loaded conversation history:", history);
+
         // Append new user message to history
         history.push({ role: "user", content: userMessage });
 
@@ -59,7 +61,7 @@ router.post("/", async (req, res) => {
 
         // Append assistant reply to history
         history.push({ role: "assistant", content: assistantMessage });
-
+        console.log("History after user message added:", history);
         // Save updated conversation history
         await saveConversation(clientId, userId, history);
 
