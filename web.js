@@ -38,6 +38,8 @@ router.post("/", async (req, res) => {
     if (!userId) {
         userId = crypto.randomUUID();
     }
+    console.log("Incoming chat request:", { clientId, userId, userMessage });
+
 
     if (!userMessage || !clientId) {
         return res.status(400).json({ reply: "⚠️ Missing message or client ID." });
