@@ -59,17 +59,21 @@ router.post("/", async (req, res) => {
         // 4️⃣ Send to OpenAI with full history
         const reply = await getChatCompletion(history);
 
+        // Ensure reply is a string
+        const assistantMessage = typeof reply === "string" ? reply : "";
+
         // 5️⃣ Append assistant reply to history
-        history.push({ role: "assistant", content: reply });
+        history.push({ role: "assistant", content: assistantMessage });
 
         // 6️⃣ Save updated conversation
         await saveConversation(clientId, userId, history);
 
         // 7️⃣ Handle tour booking request
-        if (reply.includes("[TOUR_REQUEST]")) {
-            const data = extractTourData(reply);
+        if (assistantMessage && assistantMessage.includes("[TOUR_REQUEST]")) {
+            const data = extractTourData(assistantMessage);
             await sendTourEmail(data);
         }
+
 
         // ✅ Return reply + userId so frontend can store it
         res.json({ reply, userId });

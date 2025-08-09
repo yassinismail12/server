@@ -10,15 +10,14 @@ export async function getChatCompletion(systemPrompt, userMessage) {
         messages: [
             {
                 role: "system",
-                content: [{ type: "text", text: String(systemPrompt) }]
+                content: String(systemPrompt)
             },
             {
                 role: "user",
-                content: [{ type: "text", text: String(userMessage) }]
+                content: String(userMessage)
             }
         ],
     });
 
-    // OpenAI v4 returns content as an array — for plain text, grab the first item
-    return completion.choices[0].message.content[0].text;
+    return completion.choices[0].message.content; // already a string in v4
 }
