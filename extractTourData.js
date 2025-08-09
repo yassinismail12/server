@@ -1,10 +1,8 @@
-// extractTourData.js
 export function extractTourData(message) {
-    // Example message format from your AI:
-    // [TOUR_REQUEST] Name: John Doe | Phone: 123456789 | Unit: Apartment
+    // Match "Name: ..." up to next pipe '|' or end of line
     const nameMatch = message.match(/Name:\s*([^|]+)/i);
     const phoneMatch = message.match(/Phone:\s*([^|]+)/i);
-    const unitMatch = message.match(/Unit:\s*(.+)/i);
+    const unitMatch = message.match(/Unit:\s*([^|\n]+)/i);  // stops at pipe or newline
 
     return {
         name: nameMatch ? nameMatch[1].trim() : "Unknown",
