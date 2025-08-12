@@ -53,3 +53,70 @@ export async function saveConversation(clientId, userId, history) {
     );
     console.log("✅ Conversation saved");
 }
+
+// Find or create a customer
+export async function findOrCreateCustomer(customerId, clientId) {
+    const db = await connectToDB();
+    const customers = db.collection("Customers");
+
+    let customer = await customers.findOne({ customerId, clientId });
+
+    if (!customer) {
+        // Create new customer without name
+        await customers.insertOne({
+            customerId,
+            clientId,
+            name: null,
+            lastInteraction: new Date()
+        });
+        console.log(`🆕 New customer created: ${customerId} for client: ${clientId}`);
+        return null; // no name yet
+    } else {
+        // Update last interaction
+        await customers.updateOne(
+            { customerId, clientId },
+            { $set: { lastInteraction: new Date() } }
+        );
+        return customer.name; // could be null if not set
+    }
+}
+
+// Update a customer's name
+export async function updateCustomerName(customerId, clientId, name) {
+    const db = await connectToDB();
+    const customers = db.collection("Customers");
+
+    await customers.updateOne(
+        { customerId, clientId },
+        { $set: { name, lastInteraction: new Date() } }
+    );
+    console.log(`✏️ Updated name for ${customerId}: ${name}`);
+}
+
+/* ---------------- Name Detection Utilities ---------------- */
+
+// Detect name from "my name is ..."
+function extractNameFromUserMessage(message) {
+    const match = message.match(/my name is\s+(.+)/i);
+    return match ? match[1].trim() : null;
+}
+
+// Detect name from "[Name] ..."
+function extractNameFromAI(aiMessage) {
+    const match = aiMessage.match(/\[Name\]\s*(.+)/i);
+    return match ? match[1].trim() : null;
+}
+
+// Check both triggers and save name if found
+export async function detectAndSaveName(customerId, clientId, userMessage, aiMessage) {
+    let detectedName = extractNameFromUserMessage(userMessage);
+
+    if (!detectedName) {
+        detectedName = extractNameFromAI(aiMessage);
+    }
+
+    if (detectedName) {
+        await updateCustomerName(customerId, clientId, detectedName);
+        console.log(`💾 Name detected and saved: ${detectedName}`);
+    }
+}
