@@ -91,9 +91,13 @@ router.post("/", async (req, res) => {
         // Detect if user provided their name
         let nameMatch = null;
         const lowerMsg = userMessage.toLowerCase();
-        if (lowerMsg.startsWith("my name is ")) {
-            nameMatch = userMessage.substring(11).trim();
-        } else if (userMessage.includes("[Name]")) {
+
+        // Detect "my name is" anywhere in the message
+        if (lowerMsg.includes("my name is ")) {
+            nameMatch = userMessage.split(/my name is/i)[1]?.trim();
+        }
+        // Detect [Name] placeholder
+        else if (userMessage.includes("[Name]")) {
             nameMatch = userMessage.replace("[Name]", "").trim();
         }
 
@@ -101,6 +105,7 @@ router.post("/", async (req, res) => {
             await updateCustomerName(userId, clientId, nameMatch);
             console.log(`📝 Name detected and saved: ${nameMatch}`);
         }
+
 
         // Get system prompt
         const finalSystemPrompt = await SYSTEM_PROMPT({ clientId });
