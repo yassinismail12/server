@@ -71,14 +71,14 @@ async function saveConversation(clientId, userId, history) {
 
 // ===== Route =====
 router.post("/", async (req, res) => {
-    let { message: userMessage, clientId, userId } = req.body;
+    let { message: userMessage, clientId, userId, isFirstMessage } = req.body; // ⬅ added isFirstMessage
 
     // Auto-generate userId if missing
     if (!userId) {
         userId = crypto.randomUUID();
     }
 
-    console.log("Incoming chat request:", { clientId, userId, userMessage });
+    console.log("Incoming chat request:", { clientId, userId, userMessage, isFirstMessage });
 
     if (!userMessage || !clientId) {
         return res.status(400).json({ reply: "⚠️ Missing message or client ID." });
@@ -106,16 +106,15 @@ router.post("/", async (req, res) => {
             console.log(`📝 Name detected and saved: ${nameMatch}`);
         }
 
-
         // Get system prompt
         const finalSystemPrompt = await SYSTEM_PROMPT({ clientId });
 
         // Load existing conversation history
         let convo = await getConversation(clientId, userId);
 
-        // If first message of session and name is known → greet before continuing
+        // If first message of browser session and name is known → greet
         let greeting = "";
-        if (!convo) {
+        if (isFirstMessage) { // ⬅ changed condition
             const db = await connectDB();
             const customers = db.collection("Customers");
             const customer = await customers.findOne({ customerId: userId, clientId });
