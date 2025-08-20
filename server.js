@@ -4,7 +4,7 @@ import dotenv from "dotenv";
 import cors from "cors";
 import chatRoute from "./web.js";
 import messengerRoute from "./messenger.js";
-import Client from "./models/Client.js"; // ✅ Import your model
+import Client from "./Client.js"; // ✅ Import your model
 
 const app = express();
 dotenv.config();
