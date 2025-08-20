@@ -24,7 +24,8 @@ app.get("/api/stats", async (req, res) => {
         const totalClients = await Client.countDocuments();
         const clients = await Client.find();
 
-        const used = clients.reduce((sum, c) => sum + (c.messagesUsed || 0), 0);
+        const used = clients.reduce((sum, c) => sum + (c.messageCount || 0), 0);
+
 
         // For now, still dummy weeklyData (later you can log per-day usage)
         const weeklyData = [
@@ -37,7 +38,7 @@ app.get("/api/stats", async (req, res) => {
             { day: "Sun", messages: 20 },
         ];
 
-        res.json({ totalClients, used, quota: 5000, weeklyData });
+        res.json({ totalClients, used, quota: 1000, weeklyData });
     } catch (err) {
         console.error(err);
         res.status(500).json({ error: "Server error" });
