@@ -12,7 +12,7 @@ const router = express.Router();
 const mongoClient = new MongoClient(process.env.MONGODB_URI);
 const dbName = "Agent";
 
-// ===== Customer DB functions =====
+// ===== DB Connection =====
 async function connectDB() {
     if (!mongoClient.topology?.isConnected()) {
         await mongoClient.connect();
@@ -20,6 +20,7 @@ async function connectDB() {
     return mongoClient.db(dbName);
 }
 
+// ===== Customers =====
 async function findOrCreateCustomer(customerId, clientId) {
     const db = await connectDB();
     const customers = db.collection("Customers");
@@ -52,7 +53,7 @@ async function updateCustomerName(customerId, clientId, name) {
     );
 }
 
-// ===== Conversation functions =====
+// ===== Conversations =====
 async function getConversation(clientId, userId) {
     const db = await connectDB();
     const conversations = db.collection("Conversations");
@@ -69,9 +70,36 @@ async function saveConversation(clientId, userId, history) {
     );
 }
 
+// ===== Clients (Message Count & Limit) =====
+async function incrementMessageCount(clientId) {
+    const db = await connectDB();
+    const clients = db.collection("Clients");
+
+    // Make sure the client doc exists and has defaults
+    let client = await clients.findOne({ clientId });
+    if (!client) {
+        client = { clientId, messageCount: 0, messageLimit: 1000 }; // default 100
+        await clients.insertOne(client);
+    }
+
+    // If over limit → return false
+    if (client.messageCount >= client.messageLimit) {
+        return { allowed: false, messageCount: client.messageCount, messageLimit: client.messageLimit };
+    }
+
+    // Otherwise increment and return updated values
+    const updated = await clients.findOneAndUpdate(
+        { clientId },
+        { $inc: { messageCount: 1 } },
+        { returnDocument: "after" }
+    );
+
+    return { allowed: true, messageCount: updated.messageCount, messageLimit: updated.messageLimit };
+}
+
 // ===== Route =====
 router.post("/", async (req, res) => {
-    let { message: userMessage, clientId, userId, isFirstMessage } = req.body; // ⬅ added isFirstMessage
+    let { message: userMessage, clientId, userId, isFirstMessage } = req.body;
 
     // Auto-generate userId if missing
     if (!userId) {
@@ -85,19 +113,24 @@ router.post("/", async (req, res) => {
     }
 
     try {
-        // Ensure customer exists in DB
+        // ✅ Check client’s message limit
+        const usage = await incrementMessageCount(clientId);
+        if (!usage.allowed) {
+            return res.json({
+                reply: ``
+            });
+        }
+
+        // Ensure customer exists
         await findOrCreateCustomer(userId, clientId);
 
         // Detect if user provided their name
         let nameMatch = null;
         const lowerMsg = userMessage.toLowerCase();
 
-        // Detect "my name is" anywhere in the message
         if (lowerMsg.includes("my name is ")) {
             nameMatch = userMessage.split(/my name is/i)[1]?.trim();
-        }
-        // Detect [Name] placeholder
-        else if (userMessage.includes("[Name]")) {
+        } else if (userMessage.includes("[Name]")) {
             nameMatch = userMessage.replace("[Name]", "").trim();
         }
 
@@ -109,12 +142,12 @@ router.post("/", async (req, res) => {
         // Get system prompt
         const finalSystemPrompt = await SYSTEM_PROMPT({ clientId });
 
-        // Load existing conversation history
+        // Load conversation
         let convo = await getConversation(clientId, userId);
 
-        // If first message of browser session and name is known → greet
+        // Greeting if first message
         let greeting = "";
-        if (isFirstMessage) { // ⬅ changed condition
+        if (isFirstMessage) {
             const db = await connectDB();
             const customers = db.collection("Customers");
             const customer = await customers.findOne({ customerId: userId, clientId });
@@ -126,8 +159,6 @@ router.post("/", async (req, res) => {
 
         // Build conversation history
         let history = convo?.history || [{ role: "system", content: finalSystemPrompt }];
-
-        // Append new user message
         history.push({ role: "user", content: userMessage });
 
         // Call OpenAI
@@ -136,18 +167,22 @@ router.post("/", async (req, res) => {
         // Append assistant reply
         history.push({ role: "assistant", content: assistantMessage });
 
-        // Save updated conversation
+        // Save conversation
         await saveConversation(clientId, userId, history);
 
-        // Handle tour booking requests
+        // Handle tour booking
         if (assistantMessage.includes("[TOUR_REQUEST]")) {
             const data = extractTourData(assistantMessage);
             console.log("Sending tour email with data:", data);
             await sendTourEmail(data);
         }
 
-        // Return reply with greeting if applicable
-        res.json({ reply: greeting + assistantMessage, userId });
+        // Return reply
+        res.json({
+            reply: greeting + assistantMessage,
+            userId,
+            usage: { count: usage.messageCount, limit: usage.messageLimit }
+        });
     } catch (error) {
         console.error("❌ Error:", error);
         res.status(500).json({ reply: "⚠️ Sorry, something went wrong." });
