@@ -4,7 +4,7 @@ import cors from "cors";
 import chatRoute from "./web.js";
 import messengerRoute from "./messenger.js";
 import Client from "./Client.js";
-import connectDB from "./db.js";   // <-- use db.js here
+import connectDB from "./services/db.js";   // <-- use db.js here
 
 const app = express();
 dotenv.config();
