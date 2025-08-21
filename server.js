@@ -31,7 +31,8 @@ app.use("/webhook", messengerRoute);
 // ✅ MongoDB connection + start server only after DB connects
 const MONGODB_URI = process.env.MONGODB_URI;
 
-mongoose.connect(MONGODB_URI)
+mongoose.connect(MONGODB_URI, { dbName: "agents" })
+
     .then(() => {
         console.log("✅ MongoDB connected:", mongoose.connection.name);
         console.log("📂 Collections:", Object.keys(mongoose.connection.collections));
