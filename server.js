@@ -13,13 +13,6 @@ app.use(cors());
 app.use(express.json());
 
 // ✅ Define schema + model directly here
-const clientSchema = new mongoose.Schema({
-    name: { type: String, required: true },
-    email: { type: String },
-    messageCount: { type: Number, default: 0 },   // make sure this matches your Atlas field
-    quota: { type: Number, default: 1000 },
-    createdAt: { type: Date, default: Date.now },
-});
 
 // Force collection name "Clients"
 
@@ -50,12 +43,16 @@ app.get("/api/stats", async (req, res) => {
     try {
         const totalClients = await Client.countDocuments();
         const clients = await Client.find();
+        console.log("📊 Clients from DB:", clients);   // Debug entire array
+        console.log("✅ Total clients:", totalClients);
 
-        // Sum of all messageCount across clients
         const used = clients.reduce((sum, c) => sum + (c.messageCount || 0), 0);
+        console.log("💬 Total used messages:", used);
+
 
         // Sum of all client quotas (messageLimit)
         const quota = clients.reduce((sum, c) => sum + (c.messageLimit || 0), 0);
+        console.log("📈 Total client quotas:", quota);
 
         // Dummy weekly data (later: calculate real daily usage)
         const weeklyData = [
