@@ -1,74 +1,77 @@
 import express from "express";
 import mongoose from "mongoose";
-import dotenv from "dotenv";
 import cors from "cors";
-import chatRoute from "./web.js";
-import messengerRoute from "./messenger.js";
-import Client from "./Client.js";
-const app = express();
+import bodyParser from "body-parser";
+import dotenv from "dotenv";
+
+import webRoutes from "./routes/web.js";
+import messengerRoutes from "./routes/messenger.js";
+import Client from "./models/Client.js"; // <-- make sure you have this schema
+
 dotenv.config();
 
-// Middleware
+const app = express();
 app.use(cors());
-app.use(express.json());
+app.use(bodyParser.json());
 
-// ✅ Define schema + model directly here
-
-// Force collection name "Clients"
-
-
-// Root route
-app.get("/", (req, res) => {
-    res.send("✅ Server is running!");
-});
-
-// Dashboard stats route
-
-// API routes
-app.use("/api/chat", chatRoute);
-app.use("/webhook", messengerRoute);
-
-// ✅ MongoDB connection + start server only after DB connects
-const MONGODB_URI = process.env.MONGODB_URI;
-
+// Connect to MongoDB
 mongoose.connect(MONGODB_URI, { dbName: "Agent" })
 
-    .then(() => {
-        console.log("✅ MongoDB connected:", mongoose.connection.name);
-        console.log("📂 Collections:", Object.keys(mongoose.connection.collections));
-        app.listen(3000, () => {
-            console.log("🚀 Server running on port 3000");
-        });
-    })
-    .catch((err) => console.error("❌ MongoDB connection error:", err));
+    .then(() => console.log("✅ MongoDB connected:", mongoose.connection.name))
+    .catch((err) => console.error("❌ MongoDB error:", err));
+
+// Existing routes
+app.use("/api/chat", webRoutes);
+app.use("/webhook", messengerRoutes);
+
+/**
+ * GET /api/stats
+ * Returns dashboard stats (clients, usage, weekly data)
+ */
 app.get("/api/stats", async (req, res) => {
     try {
-        const totalClients = await Client.countDocuments();
         const clients = await Client.find();
-        console.log("📊 Clients from DB:", clients);   // Debug entire array
-        console.log("✅ Total clients:", totalClients);
 
-        const used = clients.reduce((sum, c) => sum + (c.messageCount || 0), 0);
-        console.log("💬 Total used messages:", used);
+        const totalClients = clients.length;
+        const used = clients.reduce((sum, c) => sum + (c.messagesUsed || 0), 0);
+        const quota = 1000; // global quota (can make dynamic later)
 
-
-        // Sum of all client quotas (messageLimit)
-        const quota = clients.reduce((sum, c) => sum + (c.messageLimit || 0), 0);
-        console
-        // Dummy weekly data (later: calculate real daily usage)
+        // Mock weekly data (replace with real aggregation if you track per-day messages)
         const weeklyData = [
-            { day: "Mon", messages: 12 },
-            { day: "Tue", messages: 22 },
-            { day: "Wed", messages: 35 },
-            { day: "Thu", messages: 10 },
-            { day: "Fri", messages: 15 },
-            { day: "Sat", messages: 18 },
-            { day: "Sun", messages: 20 },
+            { day: "Mon", messages: Math.floor(Math.random() * 100) },
+            { day: "Tue", messages: Math.floor(Math.random() * 100) },
+            { day: "Wed", messages: Math.floor(Math.random() * 100) },
+            { day: "Thu", messages: Math.floor(Math.random() * 100) },
+            { day: "Fri", messages: Math.floor(Math.random() * 100) },
+            { day: "Sat", messages: Math.floor(Math.random() * 100) },
+            { day: "Sun", messages: Math.floor(Math.random() * 100) },
         ];
 
-        res.json({ totalClients, used, quota, weeklyData });
+        // Format clients for frontend
+        const formattedClients = clients.map((c) => ({
+            _id: c._id,
+            name: c.name,
+            email: c.email || "—",
+            used: c.messagesUsed || 0,
+            quota: c.quota || 200, // default quota per client
+            lastActive: c.updatedAt || null,
+        }));
+
+        res.json({
+            totalClients,
+            used,
+            quota,
+            weeklyData,
+            clients: formattedClients,
+        });
     } catch (err) {
-        console.error(err);
+        console.error("❌ Error in /api/stats:", err);
         res.status(500).json({ error: "Server error" });
     }
+});
+
+// Start server
+const PORT = process.env.PORT || 3000;
+app.listen(PORT, () => {
+    console.log(`🚀 Server running on port ${PORT}`);
 });
