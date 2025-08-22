@@ -49,7 +49,7 @@ app.get("/api/stats", async (req, res) => {
         console.log("✅ Total clients:", totalClients);
 
         // 🔹 Total messages used across all clients
-        const used = clients.reduce((sum, c) => sum + (c.messagesUsed || 0), 0);
+        const used = clients.reduce((sum, c) => sum + (c.messageCount || 0), 0);
 
         // 🔹 Sum of all client quotas
         const quota = clients.reduce((sum, c) => sum + (c.messageLimit || 0), 0);
