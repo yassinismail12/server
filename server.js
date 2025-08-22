@@ -57,8 +57,44 @@ app.get("/api/stats", async (req, res) => {
         // 🔹 Messages remaining = quota - used
         const remaining = quota - used;
 
-        // 🔹 Dynamic weekly stats
-        // assuming each Client has a `messages` array with { text, createdAt }
-        const weeklyData = [{ day: "Mon", messages: 12 }, { day: "Tue", messages: 22 }, { day: "Wed", messages: 35 }, { day: "Thu", messages: 10 }, { day: "Fri", messages: 15 }, { day: "Sat", messages: 18 }, { day: "Sun", messages: 20 },]; res.json({ totalClients, used, quota, weeklyData });
-    } catch (err) { console.error(err); res.status(500).json({ error: "Server error" }); }
+        // 🔹 Weekly stats (dummy data for now until messages are stored separately)
+        const weeklyData = [
+            { day: "Mon", messages: 12 },
+            { day: "Tue", messages: 22 },
+            { day: "Wed", messages: 35 },
+            { day: "Thu", messages: 10 },
+            { day: "Fri", messages: 15 },
+            { day: "Sat", messages: 18 },
+            { day: "Sun", messages: 20 },
+        ];
+
+        // 🔹 Build clients array for dashboard table
+        const clientsData = clients.map(c => {
+            const used = c.messageCount || 0;
+            const quota = c.messageLimit || 0;
+            const remaining = quota - used;
+            return {
+                _id: c._id,
+                name: c.name,
+                email: c.email || "",
+                used,
+                quota,
+                remaining,
+                lastActive: c.updatedAt || c.createdAt
+            };
+        });
+
+        res.json({
+            totalClients,
+            used,
+            remaining,
+            quota,
+            weeklyData,
+            clients: clientsData
+        });
+
+    } catch (err) {
+        console.error(err);
+        res.status(500).json({ error: "Server error" });
+    }
 });
