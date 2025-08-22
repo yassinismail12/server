@@ -59,40 +59,6 @@ app.get("/api/stats", async (req, res) => {
 
         // 🔹 Dynamic weekly stats
         // assuming each Client has a `messages` array with { text, createdAt }
-        const today = new Date();
-        const startOfWeek = new Date(today);
-        startOfWeek.setDate(today.getDate() - today.getDay()); // Sunday
-
-        const weeklyCounts = {
-            Sun: 0, Mon: 0, Tue: 0, Wed: 0, Thu: 0, Fri: 0, Sat: 0
-        };
-
-        clients.forEach(c => {
-            (c.messages || []).forEach(m => {
-                const d = new Date(m.createdAt);
-                if (d >= startOfWeek) {
-                    const day = d.toLocaleDateString("en-US", { weekday: "short" });
-                    if (weeklyCounts[day] !== undefined) {
-                        weeklyCounts[day]++;
-                    }
-                }
-            });
-        });
-
-        const weeklyData = Object.entries(weeklyCounts).map(([day, count]) => ({
-            day,
-            messages: count
-        }));
-
-        res.json({
-            totalClients,
-            used,
-            remaining,
-            quota,
-            weeklyData
-        });
-    } catch (err) {
-        console.error(err);
-        res.status(500).json({ error: "Server error" });
-    }
+        const weeklyData = [{ day: "Mon", messages: 12 }, { day: "Tue", messages: 22 }, { day: "Wed", messages: 35 }, { day: "Thu", messages: 10 }, { day: "Fri", messages: 15 }, { day: "Sat", messages: 18 }, { day: "Sun", messages: 20 },]; res.json({ totalClients, used, quota, weeklyData });
+    } catch (err) { console.error(err); res.status(500).json({ error: "Server error" }); }
 });
