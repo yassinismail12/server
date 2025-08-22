@@ -6,7 +6,7 @@ import dotenv from "dotenv";
 
 import webRoutes from "./web.js";
 import messengerRoutes from "./messenger.js";
-import Client from "./models/Client.js"; // <-- make sure you have this schema
+import Client from "./Client.js"; // <-- make sure you have this schema
 
 dotenv.config();
 
