@@ -4,8 +4,8 @@ import cors from "cors";
 import bodyParser from "body-parser";
 import dotenv from "dotenv";
 
-import webRoutes from "./routes/web.js";
-import messengerRoutes from "./routes/messenger.js";
+import webRoutes from "./web.js";
+import messengerRoutes from "./messenger.js";
 import Client from "./models/Client.js"; // <-- make sure you have this schema
 
 dotenv.config();
