@@ -99,15 +99,18 @@ app.get("/api/stats", async (req, res) => {
     }
 });
 // ✅ Create new client
+// ✅ Add new client (all fields allowed)
 app.post("/api/clients", async (req, res) => {
     try {
-        const { name, email, messageLimit } = req.body;
+        const clientData = req.body;
+
+        // If some fields are missing, fallback to defaults
         const client = new Client({
-            name,
-            email,
-            messageLimit: messageLimit || 100, // default quota
-            messageCount: 0
+            ...clientData,
+            messageLimit: clientData.messageLimit || 100, // default quota
+            messageCount: clientData.messageCount || 0
         });
+
         await client.save();
         res.status(201).json(client);
     } catch (err) {
@@ -116,15 +119,17 @@ app.post("/api/clients", async (req, res) => {
     }
 });
 
-// ✅ Update existing client
+// ✅ Update existing client (all fields allowed)
 app.put("/api/clients/:id", async (req, res) => {
     try {
-        const { name, email, messageLimit } = req.body;
+        const clientData = req.body;
+
         const client = await Client.findByIdAndUpdate(
             req.params.id,
-            { name, email, messageLimit },
-            { new: true }
+            clientData, // take everything from body
+            { new: true, runValidators: true } // validate schema rules
         );
+
         if (!client) return res.status(404).json({ error: "Client not found" });
         res.json(client);
     } catch (err) {
