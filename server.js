@@ -102,14 +102,14 @@ app.get("/api/stats", async (req, res) => {
 });
 // ✅ Create new client
 // ✅ Add new client (all fields allowed)
+// ✅ Create new client
 app.post("/api/clients", async (req, res) => {
     try {
         const clientData = req.body;
 
-        // If some fields are missing, fallback to defaults
         const client = new Client({
             ...clientData,
-            messageLimit: clientData.messageLimit || 100, // default quota
+            messageLimit: clientData.quota || 100, // ✅ map quota → messageLimit
             messageCount: clientData.messageCount || 0
         });
 
@@ -121,15 +121,21 @@ app.post("/api/clients", async (req, res) => {
     }
 });
 
-// ✅ Update existing client (all fields allowed)
+// ✅ Update existing client
 app.put("/api/clients/:id", async (req, res) => {
     try {
-        const clientData = req.body;
+        const clientData = { ...req.body };
+
+        // ✅ Map quota → messageLimit if present
+        if (clientData.quota !== undefined) {
+            clientData.messageLimit = clientData.quota;
+            delete clientData.quota; // remove quota so schema doesn’t complain
+        }
 
         const client = await Client.findByIdAndUpdate(
             req.params.id,
-            clientData, // take everything from body
-            { new: true, runValidators: true } // validate schema rules
+            clientData,
+            { new: true, runValidators: true }
         );
 
         if (!client) return res.status(404).json({ error: "Client not found" });
