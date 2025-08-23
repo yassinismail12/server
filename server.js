@@ -78,6 +78,8 @@ app.get("/api/stats", async (req, res) => {
                 name: c.name,
                 email: c.email || "",
                 used,
+                clientId: c.clientId || "",   // ✅ add this
+                pageId: c.pageId || 0,
                 quota,
                 remaining,
                 lastActive: c.updatedAt || c.createdAt
