@@ -98,3 +98,49 @@ app.get("/api/stats", async (req, res) => {
         res.status(500).json({ error: "Server error" });
     }
 });
+// ✅ Create new client
+app.post("/api/clients", async (req, res) => {
+    try {
+        const { name, email, messageLimit } = req.body;
+        const client = new Client({
+            name,
+            email,
+            messageLimit: messageLimit || 100, // default quota
+            messageCount: 0
+        });
+        await client.save();
+        res.status(201).json(client);
+    } catch (err) {
+        console.error("❌ Error creating client:", err);
+        res.status(500).json({ error: "Server error" });
+    }
+});
+
+// ✅ Update existing client
+app.put("/api/clients/:id", async (req, res) => {
+    try {
+        const { name, email, messageLimit } = req.body;
+        const client = await Client.findByIdAndUpdate(
+            req.params.id,
+            { name, email, messageLimit },
+            { new: true }
+        );
+        if (!client) return res.status(404).json({ error: "Client not found" });
+        res.json(client);
+    } catch (err) {
+        console.error("❌ Error updating client:", err);
+        res.status(500).json({ error: "Server error" });
+    }
+});
+
+// ✅ Delete client
+app.delete("/api/clients/:id", async (req, res) => {
+    try {
+        const client = await Client.findByIdAndDelete(req.params.id);
+        if (!client) return res.status(404).json({ error: "Client not found" });
+        res.json({ message: "✅ Client deleted" });
+    } catch (err) {
+        console.error("❌ Error deleting client:", err);
+        res.status(500).json({ error: "Server error" });
+    }
+});
