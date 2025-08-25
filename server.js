@@ -121,7 +121,7 @@ app.get("/api/stats", async (req, res) => {
                 quota,
                 remaining,
                 systemPrompt: c.systemPrompt || "",
-                faqs: c.faqs || [],
+                faqs: c.faqs || "",
                 lastActive: c.updatedAt || c.createdAt
             };
         });
