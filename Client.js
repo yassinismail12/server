@@ -13,6 +13,14 @@ const clientSchema = new mongoose.Schema({
     messageCount: { type: Number, default: 0 },    // messages used
     messageLimit: { type: Number, default: 1000 }, // quota
     createdAt: { type: Date, default: Date.now },  // when the client was added
+    files: [
+        {
+            name: { type: String, required: true }, // e.g. "menu", "faq", "prompt-v1"
+            type: { type: String, enum: ["prompt", "faq", "menu"], required: true },
+            content: { type: String, required: true }, // raw text
+            createdAt: { type: Date, default: Date.now }
+        }
+    ]
 });
 
 // ✅ Force Mongoose to use the exact "Clients" collection

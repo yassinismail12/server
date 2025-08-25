@@ -2,9 +2,13 @@ import express from "express";
 import mongoose from "mongoose";
 import dotenv from "dotenv";
 import cors from "cors";
+import multer from "multer";
+import path from "path";
+import fs from "fs";
 import chatRoute from "./web.js";
 import messengerRoute from "./messenger.js";
 import Client from "./Client.js";
+
 const app = express();
 dotenv.config();
 
@@ -12,10 +16,62 @@ dotenv.config();
 app.use(cors());
 app.use(express.json());
 
-// ✅ Define schema + model directly here
+// ✅ Ensure uploads folder exists
+const uploadDir = path.join(process.cwd(), "uploads");
+if (!fs.existsSync(uploadDir)) {
+    fs.mkdirSync(uploadDir);
+}
 
-// Force collection name "Clients"
+// ✅ Multer config (safe file upload)
+const storage = multer.diskStorage({
+    destination: (req, file, cb) => {
+        cb(null, uploadDir);
+    },
+    filename: (req, file, cb) => {
+        const uniqueSuffix = Date.now() + "-" + Math.round(Math.random() * 1e9);
+        cb(null, uniqueSuffix + "-" + file.originalname);
+    }
+});
 
+// ✅ File filter: allow only safe types
+const fileFilter = (req, file, cb) => {
+    const allowedTypes = [
+        "text/plain",          // .txt
+        "text/markdown",       // .md
+        "text/csv",            // .csv
+        "text/tab-separated-values", // .tsv
+        "application/pdf"      // .pdf
+    ];
+
+
+    if (allowedTypes.includes(file.mimetype)) {
+        cb(null, true);
+    } else {
+        cb(new Error("❌ Invalid file type. Only TXT, MD, CSV, TSV, PDF allowed."), false);
+    }
+};
+
+const upload = multer({
+    storage,
+    fileFilter,
+    limits: { fileSize: 5 * 1024 * 1024 } // 5 MB max
+});
+
+// ✅ File upload route
+app.post("/upload", upload.single("file"), (req, res) => {
+    if (!req.file) {
+        return res.status(400).json({ error: "❌ No file uploaded" });
+    }
+    res.json({
+        message: "✅ File uploaded successfully",
+        filename: req.file.filename,
+        path: `/uploads/${req.file.filename}`,
+        size: req.file.size
+    });
+});
+
+// Serve uploaded files safely
+app.use("/uploads", express.static(uploadDir));
 
 // Root route
 app.get("/", (req, res) => {
@@ -23,24 +79,6 @@ app.get("/", (req, res) => {
 });
 
 // Dashboard stats route
-
-// API routes
-app.use("/api/chat", chatRoute);
-app.use("/webhook", messengerRoute);
-
-// ✅ MongoDB connection + start server only after DB connects
-const MONGODB_URI = process.env.MONGODB_URI;
-
-mongoose.connect(MONGODB_URI, { dbName: "Agent" })
-
-    .then(() => {
-        console.log("✅ MongoDB connected:", mongoose.connection.name);
-        console.log("📂 Collections:", Object.keys(mongoose.connection.collections));
-        app.listen(3000, () => {
-            console.log("🚀 Server running on port 3000");
-        });
-    })
-    .catch((err) => console.error("❌ MongoDB connection error:", err));
 app.get("/api/stats", async (req, res) => {
     try {
         const totalClients = await Client.countDocuments();
@@ -78,10 +116,12 @@ app.get("/api/stats", async (req, res) => {
                 name: c.name,
                 email: c.email || "",
                 used,
-                clientId: c.clientId || "",   // ✅ add this
+                clientId: c.clientId || "",
                 pageId: c.pageId || 0,
                 quota,
                 remaining,
+                systemPrompt: c.systemPrompt || "",
+                faqs: c.faqs || [],
                 lastActive: c.updatedAt || c.createdAt
             };
         });
@@ -100,8 +140,7 @@ app.get("/api/stats", async (req, res) => {
         res.status(500).json({ error: "Server error" });
     }
 });
-// ✅ Create new client
-// ✅ Add new client (all fields allowed)
+
 // ✅ Create new client
 app.post("/api/clients", async (req, res) => {
     try {
@@ -129,7 +168,7 @@ app.put("/api/clients/:id", async (req, res) => {
         // ✅ Map quota → messageLimit if present
         if (clientData.quota !== undefined) {
             clientData.messageLimit = clientData.quota;
-            delete clientData.quota; // remove quota so schema doesn’t complain
+            delete clientData.quota;
         }
 
         const client = await Client.findByIdAndUpdate(
@@ -157,3 +196,20 @@ app.delete("/api/clients/:id", async (req, res) => {
         res.status(500).json({ error: "Server error" });
     }
 });
+
+// API routes
+app.use("/api/chat", chatRoute);
+app.use("/webhook", messengerRoute);
+
+// ✅ MongoDB connection + start server only after DB connects
+const MONGODB_URI = process.env.MONGODB_URI;
+
+mongoose.connect(MONGODB_URI, { dbName: "Agent" })
+    .then(() => {
+        console.log("✅ MongoDB connected:", mongoose.connection.name);
+        console.log("📂 Collections:", Object.keys(mongoose.connection.collections));
+        app.listen(3000, () => {
+            console.log("🚀 Server running on port 3000");
+        });
+    })
+    .catch((err) => console.error("❌ MongoDB connection error:", err));
