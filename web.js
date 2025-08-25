@@ -141,6 +141,16 @@ router.post("/", async (req, res) => {
 
         // Get system prompt
         const finalSystemPrompt = await SYSTEM_PROMPT({ clientId });
+        // ===== Load client files =====
+        const db = await connectDB();
+        const clientsCollection = db.collection("Clients");
+        const clientDoc = await clientsCollection.findOne({ clientId });
+
+        let filesContent = "";
+        if (clientDoc?.files?.length) {
+            filesContent = clientDoc.files.map(f => `File: ${f.name}\nContent:\n${f.content}`).join("\n\n");
+        }
+
 
         // Load conversation
         let convo = await getConversation(clientId, userId);
@@ -158,7 +168,13 @@ router.post("/", async (req, res) => {
         }
 
         // Build conversation history
-        let history = convo?.history || [{ role: "system", content: finalSystemPrompt }];
+        let history = convo?.history || [
+            {
+                role: "system",
+                content: `${finalSystemPrompt}\n\nUse the following client files to answer questions:\n${filesContent}`
+            }
+        ];
+
         history.push({ role: "user", content: userMessage });
 
         // Call OpenAI

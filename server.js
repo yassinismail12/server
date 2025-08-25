@@ -189,6 +189,7 @@ app.get("/api/stats", async (req, res) => {
                 remaining,
                 systemPrompt: c.systemPrompt || "",
                 faqs: c.faqs || "",
+                files: c.files || [],
                 lastActive: c.updatedAt || c.createdAt
             };
         });
