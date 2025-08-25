@@ -43,7 +43,6 @@ const fileFilter = (req, file, cb) => {
         "application/pdf"      // .pdf
     ];
 
-
     if (allowedTypes.includes(file.mimetype)) {
         cb(null, true);
     } else {
@@ -57,7 +56,7 @@ const upload = multer({
     limits: { fileSize: 5 * 1024 * 1024 } // 5 MB max
 });
 
-// ✅ File upload route
+// ✅ File upload route (basic)
 app.post("/upload", upload.single("file"), (req, res) => {
     if (!req.file) {
         return res.status(400).json({ error: "❌ No file uploaded" });
@@ -69,6 +68,74 @@ app.post("/upload", upload.single("file"), (req, res) => {
         size: req.file.size
     });
 });
+
+
+// ✅ Upload file & save into Client.files[]
+app.post("/upload/:clientId", upload.single("file"), async (req, res) => {
+    try {
+        const { clientId } = req.params;
+        const { name } = req.body;
+
+        if (!req.file) {
+            return res.status(400).json({ error: "❌ No file uploaded" });
+        }
+
+        // ✅ Read file content as string
+        const filePath = path.join(uploadDir, req.file.filename);
+        let content = "";
+
+        if (req.file.mimetype === "application/pdf") {
+            // optional: integrate pdf-parse later
+            content = "[PDF uploaded: raw content extraction not implemented yet]";
+        } else {
+            content = fs.readFileSync(filePath, "utf8");
+        }
+
+        // ✅ Find client
+        const client = await Client.findById(clientId);
+        if (!client) {
+            return res.status(404).json({ error: "❌ Client not found" });
+        }
+
+        // ✅ Add file entry into client's files[]
+        client.files.push({
+            name: name || req.file.originalname,
+            content,
+        });
+
+        await client.save();
+
+        res.json({
+            message: "✅ File uploaded and saved to client",
+            client,
+        });
+    } catch (err) {
+        console.error("❌ Error saving file to client:", err);
+        res.status(500).json({ error: "Server error" });
+    }
+});
+
+// ✅ Remove a file from Client.files[] by its _id
+app.delete("/clients/:clientId/files/:fileId", async (req, res) => {
+    try {
+        const { clientId, fileId } = req.params;
+
+        const client = await Client.findById(clientId);
+        if (!client) {
+            return res.status(404).json({ error: "❌ Client not found" });
+        }
+
+        // remove matching file
+        client.files = client.files.filter(f => f._id.toString() !== fileId);
+        await client.save();
+
+        res.json({ message: "✅ File removed", client });
+    } catch (err) {
+        console.error("❌ Error deleting file:", err);
+        res.status(500).json({ error: "Server error" });
+    }
+});
+
 
 // Serve uploaded files safely
 app.use("/uploads", express.static(uploadDir));

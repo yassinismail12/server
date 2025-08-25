@@ -13,11 +13,13 @@ const clientSchema = new mongoose.Schema({
     messageCount: { type: Number, default: 0 },    // messages used
     messageLimit: { type: Number, default: 1000 }, // quota
     createdAt: { type: Date, default: Date.now },  // when the client was added
+
+    // ✅ Flexible file storage
     files: [
         {
-            name: { type: String, required: true }, // e.g. "menu", "faq", "prompt-v1"
-            type: { type: String, enum: ["prompt", "faq", "menu"], required: true },
-            content: { type: String, required: true }, // raw text
+            name: { type: String, required: true },   // user-defined name, e.g. "faq", "menu", "systemPrompt-v2"
+            label: { type: String },                  // optional description/label (not required)
+            content: { type: String, required: true }, // raw text inside the file
             createdAt: { type: Date, default: Date.now }
         }
     ]
