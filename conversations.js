@@ -1,4 +1,3 @@
-// models/Conversation.js
 import mongoose from "mongoose";
 
 const messageSchema = new mongoose.Schema({
@@ -19,6 +18,6 @@ const conversationSchema = new mongoose.Schema({
     history: [messageSchema],                      // array of messages
 }, { timestamps: true }); // adds createdAt & updatedAt automatically
 
-export default mongoose.model("Conversation", conversationSchema, "Conversations");
-
+// ✅ Only ONE default export
+const Conversation = mongoose.model("Conversation", conversationSchema, "Conversations");
 export default Conversation;
