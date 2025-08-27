@@ -268,9 +268,17 @@ app.delete("/api/clients/:id", async (req, res) => {
 
 
 // ✅ Get all conversations (for dashboard)
+// ✅ Get all conversations (without system messages)
 app.get("/api/conversations", async (req, res) => {
     try {
-        const conversations = await Conversation.find().sort({ updatedAt: -1 });
+        let conversations = await Conversation.find().sort({ updatedAt: -1 }).lean();
+
+        // Remove system messages before sending
+        conversations = conversations.map(convo => ({
+            ...convo,
+            history: convo.history.filter(msg => msg.role !== "system")
+        }));
+
         res.json(conversations);
     } catch (err) {
         console.error("❌ Error fetching conversations:", err);
@@ -278,11 +286,18 @@ app.get("/api/conversations", async (req, res) => {
     }
 });
 
-// ✅ Get a single conversation by ID
+// ✅ Get a single conversation by ID (without system messages)
 app.get("/api/conversations/:id", async (req, res) => {
     try {
-        const conversation = await Conversation.findById(req.params.id);
-        if (!conversation) return res.status(404).json({ error: "Conversation not found" });
+        let conversation = await Conversation.findById(req.params.id).lean();
+
+        if (!conversation) {
+            return res.status(404).json({ error: "Conversation not found" });
+        }
+
+        // Remove system messages before sending
+        conversation.history = conversation.history.filter(msg => msg.role !== "system");
+
         res.json(conversation);
     } catch (err) {
         console.error("❌ Error fetching conversation:", err);
