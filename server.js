@@ -287,23 +287,22 @@ app.get("/api/conversations", async (req, res) => {
 });
 
 // ✅ Get a single conversation by ID (without system messages)
-app.get("/api/conversations/:id", async (req, res) => {
+app.get("/api/conversations/:clientId", async (req, res) => {
     try {
-        let conversation = await Conversation.findById(req.params.id).lean();
+        const clientId = req.params.clientId;
+        const conversations = await Conversation.find({ clientId }).lean();
 
-        if (!conversation) {
-            return res.status(404).json({ error: "Conversation not found" });
-        }
+        conversations.forEach(c => {
+            c.history = c.history.filter(msg => msg.role !== "system");
+        });
 
-        // Remove system messages before sending
-        conversation.history = conversation.history.filter(msg => msg.role !== "system");
-
-        res.json(conversation);
+        res.json(conversations);
     } catch (err) {
-        console.error("❌ Error fetching conversation:", err);
+        console.error("❌ Error fetching client conversations:", err);
         res.status(500).json({ error: "Server error" });
     }
 });
+
 
 
 
