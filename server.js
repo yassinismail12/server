@@ -2,6 +2,7 @@ import express from "express";
 import mongoose from "mongoose";
 import dotenv from "dotenv";
 import cors from "cors";
+import Conversation from "./conversations.js";  // ✅ Add this at the top with other imports
 import multer from "multer";
 import path from "path";
 import fs from "fs";
@@ -264,6 +265,32 @@ app.delete("/api/clients/:id", async (req, res) => {
         res.status(500).json({ error: "Server error" });
     }
 });
+
+
+// ✅ Get all conversations (for dashboard)
+app.get("/api/conversations", async (req, res) => {
+    try {
+        const conversations = await Conversation.find().sort({ updatedAt: -1 });
+        res.json(conversations);
+    } catch (err) {
+        console.error("❌ Error fetching conversations:", err);
+        res.status(500).json({ error: "Server error" });
+    }
+});
+
+// ✅ Get a single conversation by ID
+app.get("/api/conversations/:id", async (req, res) => {
+    try {
+        const conversation = await Conversation.findById(req.params.id);
+        if (!conversation) return res.status(404).json({ error: "Conversation not found" });
+        res.json(conversation);
+    } catch (err) {
+        console.error("❌ Error fetching conversation:", err);
+        res.status(500).json({ error: "Server error" });
+    }
+});
+
+
 
 // API routes
 app.use("/api/chat", chatRoute);
