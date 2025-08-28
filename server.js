@@ -164,15 +164,30 @@ app.get("/api/stats", async (req, res) => {
         const remaining = quota - used;
 
         // 🔹 Weekly stats (dummy data for now until messages are stored separately)
-        const weeklyData = [
-            { day: "Mon", messages: 12 },
-            { day: "Tue", messages: 22 },
-            { day: "Wed", messages: 35 },
-            { day: "Thu", messages: 10 },
-            { day: "Fri", messages: 15 },
-            { day: "Sat", messages: 18 },
-            { day: "Sun", messages: 20 },
+        const pipeline = [
+            { $unwind: "$history" }, // flatten messages
+            {
+                $match: {
+                    "history.createdAt": {
+                        $gte: new Date(new Date().setDate(new Date().getDate() - 7)) // last 7 days
+                    }
+                }
+            },
+            {
+                $group: {
+                    _id: { $dayOfWeek: "$history.createdAt" }, // 1=Sun … 7=Sat
+                    count: { $sum: 1 }
+                }
+            }
         ];
+
+        const results = await Conversation.aggregate(pipeline);
+
+        const daysMap = { 1: "Sun", 2: "Mon", 3: "Tue", 4: "Wed", 5: "Thu", 6: "Fri", 7: "Sat" };
+        const weeklyData = Object.keys(daysMap).map(d => ({
+            day: daysMap[d],
+            messages: results.find(r => r._id === parseInt(d))?.count || 0
+        }));
 
         // 🔹 Build clients array for dashboard table
         const clientsData = clients.map(c => {

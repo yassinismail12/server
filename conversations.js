@@ -9,7 +9,8 @@ const messageSchema = new mongoose.Schema({
     content: {
         type: String,
         required: true,
-    }
+    },
+    createdAt: { type: Date, default: Date.now },
 }, { _id: false }); // don’t create a new _id for each message
 
 const conversationSchema = new mongoose.Schema({
