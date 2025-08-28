@@ -165,16 +165,18 @@ app.get("/api/stats", async (req, res) => {
 
         // 🔹 Weekly stats (dummy data for now until messages are stored separately)
         const pipeline = [
+            { $unwind: "$history" }, // flatten messages
             {
                 $match: {
-                    updatedAt: {
+                    "history.role": "user", // only user messages
+                    "history.createdAt": {
                         $gte: new Date(new Date().setDate(new Date().getDate() - 7)) // last 7 days
                     }
                 }
             },
             {
                 $group: {
-                    _id: { $dayOfWeek: "$updatedAt" }, // 1=Sun … 7=Sat
+                    _id: { $dayOfWeek: "$history.createdAt" }, // 1=Sun … 7=Sat
                     count: { $sum: 1 }
                 }
             }
@@ -188,6 +190,8 @@ app.get("/api/stats", async (req, res) => {
             day: daysMap[d],
             messages: results.find(r => r._id === parseInt(d))?.count || 0
         }));
+
+        console.log(weeklyData);
 
 
         // 🔹 Build clients array for dashboard table

@@ -134,6 +134,7 @@ router.post("/", async (req, res) => {
             nameMatch = userMessage.replace("[Name]", "").trim();
         }
 
+
         if (nameMatch) {
             await updateCustomerName(userId, clientId, nameMatch);
             console.log(`📝 Name detected and saved: ${nameMatch}`);
@@ -175,13 +176,13 @@ router.post("/", async (req, res) => {
             }
         ];
 
-        history.push({ role: "user", content: userMessage });
+        history.push({ role: "user", content: userMessage, createdAt: new Date() });
 
         // Call OpenAI
         const assistantMessage = await getChatCompletion(history);
 
         // Append assistant reply
-        history.push({ role: "assistant", content: assistantMessage });
+        history.push({ role: "assistant", content: assistantMessage, createdAt: new Date() });
 
         // Save conversation
         await saveConversation(clientId, userId, history);
