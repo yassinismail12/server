@@ -175,16 +175,17 @@ app.get("/api/stats", async (req, res) => {
                     $match: {
                         "history.role": "user",
                         "history.createdAt": {
-                            $gte: new Date(new Date().setHours(0, 0, 0, 0)) // today start
+                            $gte: new Date(new Date().setHours(0, 0, 0, 0)) // start of today
                         }
                     }
                 },
                 {
                     $group: {
-                        _id: { $hour: "$history.createdAt" }, // by hour
+                        _id: { $hour: "$history.createdAt" }, // group by hour
                         count: { $sum: 1 }
                     }
-                }
+                },
+                { $sort: { _id: 1 } } // keep hours in order
             ];
         } else if (mode === "weekly") {
             pipeline = [
@@ -193,7 +194,7 @@ app.get("/api/stats", async (req, res) => {
                     $match: {
                         "history.role": "user",
                         "history.createdAt": {
-                            $gte: new Date(new Date().setDate(new Date().getDate() - 7)) // last 7 days
+                            $gte: new Date(Date.now() - 7 * 24 * 60 * 60 * 1000) // last 7 days
                         }
                     }
                 },
@@ -202,7 +203,8 @@ app.get("/api/stats", async (req, res) => {
                         _id: { $dayOfWeek: "$history.createdAt" }, // 1=Sun … 7=Sat
                         count: { $sum: 1 }
                     }
-                }
+                },
+                { $sort: { _id: 1 } } // keep days in order
             ];
         } else if (mode === "monthly") {
             pipeline = [
@@ -211,7 +213,7 @@ app.get("/api/stats", async (req, res) => {
                     $match: {
                         "history.role": "user",
                         "history.createdAt": {
-                            $gte: new Date(new Date().setMonth(new Date().getMonth() - 1)) // last 30 days
+                            $gte: new Date(Date.now() - 30 * 24 * 60 * 60 * 1000) // last 30 days
                         }
                     }
                 },
@@ -220,11 +222,13 @@ app.get("/api/stats", async (req, res) => {
                         _id: { $dayOfMonth: "$history.createdAt" }, // 1 … 31
                         count: { $sum: 1 }
                     }
-                }
+                },
+                { $sort: { _id: 1 } } // keep days in order
             ];
         }
 
         const chartResults = pipeline.length > 0 ? await Conversation.aggregate(pipeline) : [];
+
 
         // 🔹 Build clients array for dashboard table
         const clientsData = clients.map(c => {
@@ -243,7 +247,8 @@ app.get("/api/stats", async (req, res) => {
                 systemPrompt: c.systemPrompt || "",
                 faqs: c.faqs || "",
                 files: c.files || [],
-                lastActive: c.updatedAt || c.createdAt
+                lastActive: c.updatedAt || c.createdAt,
+                active: c.active ?? false
             };
         });
 
