@@ -113,11 +113,29 @@ router.post("/", async (req, res) => {
     }
 
     try {
-        // ✅ Check client’s message limit
+        // ✅ Connect to DB and fetch client doc
+        const db = await connectDB();
+        const clientsCollection = db.collection("Clients");
+        let clientDoc = await clientsCollection.findOne({ clientId });
+
+        // If no doc, create with defaults
+        if (!clientDoc) {
+            clientDoc = { clientId, messageCount: 0, messageLimit: 1000, active: true };
+            await clientsCollection.insertOne(clientDoc);
+        }
+
+        // ❌ Block if inactive
+        if (clientDoc.active === false) {
+            return res.json({
+                reply: "" // or "⚠️ Bot is deactivated" if you want a message
+            });
+        }
+
+        // ✅ Then check message limit
         const usage = await incrementMessageCount(clientId);
         if (!usage.allowed) {
             return res.json({
-                reply: ``
+                reply: "" // or "⚠️ Message limit reached"
             });
         }
 
@@ -143,9 +161,6 @@ router.post("/", async (req, res) => {
         // Get system prompt
         const finalSystemPrompt = await SYSTEM_PROMPT({ clientId });
         // ===== Load client files =====
-        const db = await connectDB();
-        const clientsCollection = db.collection("Clients");
-        const clientDoc = await clientsCollection.findOne({ clientId });
 
         let filesContent = "";
         if (clientDoc?.files?.length) {
