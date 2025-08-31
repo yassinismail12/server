@@ -7,8 +7,8 @@ dotenv.config();
 
 export async function sendTourEmail(clientId, data) {
     try {
-        // 1. Get client from MongoDB
-        const client = await Client.findById(clientId).lean();
+        // 1. Get client from MongoDB by custom clientId
+        const client = await Client.findOne({ clientId }).lean();
 
         if (!client || !client.email) {
             throw new Error("Client email not found");
@@ -18,15 +18,15 @@ export async function sendTourEmail(clientId, data) {
         const transporter = nodemailer.createTransport({
             service: "gmail",
             auth: {
-                user: process.env.EMAIL_USER,   // your Gmail address
-                pass: process.env.EMAIL_PASS,   // your Gmail App password
+                user: process.env.EMAIL_USER,
+                pass: process.env.EMAIL_PASS,
             },
         });
 
         // 3. Mail options
         const mailOptions = {
             from: `"Real Estate Agent" <${process.env.EMAIL_USER}>`,
-            to: client.email,  // 👈 dynamic email from MongoDB
+            to: client.email,
             subject: "New Tour Request",
             text: `Tour request Interested:\n
 Name: ${data.name}
