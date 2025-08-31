@@ -8,12 +8,15 @@ dotenv.config();
 export async function sendTourEmail(clientId, data) {
     try {
         // 1. Get client from MongoDB by custom clientId
+        if (typeof clientId !== "string") {
+            throw new Error(`Invalid clientId: expected string, got ${typeof clientId}`);
+        }
+
         const client = await Client.findOne({ clientId }).lean();
 
         if (!client || !client.email) {
             throw new Error("Client email not found");
         }
-
         // 2. Create transporter
         const transporter = nodemailer.createTransport({
             service: "gmail",
