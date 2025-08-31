@@ -205,6 +205,7 @@ router.post("/", async (req, res) => {
         // Handle tour booking
         if (assistantMessage.includes("[TOUR_REQUEST]")) {
             const data = extractTourData(assistantMessage);
+            data.clientId = clientId;
             console.log("Sending tour email with data:", data);
             await sendTourEmail(data);
         }
