@@ -1,13 +1,10 @@
 export function extractTourData(message) {
-    // Split message to isolate main data block, discard confirmation text
-    const [mainData] = message.split(/Your booking has been confirmed/i);
-
-    // Use regex to extract each field line-by-line from mainData
-    const nameMatch = mainData.match(/Name:\s*(.+)/i);
-    const phoneMatch = mainData.match(/Phone:\s*(.+)/i);
-    const emailMatch = mainData.match(/Email:\s*(.+)/i);
-    const dateMatch = mainData.match(/Date:\s*(.+)/i);
-    const unitMatch = mainData.match(/Unit Type?:\s*(.+)/i);  // matches Unit Type or Unit
+    // Match fields, optionally surrounded by []
+    const nameMatch = message.match(/\[?Name\]?:\s*(.+)/i);
+    const phoneMatch = message.match(/\[?Phone\]?:\s*(.+)/i);
+    const emailMatch = message.match(/\[?Email\]?:\s*(.+)/i);
+    const dateMatch = message.match(/\[?Date\]?:\s*(.+)/i);
+    const unitMatch = message.match(/Unit Type?:\s*(.+)/i);
 
     return {
         name: nameMatch ? nameMatch[1].trim() : "Unknown",
