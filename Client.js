@@ -14,6 +14,8 @@ const clientSchema = new mongoose.Schema({
     messageLimit: { type: Number, default: 1000 }, // quota
     createdAt: { type: Date, default: Date.now },  // when the client was added
 
+    PAGE_ACCESS_TOKEN: { type: String, required: true },
+    VERIFY_TOKEN: { type: String, required: true },
     // ✅ Flexible file storage
     files: [
         {

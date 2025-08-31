@@ -248,7 +248,9 @@ app.get("/api/stats", async (req, res) => {
                 faqs: c.faqs || "",
                 files: c.files || [],
                 lastActive: c.updatedAt || c.createdAt,
-                active: c.active ?? false
+                active: c.active ?? false,
+                PAGE_ACCESS_TOKEN: c.PAGE_ACCESS_TOKEN || "",
+                VERIFY_TOKEN: c.VERIFY_TOKEN || ""
             };
         });
 

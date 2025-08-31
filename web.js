@@ -206,6 +206,7 @@ router.post("/", async (req, res) => {
         if (assistantMessage.includes("[TOUR_REQUEST]")) {
             const data = extractTourData(assistantMessage);
             data.clientId = clientId;
+
             console.log("Sending tour email with data:", data);
             await sendTourEmail(data);
         }
