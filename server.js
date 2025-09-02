@@ -109,8 +109,9 @@ app.post("/upload/:clientId", upload.single("file"), async (req, res) => {
         let content = "";
 
         if (req.file.mimetype === "application/pdf") {
-            // TODO: integrate pdf-parse here
-            content = "[PDF uploaded: raw content extraction not implemented yet]";
+            const rawPdf = fs.readFileSync(filePath);
+            const pdfData = await pdf(rawPdf);
+            content = cleanFileContent(pdfData.text, req.file.mimetype);
         } else {
             const raw = fs.readFileSync(filePath, "utf8");
             content = cleanFileContent(raw, req.file.mimetype);
