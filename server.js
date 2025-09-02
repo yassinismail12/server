@@ -9,7 +9,8 @@ import fs from "fs";
 import chatRoute from "./web.js";
 import messengerRoute from "./messenger.js";
 import Client from "./Client.js";
-import pdf from "pdf-parse"; // ✅ NEW: for PDF text extraction
+import pdf from "pdf-parse/lib/pdf-parse.js";
+// ✅ NEW: for PDF text extraction
 
 const app = express();
 dotenv.config();
