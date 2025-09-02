@@ -9,6 +9,7 @@ import fs from "fs";
 import chatRoute from "./web.js";
 import messengerRoute from "./messenger.js";
 import Client from "./Client.js";
+import pdf from "pdf-parse"; // ✅ NEW: for PDF text extraction
 
 const app = express();
 dotenv.config();
@@ -69,8 +70,31 @@ app.post("/upload", upload.single("file"), (req, res) => {
         size: req.file.size
     });
 });
+// ✅ Helper: Clean and normalize file content
+function cleanFileContent(content, mimetype) {
+    // Basic cleanup
+    let cleaned = content
+        .replace(/\r\n/g, "\n")      // normalize line breaks
+        .replace(/[^\x20-\x7E\n]/g, "") // remove weird chars
+        .replace(/\n{3,}/g, "\n\n") // collapse too many blank lines
+        .trim();
+
+    // CSV / TSV => turn into table-like text
+    if (mimetype === "text/csv" || mimetype === "text/tab-separated-values") {
+        const rows = cleaned.split("\n").map(r => r.split(/,|\t/).join(" | "));
+        cleaned = rows.join("\n");
+    }
+
+    // Markdown: keep it, maybe just trim
+    if (mimetype === "text/markdown") {
+        cleaned = cleaned.trim();
+    }
+
+    return cleaned;
+}
 
 
+// ✅ Upload file & save into Client.files[]
 // ✅ Upload file & save into Client.files[]
 app.post("/upload/:clientId", upload.single("file"), async (req, res) => {
     try {
@@ -81,24 +105,22 @@ app.post("/upload/:clientId", upload.single("file"), async (req, res) => {
             return res.status(400).json({ error: "❌ No file uploaded" });
         }
 
-        // ✅ Read file content as string
         const filePath = path.join(uploadDir, req.file.filename);
         let content = "";
 
         if (req.file.mimetype === "application/pdf") {
-            // optional: integrate pdf-parse later
+            // TODO: integrate pdf-parse here
             content = "[PDF uploaded: raw content extraction not implemented yet]";
         } else {
-            content = fs.readFileSync(filePath, "utf8");
+            const raw = fs.readFileSync(filePath, "utf8");
+            content = cleanFileContent(raw, req.file.mimetype);
         }
 
-        // ✅ Find client
         const client = await Client.findById(clientId);
         if (!client) {
             return res.status(404).json({ error: "❌ Client not found" });
         }
 
-        // ✅ Add file entry into client's files[]
         client.files.push({
             name: name || req.file.originalname,
             content,
@@ -107,7 +129,7 @@ app.post("/upload/:clientId", upload.single("file"), async (req, res) => {
         await client.save();
 
         res.json({
-            message: "✅ File uploaded and saved to client",
+            message: "✅ File uploaded, cleaned, and saved to client",
             client,
         });
     } catch (err) {
@@ -115,6 +137,7 @@ app.post("/upload/:clientId", upload.single("file"), async (req, res) => {
         res.status(500).json({ error: "Server error" });
     }
 });
+
 
 // ✅ Remove a file from Client.files[] by its _id
 app.delete("/clients/:clientId/files/:fileId", async (req, res) => {
