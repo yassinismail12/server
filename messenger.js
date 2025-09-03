@@ -4,6 +4,7 @@ import fetch from "node-fetch";
 import { getChatCompletion } from "./services/openai.js";
 import { SYSTEM_PROMPT } from "./utils/systemPrompt.js";
 import { sendMessengerReply } from "./services/messenger.js";
+import { sendQuotaWarning } from "./sendQuotaWarning.js";
 import { sendTourEmail } from "./sendEmail.js";
 import { extractTourData } from "./extractTourData.js";
 import { MongoClient } from "mongodb";
@@ -60,6 +61,12 @@ async function incrementMessageCount(clientId) {
         { $inc: { messageCount: 1 } },
         { returnDocument: "after" }
     );
+
+    if (client.messageLimit - client.messageCount === 100 && !client.quotaWarningSent) {
+        await sendQuotaWarning(client.clientId);
+        client.quotaWarningSent = true; // ✅ so we don’t spam
+        await client.save();
+    }
 
     return { allowed: true, messageCount: updated.messageCount, messageLimit: updated.messageLimit };
 }

@@ -2,6 +2,7 @@
 import express from "express";
 import { getChatCompletion } from "./services/openai.js";
 import { SYSTEM_PROMPT } from "./utils/systemPrompt.js";
+import { sendQuotaWarning } from "./sendQuotaWarning.js";
 import { sendTourEmail } from "./sendEmail.js";
 import { extractTourData } from "./extractTourData.js";
 import { MongoClient } from "mongodb";
@@ -87,12 +88,22 @@ async function incrementMessageCount(clientId) {
         return { allowed: false, messageCount: client.messageCount, messageLimit: client.messageLimit };
     }
 
+
+    // After decrementing message count
+
+
     // Otherwise increment and return updated values
     const updated = await clients.findOneAndUpdate(
         { clientId },
         { $inc: { messageCount: 1 } },
         { returnDocument: "after" }
     );
+
+    if (client.messageLimit - client.messageCount === 100 && !client.quotaWarningSent) {
+        await sendQuotaWarning(client.clientId);
+        client.quotaWarningSent = true; // ✅ so we don’t spam
+        await client.save();
+    }
 
     return { allowed: true, messageCount: updated.messageCount, messageLimit: updated.messageLimit };
 }
