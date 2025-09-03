@@ -76,37 +76,40 @@ async function incrementMessageCount(clientId) {
     const db = await connectDB();
     const clients = db.collection("Clients");
 
-    // Make sure the client doc exists and has defaults
+    // Ensure client exists
     let client = await clients.findOne({ clientId });
     if (!client) {
-        client = { clientId, messageCount: 0, messageLimit: 1000 }; // default 100
+        client = { clientId, messageCount: 0, messageLimit: 1000, active: true, quotaWarningSent: false };
         await clients.insertOne(client);
     }
 
-    // If over limit → return false
+    // Check limit
     if (client.messageCount >= client.messageLimit) {
         return { allowed: false, messageCount: client.messageCount, messageLimit: client.messageLimit };
     }
 
-
-    // After decrementing message count
-
-
-    // Otherwise increment and return updated values
+    // Increment count
     const updated = await clients.findOneAndUpdate(
         { clientId },
         { $inc: { messageCount: 1 } },
         { returnDocument: "after" }
     );
 
-    if (client.messageLimit - client.messageCount === 100 && !client.quotaWarningSent) {
-        await sendQuotaWarning(client.clientId);
-        client.quotaWarningSent = true; // ✅ so we don’t spam
-        await client.save();
+    // ⚠️ Send warning if only 100 left
+    const remaining = updated.messageLimit - updated.messageCount;
+
+    if (remaining === 100 && !updated.quotaWarningSent) {
+        await sendQuotaWarning(clientId);
+
+        await clients.updateOne(
+            { clientId },
+            { $set: { quotaWarningSent: true } }
+        );
     }
 
     return { allowed: true, messageCount: updated.messageCount, messageLimit: updated.messageLimit };
 }
+
 
 // ===== Route =====
 router.post("/", async (req, res) => {
