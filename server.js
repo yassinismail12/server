@@ -400,6 +400,33 @@ app.post("/api/clients", async (req, res) => {
         res.status(500).json({ error: "Server error" });
     }
 });
+import bcrypt from "bcrypt";
+import jwt from "jsonwebtoken";
+import User from "./models/User.js";
+
+app.post("/api/login", async (req, res) => {
+    try {
+        const { email, password } = req.body;
+
+        const user = await User.findOne({ email });
+        if (!user) return res.status(400).json({ error: "User not found" });
+
+        const validPass = await bcrypt.compare(password, user.password);
+        if (!validPass) return res.status(400).json({ error: "Invalid password" });
+
+        const token = jwt.sign(
+            { id: user._id, role: user.role },
+            process.env.JWT_SECRET || "secretkey",
+            { expiresIn: "1d" }
+        );
+
+        res.json({ token, role: user.role });
+    } catch (err) {
+        console.error(err);
+        res.status(500).json({ error: "Server error" });
+    }
+});
+
 
 // ✅ Update existing client
 app.put("/api/clients/:id", async (req, res) => {
