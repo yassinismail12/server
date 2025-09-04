@@ -134,6 +134,37 @@ app.post("/api/create-client", async (req, res) => {
         res.status(500).json({ error: "❌ Error creating client user" });
     }
 });
+app.post("/api/migrate-clients-to-users", async (req, res) => {
+    try {
+        const clients = await Client.find();
+
+        const createdUsers = [];
+        for (const c of clients) {
+            // check if user already exists for this client
+            const existing = await User.findOne({ clientId: c._id });
+            if (existing) continue;
+
+            const user = new User({
+                name: c.name,
+                email: c.email || `${c._id}@example.com`, // fallback if no email
+                password: await bcrypt.hash("default123", 10), // set default password
+                role: "client",
+                clientId: c._id.toString()
+            });
+
+            await user.save();
+            createdUsers.push(user);
+        }
+
+        res.json({
+            message: `✅ Migrated ${createdUsers.length} clients to users`,
+            createdUsers
+        });
+    } catch (err) {
+        console.error("❌ Migration error:", err);
+        res.status(500).json({ error: "Migration failed" });
+    }
+});
 
 
 // ✅ Upload file & save into Client.files[]
