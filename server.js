@@ -114,6 +114,26 @@ app.post("/api/create-admin", async (req, res) => {
         res.status(500).json({ error: "❌ Error creating admin" });
     }
 });
+app.post("/api/create-client", async (req, res) => {
+    try {
+        const { name, email, password, clientId } = req.body;
+        const hashedPassword = await bcrypt.hash(password, 10);
+
+        const clientUser = new User({
+            name,
+            email,
+            password: hashedPassword,
+            role: "client",
+            clientId
+        });
+
+        await clientUser.save();
+        res.json({ message: "✅ Client user created", clientUser });
+    } catch (err) {
+        console.error(err);
+        res.status(500).json({ error: "❌ Error creating client user" });
+    }
+});
 
 
 // ✅ Upload file & save into Client.files[]
