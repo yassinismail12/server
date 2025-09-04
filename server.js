@@ -371,16 +371,32 @@ app.post("/api/clients", async (req, res) => {
     try {
         const clientData = req.body;
 
+        // 1. Create client
         const client = new Client({
             ...clientData,
             messageLimit: clientData.quota || 100, // ✅ map quota → messageLimit
-            messageCount: clientData.messageCount || 0
+            messageCount: clientData.messageCount || 0,
         });
-
         await client.save();
-        res.status(201).json(client);
+
+        // 2. Create linked user
+        // make sure password comes from clientData
+        const plainPassword = clientData.password || "defaultPass123"; // fallback if no password provided
+        const hashedPassword = await bcrypt.hash(plainPassword, 10);
+
+        const user = new User({
+            name: clientData.name,
+            email: clientData.email,
+            password: hashedPassword,
+            role: "client",
+            clientId: client._id.toString(),
+        });
+        await user.save();
+
+        // 3. Respond with both
+        res.status(201).json({ client, user });
     } catch (err) {
-        console.error("❌ Error creating client:", err);
+        console.error("❌ Error creating client & user:", err);
         res.status(500).json({ error: "Server error" });
     }
 });
