@@ -13,6 +13,7 @@ import pdf from "pdf-parse/lib/pdf-parse.js";
 import bcrypt from "bcrypt";
 import User from "./Users.js";
 import jwt from "jsonwebtoken";
+import cookieParser from "cookie-parser";
 
 
 const app = express();
