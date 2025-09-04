@@ -10,7 +10,10 @@ import chatRoute from "./web.js";
 import messengerRoute from "./messenger.js";
 import Client from "./Client.js";
 import pdf from "pdf-parse/lib/pdf-parse.js";
-// ✅ NEW: for PDF text extraction
+import bcrypt from "bcrypt";
+import User from "./Users.js";
+
+
 
 const app = express();
 dotenv.config();
@@ -93,6 +96,24 @@ function cleanFileContent(content, mimetype) {
 
     return cleaned;
 }
+app.post("/api/create-admin", async (req, res) => {
+    try {
+        const { email, password } = req.body;
+        const hashedPassword = await bcrypt.hash(password, 10);
+
+        const admin = new User({
+            email,
+            password: hashedPassword,
+            role: "admin"
+        });
+
+        await admin.save();
+        res.json({ message: "✅ Admin created", admin });
+    } catch (err) {
+        console.error(err);
+        res.status(500).json({ error: "❌ Error creating admin" });
+    }
+});
 
 
 // ✅ Upload file & save into Client.files[]
