@@ -12,7 +12,7 @@ import Client from "./Client.js";
 import pdf from "pdf-parse/lib/pdf-parse.js";
 import bcrypt from "bcrypt";
 import User from "./Users.js";
-
+import jwt from "jsonwebtoken";
 
 
 const app = express();
@@ -213,6 +213,21 @@ app.post("/upload/:clientId", upload.single("file"), async (req, res) => {
 });
 
 
+export function verifyToken(req, res, next) {
+    const token = req.cookies.token;
+    if (!token) return res.status(401).json({ error: "Unauthorized" });
+
+    try {
+        const decoded = jwt.verify(token, process.env.JWT_SECRET);
+        req.user = decoded; // { id, role }
+        next();
+    } catch (err) {
+        return res.status(401).json({ error: "Invalid token" });
+    }
+}
+
+
+
 // ✅ Remove a file from Client.files[] by its _id
 app.delete("/clients/:clientId/files/:fileId", async (req, res) => {
     try {
@@ -400,9 +415,9 @@ app.post("/api/clients", async (req, res) => {
         res.status(500).json({ error: "Server error" });
     }
 });
-import bcrypt from "bcrypt";
-import jwt from "jsonwebtoken";
-import User from "./models/User.js";
+
+
+
 
 app.post("/api/login", async (req, res) => {
     try {
@@ -411,21 +426,39 @@ app.post("/api/login", async (req, res) => {
         const user = await User.findOne({ email });
         if (!user) return res.status(400).json({ error: "User not found" });
 
-        const validPass = await bcrypt.compare(password, user.password);
-        if (!validPass) return res.status(400).json({ error: "Invalid password" });
+        const valid = await bcrypt.compare(password, user.password);
+        if (!valid) return res.status(400).json({ error: "Invalid password" });
 
+        // ✅ Generate token
         const token = jwt.sign(
             { id: user._id, role: user.role },
-            process.env.JWT_SECRET || "secretkey",
-            { expiresIn: "1d" }
+            process.env.JWT_SECRET,
+            { expiresIn: "1h" }
         );
 
-        res.json({ token, role: user.role });
+        // ✅ Send it as an HttpOnly cookie
+        res.cookie("token", token, {
+            httpOnly: true,
+            secure: true,       // only HTTPS
+            sameSite: "strict", // CSRF protection
+            maxAge: 1000 * 60 * 60, // 1h
+        });
+
+        res.json({ role: user.role }); // only return role
     } catch (err) {
         console.error(err);
         res.status(500).json({ error: "Server error" });
     }
 });
+app.get("/api/me", verifyToken, (req, res) => {
+    res.json({ id: req.user.id, role: req.user.role });
+});
+app.post("/api/logout", (req, res) => {
+    res.clearCookie("token");
+    res.json({ message: "Logged out" });
+});
+
+
 
 
 // ✅ Update existing client
@@ -456,11 +489,16 @@ app.put("/api/clients/:id", async (req, res) => {
 // ✅ Delete client
 app.delete("/api/clients/:id", async (req, res) => {
     try {
+        // delete client
         const client = await Client.findByIdAndDelete(req.params.id);
         if (!client) return res.status(404).json({ error: "Client not found" });
-        res.json({ message: "✅ Client deleted" });
+
+        // delete user linked to this client
+        await User.findOneAndDelete({ clientId: req.params.id });
+
+        res.json({ message: "✅ Client and linked user deleted" });
     } catch (err) {
-        console.error("❌ Error deleting client:", err);
+        console.error("❌ Error deleting client & user:", err);
         res.status(500).json({ error: "Server error" });
     }
 });
