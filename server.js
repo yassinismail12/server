@@ -381,7 +381,7 @@ app.post("/api/clients", async (req, res) => {
 
         // 2. Create linked user
         // make sure password comes from clientData
-        const plainPassword = clientData.password || "defaultPass123"; // fallback if no password provided
+        const plainPassword = clientData.password || "defaultPass125"; // fallback if no password provided
         const hashedPassword = await bcrypt.hash(plainPassword, 10);
 
         const user = new User({
