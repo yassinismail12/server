@@ -19,7 +19,12 @@ const app = express();
 dotenv.config();
 
 // Middleware
-app.use(cors());
+app.use(cors({
+    origin: "http://localhost:5173", // your frontend origin
+    credentials: true
+}));
+app.use(cookieParser());
+
 app.use(express.json());
 
 // ✅ Ensure uploads folder exists
@@ -439,9 +444,9 @@ app.post("/api/login", async (req, res) => {
         // ✅ Send it as an HttpOnly cookie
         res.cookie("token", token, {
             httpOnly: true,
-            secure: true,       // only HTTPS
-            sameSite: "strict", // CSRF protection
-            maxAge: 1000 * 60 * 60, // 1h
+            secure: process.env.NODE_ENV === "production",
+            sameSite: "strict",
+            maxAge: 1000 * 60 * 60,
         });
 
         res.json({ role: user.role }); // only return role
