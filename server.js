@@ -153,6 +153,23 @@ app.post("/api/create-client", async (req, res) => {
         res.status(500).json({ error: "❌ Error creating client user" });
     }
 });
+async function createAdmin() {
+    const existing = await User.findOne({ role: "admin" });
+    if (existing) return console.log("Admin already exists");
+
+    const admin = new User({
+        name: "YASSO",
+        email: "yassin.ismail2005@gmail.com",
+        password: await bcrypt.hash("admin123", 10), // choose secure password
+        role: "admin",
+        clientId: null // admins don’t need a clientId
+    });
+
+    await admin.save();
+    console.log("✅ Admin created:", admin);
+}
+
+createAdmin();
 app.post("/api/migrate-clients-to-users", async (req, res) => {
     try {
         const clients = await Client.find();
@@ -168,7 +185,7 @@ app.post("/api/migrate-clients-to-users", async (req, res) => {
                 email: c.email || `${c._id}@example.com`, // fallback if no email
                 password: await bcrypt.hash("default123", 10), // set default password
                 role: "client",
-                clientId: c._id.toString()
+                clientId: c.clientId || ""
             });
 
             await user.save();
@@ -540,8 +557,9 @@ app.post("/api/login", async (req, res) => {
 
 app.get("/api/me", verifyToken, async (req, res) => {
     try {
-        const user = await User.findById(req.user.id).select("-password"); // exclude password
-
+        const user = await User.findById(req.user.id)
+            .populate("clientId", "customId") // populate only the customId field
+            .select("-password");
 
         if (!user) {
             return res.status(404).json({ error: "User not found" });
@@ -551,7 +569,7 @@ app.get("/api/me", verifyToken, async (req, res) => {
             id: user._id,
             email: user.email,
             role: user.role,
-            clientId: user.clientId,
+            clientId: user.clientId?.customId || null, // <-- now this is "realestate"
             name: user.name,
         });
     } catch (err) {
@@ -559,6 +577,7 @@ app.get("/api/me", verifyToken, async (req, res) => {
         res.status(500).json({ error: "Server error" });
     }
 });
+
 
 app.post("/api/logout", (req, res) => {
     res.clearCookie("token");
