@@ -102,18 +102,31 @@ function cleanFileContent(content, mimetype) {
 
     return cleaned;
 }
+
+
 function requireClientOwnership(req, res, next) {
     if (req.user.role === "admin") return next(); // admins can see any client
 
     // For clients, enforce ownership
     if (req.user.role === "client") {
-        if (req.params.clientId !== req.user.clientId) {
+        const paramId = req.params.clientId;
+        const userClientId = req.user.clientId;
+
+        // Convert to string if it's a Mongo ObjectId
+        const userClientIdStr = mongoose.Types.ObjectId.isValid(userClientId)
+            ? userClientId.toString()
+            : userClientId;
+
+        if (paramId !== userClientIdStr) {
             return res.status(403).json({ error: "Forbidden" });
         }
     }
 
     next();
 }
+
+
+
 
 app.post("/api/create-admin", async (req, res) => {
     try {
