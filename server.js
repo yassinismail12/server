@@ -523,7 +523,7 @@ app.post("/api/login", async (req, res) => {
         res.status(500).json({ error: "Server error" });
     }
 });
-import User from "./models/User.js"; // make sure you have this
+
 
 app.get("/api/me", verifyToken, async (req, res) => {
     try {
