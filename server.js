@@ -410,12 +410,11 @@ app.get("/api/stats/:clientId", verifyToken, requireClientOwnership, async (req,
             return res.status(404).json({ error: "❌ Client not found" });
         }
 
-        // 🔹 Messages usage
         const used = client.messageCount || 0;
         const quota = client.messageLimit || 0;
         const remaining = quota - used;
 
-        // 🔹 Chart data: last 30 days user messages
+        // chart results for this client
         const chartResults = await Conversation.aggregate([
             { $match: { clientId: clientId } },
             { $unwind: "$history" },
@@ -429,21 +428,28 @@ app.get("/api/stats/:clientId", verifyToken, requireClientOwnership, async (req,
             },
             {
                 $group: {
-                    _id: { $dayOfMonth: "$history.createdAt" }, // group by day
+                    _id: { $dayOfMonth: "$history.createdAt" },
                     count: { $sum: 1 }
                 }
             },
             { $sort: { _id: 1 } }
         ]);
 
+        // build the same shaped object as admin uses
         res.json({
-            clientId: client._id,
+            _id: client._id,
             name: client.name,
+            email: client.email || "",
+            clientId: client.clientId || "",
+            pageId: client.pageId || "",
             used,
             quota,
             remaining,
             files: client.files || [],
-            lastActive: client.updatedAt,
+            systemPrompt: client.systemPrompt || "",
+            faqs: client.faqs || "",
+            lastActive: client.updatedAt || client.createdAt,
+            active: client.active ?? false,
             chartResults
         });
     } catch (err) {
@@ -451,6 +457,7 @@ app.get("/api/stats/:clientId", verifyToken, requireClientOwnership, async (req,
         res.status(500).json({ error: "Server error" });
     }
 });
+
 
 
 // ✅ Create new client (admin only)
