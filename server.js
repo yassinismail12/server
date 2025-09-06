@@ -523,9 +523,29 @@ app.post("/api/login", async (req, res) => {
         res.status(500).json({ error: "Server error" });
     }
 });
-app.get("/api/me", verifyToken, (req, res) => {
-    res.json({ id: req.user.id, role: req.user.role, clientId: req.user.clientId });
+import User from "./models/User.js"; // make sure you have this
+
+app.get("/api/me", verifyToken, async (req, res) => {
+    try {
+        const user = await User.findById(req.user.id).select("-password"); // exclude password
+
+        if (!user) {
+            return res.status(404).json({ error: "User not found" });
+        }
+
+        res.json({
+            id: user._id,
+            email: user.email,
+            role: user.role,
+            clientId: user.clientId,
+            name: user.name,
+        });
+    } catch (err) {
+        console.error("❌ /api/me error:", err);
+        res.status(500).json({ error: "Server error" });
+    }
 });
+
 app.post("/api/logout", (req, res) => {
     res.clearCookie("token");
     res.json({ message: "Logged out" });
