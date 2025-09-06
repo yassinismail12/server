@@ -102,6 +102,19 @@ function cleanFileContent(content, mimetype) {
 
     return cleaned;
 }
+function requireClientOwnership(req, res, next) {
+    if (req.user.role === "admin") return next(); // admins can see any client
+
+    // For clients, enforce ownership
+    if (req.user.role === "client") {
+        if (req.params.clientId !== req.user.clientId) {
+            return res.status(403).json({ error: "Forbidden" });
+        }
+    }
+
+    next();
+}
+
 app.post("/api/create-admin", async (req, res) => {
     try {
         const { email, password } = req.body;
@@ -174,8 +187,7 @@ app.post("/api/migrate-clients-to-users", async (req, res) => {
 
 
 // ✅ Upload file & save into Client.files[]
-// ✅ Upload file & save into Client.files[]
-app.post("/upload/:clientId", upload.single("file"), async (req, res) => {
+app.post("/upload/:clientId", verifyToken, requireClientOwnership, upload.single("file"), async (req, res) => {
     try {
         const { clientId } = req.params;
         const { name } = req.body;
@@ -235,7 +247,7 @@ export function verifyToken(req, res, next) {
 
 
 // ✅ Remove a file from Client.files[] by its _id
-app.delete("/clients/:clientId/files/:fileId", async (req, res) => {
+app.delete("/clients/:clientId/files/:fileId", verifyToken, requireClientOwnership, async (req, res) => {
     try {
         const { clientId, fileId } = req.params;
 
@@ -265,7 +277,10 @@ app.get("/", (req, res) => {
 });
 
 // Dashboard stats route
-app.get("/api/stats", async (req, res) => {
+app.get("/api/stats", verifyToken, async (req, res) => {
+    if (req.user.role !== "admin") {
+        return res.status(403).json({ error: "Forbidden" });
+    }
     try {
         const totalClients = await Client.countDocuments();
         const clients = await Client.find();
@@ -386,9 +401,61 @@ app.get("/api/stats", async (req, res) => {
         res.status(500).json({ error: "Server error" });
     }
 });
+app.get("/api/stats/:clientId", verifyToken, requireClientOwnership, async (req, res) => {
+    try {
+        const { clientId } = req.params;
 
-// ✅ Create new client
-app.post("/api/clients", async (req, res) => {
+        const client = await Client.findById(clientId);
+        if (!client) {
+            return res.status(404).json({ error: "❌ Client not found" });
+        }
+
+        // 🔹 Messages usage
+        const used = client.messageCount || 0;
+        const quota = client.messageLimit || 0;
+        const remaining = quota - used;
+
+        // 🔹 Chart data: last 30 days user messages
+        const chartResults = await Conversation.aggregate([
+            { $match: { clientId: clientId } },
+            { $unwind: "$history" },
+            {
+                $match: {
+                    "history.role": "user",
+                    "history.createdAt": {
+                        $gte: new Date(Date.now() - 30 * 24 * 60 * 60 * 1000)
+                    }
+                }
+            },
+            {
+                $group: {
+                    _id: { $dayOfMonth: "$history.createdAt" }, // group by day
+                    count: { $sum: 1 }
+                }
+            },
+            { $sort: { _id: 1 } }
+        ]);
+
+        res.json({
+            clientId: client._id,
+            name: client.name,
+            used,
+            quota,
+            remaining,
+            files: client.files || [],
+            lastActive: client.updatedAt,
+            chartResults
+        });
+    } catch (err) {
+        console.error("❌ Error fetching client stats:", err);
+        res.status(500).json({ error: "Server error" });
+    }
+});
+
+
+// ✅ Create new client (admin only)
+app.post("/api/clients", verifyToken, async (req, res) => {
+    if (req.user.role !== "admin") return res.status(403).json({ error: "Forbidden" });
     try {
         const clientData = req.body;
 
@@ -437,7 +504,7 @@ app.post("/api/login", async (req, res) => {
 
         // ✅ Generate token
         const token = jwt.sign(
-            { id: user._id, role: user.role },
+            { id: user._id, role: user.role, clientId: user.clientId },
             process.env.JWT_SECRET,
             { expiresIn: "1h" }
         );
@@ -457,7 +524,7 @@ app.post("/api/login", async (req, res) => {
     }
 });
 app.get("/api/me", verifyToken, (req, res) => {
-    res.json({ id: req.user.id, role: req.user.role });
+    res.json({ id: req.user.id, role: req.user.role, clientId: req.user.clientId });
 });
 app.post("/api/logout", (req, res) => {
     res.clearCookie("token");
@@ -467,8 +534,8 @@ app.post("/api/logout", (req, res) => {
 
 
 
-// ✅ Update existing client
-app.put("/api/clients/:id", async (req, res) => {
+// ✅ Update existing client (admin or owner)
+app.put("/api/clients/:id", verifyToken, requireClientOwnership, async (req, res) => {
     try {
         const clientData = { ...req.body };
 
@@ -492,8 +559,9 @@ app.put("/api/clients/:id", async (req, res) => {
     }
 });
 
-// ✅ Delete client
-app.delete("/api/clients/:id", async (req, res) => {
+// ✅ Delete client (admin only)
+app.delete("/api/clients/:id", verifyToken, async (req, res) => {
+    if (req.user.role !== "admin") return res.status(403).json({ error: "Forbidden" });
     try {
         // delete client
         const client = await Client.findByIdAndDelete(req.params.id);
@@ -510,9 +578,11 @@ app.delete("/api/clients/:id", async (req, res) => {
 });
 
 
-// ✅ Get all conversations (for dashboard)
-// ✅ Get all conversations (without system messages)
-app.get("/api/conversations", async (req, res) => {
+// ✅ Get all conversations (admin only)
+app.get("/api/conversations", verifyToken, async (req, res) => {
+    if (req.user.role !== "admin") {
+        return res.status(403).json({ error: "Forbidden" });
+    }
     try {
         let conversations = await Conversation.find().sort({ updatedAt: -1 }).lean();
 
@@ -529,8 +599,8 @@ app.get("/api/conversations", async (req, res) => {
     }
 });
 
-// ✅ Get a single conversation by ID (without system messages)
-app.get("/api/conversations/:clientId", async (req, res) => {
+// ✅ Get a single client's conversations
+app.get("/api/conversations/:clientId", verifyToken, requireClientOwnership, async (req, res) => {
     try {
         const clientId = req.params.clientId;
         const conversations = await Conversation.find({ clientId }).lean();
