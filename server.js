@@ -434,26 +434,59 @@ app.get("/api/stats/:clientId", verifyToken, requireClientOwnership, async (req,
 
         // 🔹 Chart data: last 30 days user messages
         // chart results for this client
-        const chartResults = await Conversation.aggregate([
-            { $match: { clientId: clientId } },
-            { $unwind: "$history" },
-            {
-                $match: {
-                    "history.role": "user",
-                    "history.createdAt": {
-                        $gte: new Date(Date.now() - 30 * 24 * 60 * 60 * 1000)
-                    }
-                }
-            },
-            {
-                $group: {
-                    _id: { $dayOfMonth: "$history.createdAt" }, // group by day
+        const { mode } = req.query; // "daily", "weekly", "monthly"
 
+
+        // 🔹 Build aggregation pipeline based on mode
+        let pipeline = [
+            { $match: { clientId } },
+            { $unwind: "$history" },
+            { $match: { "history.role": "user" } }
+        ];
+
+        const now = new Date();
+
+        if (mode === "daily") {
+            pipeline.push({
+                $match: {
+                    "history.createdAt": { $gte: new Date(now.setHours(0, 0, 0, 0)) } // today
+                }
+            });
+            pipeline.push({
+                $group: {
+                    _id: { $hour: "$history.createdAt" },
                     count: { $sum: 1 }
                 }
-            },
-            { $sort: { _id: 1 } }
-        ]);
+            });
+        } else if (mode === "weekly") {
+            pipeline.push({
+                $match: {
+                    "history.createdAt": { $gte: new Date(Date.now() - 7 * 24 * 60 * 60 * 1000) } // last 7 days
+                }
+            });
+            pipeline.push({
+                $group: {
+                    _id: { $dayOfWeek: "$history.createdAt" }, // 1=Sun … 7=Sat
+                    count: { $sum: 1 }
+                }
+            });
+        } else if (mode === "monthly") {
+            pipeline.push({
+                $match: {
+                    "history.createdAt": { $gte: new Date(Date.now() - 30 * 24 * 60 * 60 * 1000) } // last 30 days
+                }
+            });
+            pipeline.push({
+                $group: {
+                    _id: { $dayOfMonth: "$history.createdAt" }, // 1 … 31
+                    count: { $sum: 1 }
+                }
+            });
+        }
+
+        pipeline.push({ $sort: { "_id": 1 } });
+
+        const chartResults = await Conversation.aggregate(pipeline);
 
         // build the same shaped object as admin uses
         res.json({
