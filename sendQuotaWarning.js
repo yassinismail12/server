@@ -37,3 +37,4 @@ Please consider upgrading your plan soon to avoid interruptions.\n\n- Agent Bot`
         console.error("Error sending quota warning email:", error.message);
     }
 }
+
