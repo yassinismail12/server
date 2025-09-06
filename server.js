@@ -102,31 +102,18 @@ function cleanFileContent(content, mimetype) {
 
     return cleaned;
 }
-
-
 function requireClientOwnership(req, res, next) {
     if (req.user.role === "admin") return next(); // admins can see any client
 
     // For clients, enforce ownership
     if (req.user.role === "client") {
-        const paramId = req.params.clientId;
-        const userClientId = req.user.clientId;
-
-        // Convert to string if it's a Mongo ObjectId
-        const userClientIdStr = mongoose.Types.ObjectId.isValid(userClientId)
-            ? userClientId.toString()
-            : userClientId;
-
-        if (paramId !== userClientIdStr) {
+        if (req.params.clientId !== req.user.clientId) {
             return res.status(403).json({ error: "Forbidden" });
         }
     }
 
     next();
 }
-
-
-
 
 app.post("/api/create-admin", async (req, res) => {
     try {
@@ -423,10 +410,12 @@ app.get("/api/stats/:clientId", verifyToken, requireClientOwnership, async (req,
             return res.status(404).json({ error: "❌ Client not found" });
         }
 
+        // 🔹 Messages usage
         const used = client.messageCount || 0;
         const quota = client.messageLimit || 0;
         const remaining = quota - used;
 
+        // 🔹 Chart data: last 30 days user messages
         // chart results for this client
         const chartResults = await Conversation.aggregate([
             { $match: { clientId: clientId } },
@@ -441,6 +430,7 @@ app.get("/api/stats/:clientId", verifyToken, requireClientOwnership, async (req,
             },
             {
                 $group: {
+                    _id: { $dayOfMonth: "$history.createdAt" }, // group by day
                     _id: { $dayOfMonth: "$history.createdAt" },
                     count: { $sum: 1 }
                 }
@@ -448,16 +438,19 @@ app.get("/api/stats/:clientId", verifyToken, requireClientOwnership, async (req,
             { $sort: { _id: 1 } }
         ]);
 
+        // build the same shaped object as admin uses
         res.json({
+            clientId: client._id,
             _id: client._id,
             name: client.name,
             email: client.email || "",
-            clientId: client._id.toString(), // ✅ use Mongo _id
+            clientId: client.clientId || "",
             pageId: client.pageId || "",
             used,
             quota,
             remaining,
             files: client.files || [],
+            lastActive: client.updatedAt,
             systemPrompt: client.systemPrompt || "",
             faqs: client.faqs || "",
             lastActive: client.updatedAt || client.createdAt,
@@ -469,6 +462,8 @@ app.get("/api/stats/:clientId", verifyToken, requireClientOwnership, async (req,
         res.status(500).json({ error: "Server error" });
     }
 });
+
+
 
 // ✅ Create new client (admin only)
 app.post("/api/clients", verifyToken, async (req, res) => {
@@ -547,21 +542,16 @@ app.get("/api/me", verifyToken, async (req, res) => {
     try {
         const user = await User.findById(req.user.id).select("-password"); // exclude password
 
+
         if (!user) {
             return res.status(404).json({ error: "User not found" });
-        }
-
-        let clientId = null;
-        if (user.role === "client") {
-            const client = await Client.findOne({ _id: user.clientId });
-            clientId = client ? client._id.toString() : null;
         }
 
         res.json({
             id: user._id,
             email: user.email,
             role: user.role,
-            clientId,       // now always Mongo _id string
+            clientId: user.clientId,
             name: user.name,
         });
     } catch (err) {
@@ -569,7 +559,6 @@ app.get("/api/me", verifyToken, async (req, res) => {
         res.status(500).json({ error: "Server error" });
     }
 });
-
 
 app.post("/api/logout", (req, res) => {
     res.clearCookie("token");
@@ -645,12 +634,10 @@ app.get("/api/conversations", verifyToken, async (req, res) => {
 });
 
 // ✅ Get a single client's conversations
-app.get("/api/conversations/:clientId", verifyToken, requireClientOwnership, async (req, res) => {
+app.get("/api/conversations/:clientId", async (req, res) => {
     try {
         const clientId = req.params.clientId;
-
-        // ensure clientId is an ObjectId
-        const conversations = await Conversation.find({ clientId: mongoose.Types.ObjectId(clientId) }).lean();
+        const conversations = await Conversation.find({ clientId }).lean();
 
         conversations.forEach(c => {
             c.history = c.history.filter(msg => msg.role !== "system");
@@ -662,8 +649,11 @@ app.get("/api/conversations/:clientId", verifyToken, requireClientOwnership, asy
         res.status(500).json({ error: "Server error" });
     }
 });
-// API routes
 
+
+
+
+// API routes
 app.use("/api/chat", chatRoute);
 app.use("/webhook", messengerRoute);
 
