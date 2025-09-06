@@ -225,7 +225,7 @@ app.post("/upload/:clientId", verifyToken, requireClientOwnership, upload.single
             content = cleanFileContent(raw, req.file.mimetype);
         }
 
-        const client = await Client.findById(clientId);
+        const client = await Client.findOne({ clientId });
         if (!client) {
             return res.status(404).json({ error: "❌ Client not found" });
         }
@@ -268,7 +268,7 @@ app.delete("/clients/:clientId/files/:fileId", verifyToken, requireClientOwnersh
     try {
         const { clientId, fileId } = req.params;
 
-        const client = await Client.findById(clientId);
+        const client = await Client.findOne({ clientId });
         if (!client) {
             return res.status(404).json({ error: "❌ Client not found" });
         }
@@ -422,7 +422,7 @@ app.get("/api/stats/:clientId", verifyToken, requireClientOwnership, async (req,
     try {
         const { clientId } = req.params;
 
-        const client = await Client.findById(clientId);
+        const client = await Client.findOne({ clientId });
         if (!client) {
             return res.status(404).json({ error: "❌ Client not found" });
         }
@@ -448,7 +448,7 @@ app.get("/api/stats/:clientId", verifyToken, requireClientOwnership, async (req,
             {
                 $group: {
                     _id: { $dayOfMonth: "$history.createdAt" }, // group by day
-                    _id: { $dayOfMonth: "$history.createdAt" },
+
                     count: { $sum: 1 }
                 }
             },
@@ -597,8 +597,8 @@ app.put("/api/clients/:id", verifyToken, requireClientOwnership, async (req, res
             delete clientData.quota;
         }
 
-        const client = await Client.findByIdAndUpdate(
-            req.params.id,
+        const client = await Client.findOneAndUpdate(
+            { clientId: req.params.id },
             clientData,
             { new: true, runValidators: true }
         );
@@ -616,7 +616,8 @@ app.delete("/api/clients/:id", verifyToken, async (req, res) => {
     if (req.user.role !== "admin") return res.status(403).json({ error: "Forbidden" });
     try {
         // delete client
-        const client = await Client.findByIdAndDelete(req.params.id);
+        const client = await Client.findOneAndDelete({ clientId: req.params.id });
+
         if (!client) return res.status(404).json({ error: "Client not found" });
 
         // delete user linked to this client
