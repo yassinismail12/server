@@ -1,5 +1,3 @@
-
-
 import express from "express";
 import mongoose from "mongoose";
 import dotenv from "dotenv";
@@ -665,3 +663,19 @@ app.get("/api/conversations/:clientId", verifyToken, requireClientOwnership, asy
     }
 });
 // API routes
+
+app.use("/api/chat", chatRoute);
+app.use("/webhook", messengerRoute);
+
+// ✅ MongoDB connection + start server only after DB connects
+const MONGODB_URI = process.env.MONGODB_URI;
+
+mongoose.connect(MONGODB_URI, { dbName: "Agent" })
+    .then(() => {
+        console.log("✅ MongoDB connected:", mongoose.connection.name);
+        console.log("📂 Collections:", Object.keys(mongoose.connection.collections));
+        app.listen(3000, () => {
+            console.log("🚀 Server running on port 3000");
+        });
+    })
+    .catch((err) => console.error("❌ MongoDB connection error:", err));
