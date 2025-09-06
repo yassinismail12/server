@@ -512,10 +512,11 @@ app.post("/api/login", async (req, res) => {
         // ✅ Send it as an HttpOnly cookie
         res.cookie("token", token, {
             httpOnly: true,
-            secure: process.env.NODE_ENV === "production",
-            sameSite: "strict",
+            secure: process.env.NODE_ENV === "production", // set true in production
+            sameSite: process.env.NODE_ENV === "production" ? "none" : "lax",
             maxAge: 1000 * 60 * 60,
         });
+
 
         res.json({ role: user.role }); // only return role
     } catch (err) {
@@ -528,6 +529,7 @@ app.post("/api/login", async (req, res) => {
 app.get("/api/me", verifyToken, async (req, res) => {
     try {
         const user = await User.findById(req.user.id).select("-password"); // exclude password
+
 
         if (!user) {
             return res.status(404).json({ error: "User not found" });
