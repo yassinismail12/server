@@ -557,9 +557,7 @@ app.post("/api/login", async (req, res) => {
 
 app.get("/api/me", verifyToken, async (req, res) => {
     try {
-        const user = await User.findById(req.user.id)
-            .populate("clientId", "customId") // populate only the customId field
-            .select("-password");
+        const user = await User.findById(req.user.id).select("-password"); // exclude password
 
         if (!user) {
             return res.status(404).json({ error: "User not found" });
@@ -569,7 +567,7 @@ app.get("/api/me", verifyToken, async (req, res) => {
             id: user._id,
             email: user.email,
             role: user.role,
-            clientId: user.clientId?.customId || null, // <-- now this is "realestate"
+            clientId: user.clientId || null, // ✅ just return the string
             name: user.name,
         });
     } catch (err) {
@@ -577,6 +575,7 @@ app.get("/api/me", verifyToken, async (req, res) => {
         res.status(500).json({ error: "Server error" });
     }
 });
+
 
 
 app.post("/api/logout", (req, res) => {
@@ -653,7 +652,7 @@ app.get("/api/conversations", verifyToken, async (req, res) => {
 });
 
 // ✅ Get a single client's conversations
-app.get("/api/conversations/:clientId", async (req, res) => {
+app.get("/api/conversations/:clientId", verifyToken, requireClientOwnership, async (req, res) => {
     try {
         const clientId = req.params.clientId;
         const conversations = await Conversation.find({ clientId }).lean();
