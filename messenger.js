@@ -28,18 +28,18 @@ async function getClientDoc(pageId) {
     const db = await connectDB();
     const clients = db.collection("Clients");
     console.log(`🔍 Fetching client document for pageId: ${pageId}`);
-    let client = await clients.findOne({ pageId: pageId });
-
+    let client = await clients.findOne({ pageId });
 
     if (!client) {
         console.log("⚠️ Client not found, creating new one");
         client = {
-            clientId: pageId,
+            pageId,  // changed from clientId to pageId
             messageCount: 0,
             messageLimit: 1000,
             active: true,
             VERIFY_TOKEN: null,
             PAGE_ACCESS_TOKEN: null,
+            quotaWarningSent: false,
         };
         await clients.insertOne(client);
     }
@@ -65,7 +65,7 @@ async function incrementMessageCount(pageId) {
     }
 
     const updated = await clients.findOneAndUpdate(
-        { clientId: pageId },
+        { pageId },
         { $inc: { messageCount: 1 } },
         { returnDocument: "after" }
     );
@@ -77,15 +77,13 @@ async function incrementMessageCount(pageId) {
         console.log("⚠️ Only 100 messages left, sending quota warning");
         await sendQuotaWarning(pageId);
         await clients.updateOne(
-            { clientId: pageId },
+            { pageId },  // fixed from clientId to pageId
             { $set: { quotaWarningSent: true } }
         );
     }
 
     return { allowed: true, messageCount: doc.messageCount, messageLimit: doc.messageLimit };
-
 }
-
 
 // ===== Conversations =====
 async function getConversation(pageId, userId) {
@@ -236,7 +234,7 @@ router.post("/", async (req, res) => {
 
                 if (assistantMessage.includes("[TOUR_REQUEST]")) {
                     const data = extractTourData(assistantMessage);
-                    data.clientId = pageId;
+                    data.pageId = pageId;  // changed from clientId to pageId
                     console.log("✈️ Tour request detected, sending email", data);
                     await sendTourEmail(data);
                 }
