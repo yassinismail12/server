@@ -27,13 +27,16 @@ async function connectDB() {
 async function getClientDoc(pageId) {
     const db = await connectDB();
     const clients = db.collection("Clients");
-    console.log(`🔍 Fetching client document for pageId: ${pageId}`);
-    let client = await clients.findOne({ pageId });
+
+    const pageIdStr = pageId.toString(); // <-- FIX: convert to string
+
+    console.log(`🔍 Fetching client document for pageId: ${pageIdStr}`);
+    let client = await clients.findOne({ pageId: pageIdStr });
 
     if (!client) {
         console.log("⚠️ Client not found, creating new one");
         client = {
-            pageId,  // changed from clientId to pageId
+            pageId: pageIdStr, // store as string
             messageCount: 0,
             messageLimit: 1000,
             active: true,
@@ -51,32 +54,31 @@ async function incrementMessageCount(pageId) {
     const db = await connectDB();
     const clients = db.collection("Clients");
 
-    console.log(`➕ Incrementing message count for pageId: ${pageId}`);
+    const pageIdStr = pageId.toString(); // <-- FIX: convert to string
 
-    // Try to increment existing document
+    console.log(`➕ Incrementing message count for pageId: ${pageIdStr}`);
+
     let updated = await clients.findOneAndUpdate(
-        { pageId },
+        { pageId: pageIdStr },
         { $inc: { messageCount: 1 } },
         { returnDocument: "after" }
     );
 
     let doc = updated.value;
 
-    // If client doesn't exist, create it and return it
     if (!doc) {
         console.log("⚠️ Client not found, creating new one");
         await clients.insertOne({
-            pageId,
-            messageCount: 1, // start at 1 since this is the first message
+            pageId: pageIdStr,
+            messageCount: 1,
             messageLimit: 1000,
             active: true,
             quotaWarningSent: false,
         });
 
-        doc = await clients.findOne({ pageId });
+        doc = await clients.findOne({ pageId: pageIdStr });
     }
 
-    // Check message limit
     if (doc.messageCount > doc.messageLimit) {
         console.log("❌ Message limit reached");
         return { allowed: false, messageCount: doc.messageCount, messageLimit: doc.messageLimit };
@@ -84,12 +86,11 @@ async function incrementMessageCount(pageId) {
 
     const remaining = doc.messageLimit - doc.messageCount;
 
-    // Quota warning
     if (remaining === 100 && !doc.quotaWarningSent) {
         console.log("⚠️ Only 100 messages left, sending quota warning");
-        await sendQuotaWarning(pageId);
+        await sendQuotaWarning(pageIdStr);
         await clients.updateOne(
-            { pageId },
+            { pageId: pageIdStr },
             { $set: { quotaWarningSent: true } }
         );
     }
@@ -97,19 +98,20 @@ async function incrementMessageCount(pageId) {
     return { allowed: true, messageCount: doc.messageCount, messageLimit: doc.messageLimit };
 }
 
-
 // ===== Conversations =====
 async function getConversation(pageId, userId) {
     const db = await connectDB();
-    console.log(`💬 Fetching conversation for pageId: ${pageId}, userId: ${userId}`);
-    return await db.collection("Conversations").findOne({ pageId, userId });
+    const pageIdStr = pageId.toString();
+    console.log(`💬 Fetching conversation for pageId: ${pageIdStr}, userId: ${userId}`);
+    return await db.collection("Conversations").findOne({ pageId: pageIdStr, userId });
 }
 
 async function saveConversation(pageId, userId, history, lastInteraction) {
     const db = await connectDB();
-    console.log(`💾 Saving conversation for pageId: ${pageId}, userId: ${userId}`);
+    const pageIdStr = pageId.toString();
+    console.log(`💾 Saving conversation for pageId: ${pageIdStr}, userId: ${userId}`);
     await db.collection("Conversations").updateOne(
-        { pageId, userId },
+        { pageId: pageIdStr, userId },
         { $set: { history, lastInteraction, updatedAt: new Date() } },
         { upsert: true }
     );
@@ -117,13 +119,14 @@ async function saveConversation(pageId, userId, history, lastInteraction) {
 
 async function saveCustomer(pageId, psid, userProfile) {
     const db = await connectDB();
+    const pageIdStr = pageId.toString();
     const fullName = `${userProfile.first_name || ""} ${userProfile.last_name || ""}`.trim();
-    console.log(`💾 Saving customer ${fullName} for pageId: ${pageId}`);
+    console.log(`💾 Saving customer ${fullName} for pageId: ${pageIdStr}`);
     await db.collection("Customers").updateOne(
-        { pageId, psid },
+        { pageId: pageIdStr, psid },
         {
             $set: {
-                pageId,
+                pageId: pageIdStr,
                 psid,
                 name: fullName || "Unknown",
                 lastInteraction: new Date(),
@@ -192,7 +195,7 @@ router.post("/", async (req, res) => {
     }
 
     for (const entry of body.entry) {
-        const pageId = entry.id;
+        const pageId = entry.id.toString(); // <-- FIX: convert to string
         const webhook_event = entry.messaging[0];
         const sender_psid = webhook_event.sender.id;
         console.log(`📬 Event from pageId: ${pageId}, sender_psid: ${sender_psid}`);
@@ -202,14 +205,14 @@ router.post("/", async (req, res) => {
 
             if (clientDoc.active === false) {
                 console.log("⚠️ Bot inactive for this page");
-                await sendMessengerReply(sender_psid, "⚠️ This bot is currently disabled.");
+                await sendMessengerReply(sender_psid, "⚠️ This bot is currently disabled.", pageId);
                 continue;
             }
 
             const usage = await incrementMessageCount(pageId);
             if (!usage.allowed) {
                 console.log("⚠️ Message limit reached, not sending reply");
-                await sendMessengerReply(sender_psid, "⚠️ Message limit reached.");
+                await sendMessengerReply(sender_psid, "⚠️ Message limit reached.", pageId);
                 continue;
             }
 
@@ -224,7 +227,6 @@ router.post("/", async (req, res) => {
                 let firstName = "there";
                 let greeting = "";
 
-                // Prepare greeting but do not send separately
                 if (!convo || isNewDay(convo.lastInteraction)) {
                     const userProfile = await getUserProfile(sender_psid, clientDoc.PAGE_ACCESS_TOKEN);
                     firstName = userProfile.first_name || "there";
@@ -247,12 +249,12 @@ router.post("/", async (req, res) => {
 
                 if (assistantMessage.includes("[TOUR_REQUEST]")) {
                     const data = extractTourData(assistantMessage);
-                    data.pageId = pageId;  // changed from clientId to pageId
+                    data.pageId = pageId;
                     console.log("✈️ Tour request detected, sending email", data);
                     await sendTourEmail(data);
                 }
 
-                await sendMessengerReply(sender_psid, combinedMessage);
+                await sendMessengerReply(sender_psid, combinedMessage, pageId);
             }
 
             if (webhook_event.postback?.payload) {
@@ -264,13 +266,13 @@ router.post("/", async (req, res) => {
                     ICE_BREAKER_PAYMENT: "Yes! We offer several payment plans. What’s your budget or preferred duration?",
                 };
                 if (responses[payload]) {
-                    await sendMessengerReply(sender_psid, responses[payload]);
+                    await sendMessengerReply(sender_psid, responses[payload], pageId);
                     console.log("🤖 Sent postback response");
                 }
             }
         } catch (error) {
             console.error("❌ Messenger error:", error);
-            await sendMessengerReply(sender_psid, "⚠️ حصلت مشكلة. جرب تاني بعد شوية.");
+            await sendMessengerReply(sender_psid, "⚠️ حصلت مشكلة. جرب تاني بعد شوية.", pageId);
         }
     }
 
