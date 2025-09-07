@@ -1,9 +1,10 @@
+// utils/messengerCredentials.js
 import { MongoClient } from "mongodb";
 
 const mongoClient = new MongoClient(process.env.MONGODB_URI);
 const dbName = "Agent";
 
-async function getClientCredentials(pageId) {
+export async function getClientCredentials(pageId) {
     if (!mongoClient.topology?.isConnected()) {
         await mongoClient.connect();
     }
