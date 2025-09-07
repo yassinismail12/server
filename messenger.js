@@ -65,22 +65,25 @@ async function incrementMessageCount(pageId) {
     }
 
     const updated = await clients.findOneAndUpdate(
-        { pageId },
+        { clientId },
         { $inc: { messageCount: 1 } },
         { returnDocument: "after" }
     );
 
-    const remaining = updated.value.messageLimit - updated.value.messageCount;
-    if (remaining === 100 && !updated.value.quotaWarningSent) {
+    const doc = updated.value; // ← this is the updated document
+
+    const remaining = doc.messageLimit - doc.messageCount;
+    if (remaining === 100 && !doc.quotaWarningSent) {
         console.log("⚠️ Only 100 messages left, sending quota warning");
-        await sendQuotaWarning(pageId);
+        await sendQuotaWarning(clientId);
         await clients.updateOne(
-            { pageId },
+            { clientId },
             { $set: { quotaWarningSent: true } }
         );
     }
 
-    return { allowed: true, messageCount: updated.value.messageCount, messageLimit: updated.value.messageLimit };
+    return { allowed: true, messageCount: doc.messageCount, messageLimit: doc.messageLimit };
+
 }
 
 
