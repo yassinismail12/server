@@ -1,5 +1,5 @@
 import fetch from "node-fetch";
-import { getClientCredentials } from "./utils/messengerCredentials.js";
+import { getClientCredentials } from "../utils/messengerCredentials.js";
 
 export async function sendMessengerReply(sender_psid, response, pageId) {
     try {
