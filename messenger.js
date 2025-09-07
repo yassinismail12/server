@@ -52,7 +52,7 @@ async function incrementMessageCount(clientId) {
     const clients = db.collection("Clients");
 
     console.log(`➕ Incrementing message count for clientId: ${clientId}`);
-    let client = await clients.findOne({ pageId: clientId });
+    let client = await clients.findOne({ clientId });
     if (!client) {
         console.log("⚠️ Client not found, creating new one");
         client = { clientId, messageCount: 0, messageLimit: 1000, active: true, quotaWarningSent: false };
