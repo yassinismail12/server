@@ -63,7 +63,6 @@ async function incrementMessageCount(pageId) {
 
     console.log(`➕ Incrementing message count for pageId: ${pageIdStr}`);
 
-    // Use upsert: true to create the client if it doesn't exist
     const updated = await clients.findOneAndUpdate(
         { pageId: pageIdStr },
         {
@@ -72,15 +71,19 @@ async function incrementMessageCount(pageId) {
                 active: true,
                 messageLimit: 1000,
                 quotaWarningSent: false,
-            }
+            },
         },
-        { returnDocument: "after", upsert: true } // <-- FIX: upsert ensures a doc is returned
+        {
+            upsert: true,
+            returnDocument: "after", // MongoDB >= 4.2
+        }
     );
 
-    const doc = updated.value;
+    // For some MongoDB versions, the returned value may be under `updated.value` or `updated.lastErrorObject`
+    const doc = updated.value || await clients.findOne({ pageId: pageIdStr });
 
-    // Safety check (should never happen now)
     if (!doc) {
+        console.error("❌ Still could not find or create client");
         throw new Error(`Failed to increment or create client for pageId: ${pageIdStr}`);
     }
 
