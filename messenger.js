@@ -71,18 +71,6 @@ async function incrementMessageCount(pageId) {
 
     let doc = updated.value;
 
-    if (!doc) {
-        console.log("⚠️ Client not found, creating new one");
-        await clients.insertOne({
-            pageId: pageIdStr,
-            messageCount: 1,
-            messageLimit: 1000,
-            active: true,
-            quotaWarningSent: false,
-        });
-
-        doc = await clients.findOne({ pageId: pageIdStr });
-    }
 
     if (doc.messageCount > doc.messageLimit) {
         console.log("❌ Message limit reached");
