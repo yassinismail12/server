@@ -47,15 +47,15 @@ async function getClientDoc(pageId) {
     return client;
 }
 
-async function incrementMessageCount(clientId) {
+async function incrementMessageCount(pageId) {
     const db = await connectDB();
     const clients = db.collection("Clients");
 
-    console.log(`➕ Incrementing message count for clientId: ${clientId}`);
-    let client = await clients.findOne({ clientId });
+    console.log(`➕ Incrementing message count for pageId: ${pageId}`);
+    let client = await clients.findOne({ pageId });
     if (!client) {
         console.log("⚠️ Client not found, creating new one");
-        client = { clientId, messageCount: 0, messageLimit: 1000, active: true, quotaWarningSent: false };
+        client = { pageId, messageCount: 0, messageLimit: 1000, active: true, quotaWarningSent: false };
         await clients.insertOne(client);
     }
 
@@ -65,51 +65,51 @@ async function incrementMessageCount(clientId) {
     }
 
     const updated = await clients.findOneAndUpdate(
-        { clientId },
+        { pageId },
         { $inc: { messageCount: 1 } },
         { returnDocument: "after" }
     );
 
-    const remaining = updated.messageLimit - updated.messageCount;
-    if (remaining === 100 && !updated.quotaWarningSent) {
+    const remaining = updated.value.messageLimit - updated.value.messageCount;
+    if (remaining === 100 && !updated.value.quotaWarningSent) {
         console.log("⚠️ Only 100 messages left, sending quota warning");
-        await sendQuotaWarning(clientId);
+        await sendQuotaWarning(pageId);
         await clients.updateOne(
-            { clientId },
+            { pageId },
             { $set: { quotaWarningSent: true } }
         );
     }
 
-    return { allowed: true, messageCount: updated.messageCount, messageLimit: updated.messageLimit };
+    return { allowed: true, messageCount: updated.value.messageCount, messageLimit: updated.value.messageLimit };
 }
+
 
 // ===== Conversations =====
-async function getConversation(clientId, userId) {
+async function getConversation(pageId, userId) {
     const db = await connectDB();
-    console.log(`💬 Fetching conversation for clientId: ${clientId}, userId: ${userId}`);
-    return await db.collection("Conversations").findOne({ clientId, userId });
+    console.log(`💬 Fetching conversation for pageId: ${pageId}, userId: ${userId}`);
+    return await db.collection("Conversations").findOne({ pageId, userId });
 }
 
-async function saveConversation(clientId, userId, history, lastInteraction) {
+async function saveConversation(pageId, userId, history, lastInteraction) {
     const db = await connectDB();
-    console.log(`💾 Saving conversation for clientId: ${clientId}, userId: ${userId}`);
+    console.log(`💾 Saving conversation for pageId: ${pageId}, userId: ${userId}`);
     await db.collection("Conversations").updateOne(
-        { clientId, userId },
+        { pageId, userId },
         { $set: { history, lastInteraction, updatedAt: new Date() } },
         { upsert: true }
     );
 }
 
-// ===== Customers =====
-async function saveCustomer(clientId, psid, userProfile) {
+async function saveCustomer(pageId, psid, userProfile) {
     const db = await connectDB();
     const fullName = `${userProfile.first_name || ""} ${userProfile.last_name || ""}`.trim();
-    console.log(`💾 Saving customer ${fullName} for clientId: ${clientId}`);
+    console.log(`💾 Saving customer ${fullName} for pageId: ${pageId}`);
     await db.collection("Customers").updateOne(
-        { clientId, psid },
+        { pageId, psid },
         {
             $set: {
-                clientId,
+                pageId,
                 psid,
                 name: fullName || "Unknown",
                 lastInteraction: new Date(),
