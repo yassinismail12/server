@@ -28,7 +28,8 @@ async function getClientDoc(pageId) {
     const db = await connectDB();
     const clients = db.collection("Clients");
     console.log(`🔍 Fetching client document for pageId: ${pageId}`);
-    let client = await clients.findOne({ clientId: pageId });
+    let client = await clients.findOne({ pageId: pageId });
+
 
     if (!client) {
         console.log("⚠️ Client not found, creating new one");
@@ -51,7 +52,7 @@ async function incrementMessageCount(clientId) {
     const clients = db.collection("Clients");
 
     console.log(`➕ Incrementing message count for clientId: ${clientId}`);
-    let client = await clients.findOne({ clientId });
+    let client = await clients.findOne({ pageId: clientId });
     if (!client) {
         console.log("⚠️ Client not found, creating new one");
         client = { clientId, messageCount: 0, messageLimit: 1000, active: true, quotaWarningSent: false };
