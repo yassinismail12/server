@@ -29,14 +29,12 @@ export async function SYSTEM_PROMPT({ clientId, pageId }) {
 
     let finalPrompt = clientData.systemPrompt;
 
-    for (const [key, value] of Object.entries(clientData || {})) {
+    // Replace placeholders like {{faqs}}, {{listingsData}}, etc.
+    for (const [key, value] of Object.entries(clientData)) {
         if (typeof value === "string") {
             finalPrompt = finalPrompt.replaceAll(`{{${key}}}`, value);
         }
     }
-
-    // Remove any leftover placeholders like {{something}}
-    finalPrompt = finalPrompt.replace(/\{\{.*?\}\}/g, "");
 
     return finalPrompt;
 }
