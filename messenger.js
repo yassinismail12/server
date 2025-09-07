@@ -63,14 +63,26 @@ async function incrementMessageCount(pageId) {
 
     console.log(`➕ Incrementing message count for pageId: ${pageIdStr}`);
 
-    let updated = await clients.findOneAndUpdate(
+    // Use upsert: true to create the client if it doesn't exist
+    const updated = await clients.findOneAndUpdate(
         { pageId: pageIdStr },
-        { $inc: { messageCount: 1 } },
-        { returnDocument: "after" }
+        {
+            $inc: { messageCount: 1 },
+            $setOnInsert: {
+                active: true,
+                messageLimit: 1000,
+                quotaWarningSent: false,
+            }
+        },
+        { returnDocument: "after", upsert: true } // <-- FIX: upsert ensures a doc is returned
     );
 
-    let doc = updated.value;
+    const doc = updated.value;
 
+    // Safety check (should never happen now)
+    if (!doc) {
+        throw new Error(`Failed to increment or create client for pageId: ${pageIdStr}`);
+    }
 
     if (doc.messageCount > doc.messageLimit) {
         console.log("❌ Message limit reached");
@@ -90,6 +102,7 @@ async function incrementMessageCount(pageId) {
 
     return { allowed: true, messageCount: doc.messageCount, messageLimit: doc.messageLimit };
 }
+
 
 // ===== Conversations =====
 async function getConversation(pageId, userId) {
