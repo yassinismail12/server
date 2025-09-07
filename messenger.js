@@ -13,6 +13,11 @@ const router = express.Router();
 const mongoClient = new MongoClient(process.env.MONGODB_URI);
 const dbName = "Agent";
 
+// ===== Helper to normalize pageId =====
+function normalizePageId(id) {
+    return id.toString().trim();
+}
+
 // ===== DB Connection =====
 async function connectDB() {
     if (!mongoClient.topology?.isConnected()) {
@@ -28,7 +33,7 @@ async function getClientDoc(pageId) {
     const db = await connectDB();
     const clients = db.collection("Clients");
 
-    const pageIdStr = pageId.toString(); // <-- FIX: convert to string
+    const pageIdStr = normalizePageId(pageId);
 
     console.log(`🔍 Fetching client document for pageId: ${pageIdStr}`);
     let client = await clients.findOne({ pageId: pageIdStr });
@@ -36,7 +41,7 @@ async function getClientDoc(pageId) {
     if (!client) {
         console.log("⚠️ Client not found, creating new one");
         client = {
-            pageId: pageIdStr, // store as string
+            pageId: pageIdStr,
             messageCount: 0,
             messageLimit: 1000,
             active: true,
@@ -54,7 +59,7 @@ async function incrementMessageCount(pageId) {
     const db = await connectDB();
     const clients = db.collection("Clients");
 
-    const pageIdStr = pageId.toString().trim(); // <-- FIX: convert to string
+    const pageIdStr = normalizePageId(pageId);
 
     console.log(`➕ Incrementing message count for pageId: ${pageIdStr}`);
 
@@ -101,14 +106,14 @@ async function incrementMessageCount(pageId) {
 // ===== Conversations =====
 async function getConversation(pageId, userId) {
     const db = await connectDB();
-    const pageIdStr = pageId.toString();
+    const pageIdStr = normalizePageId(pageId);
     console.log(`💬 Fetching conversation for pageId: ${pageIdStr}, userId: ${userId}`);
     return await db.collection("Conversations").findOne({ pageId: pageIdStr, userId });
 }
 
 async function saveConversation(pageId, userId, history, lastInteraction) {
     const db = await connectDB();
-    const pageIdStr = pageId.toString();
+    const pageIdStr = normalizePageId(pageId);
     console.log(`💾 Saving conversation for pageId: ${pageIdStr}, userId: ${userId}`);
     await db.collection("Conversations").updateOne(
         { pageId: pageIdStr, userId },
@@ -119,7 +124,7 @@ async function saveConversation(pageId, userId, history, lastInteraction) {
 
 async function saveCustomer(pageId, psid, userProfile) {
     const db = await connectDB();
-    const pageIdStr = pageId.toString();
+    const pageIdStr = normalizePageId(pageId);
     const fullName = `${userProfile.first_name || ""} ${userProfile.last_name || ""}`.trim();
     console.log(`💾 Saving customer ${fullName} for pageId: ${pageIdStr}`);
     await db.collection("Customers").updateOne(
@@ -195,7 +200,7 @@ router.post("/", async (req, res) => {
     }
 
     for (const entry of body.entry) {
-        const pageId = entry.id.toString(); // <-- FIX: convert to string
+        const pageId = normalizePageId(entry.id);
         const webhook_event = entry.messaging[0];
         const sender_psid = webhook_event.sender.id;
         console.log(`📬 Event from pageId: ${pageId}, sender_psid: ${sender_psid}`);
