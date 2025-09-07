@@ -1,19 +1,15 @@
 import fetch from "node-fetch";
 
-export async function sendMessengerReply(psid, message) {
-    if (process.env.NODE_ENV === "development") {
-        console.log(`💬 Reply to ${psid}:`, message);
-        return;
-    }
+export async function sendMessengerReply(sender_psid, response) {
+    const PAGE_ACCESS_TOKEN = process.env.PAGE_ACCESS_TOKEN;
 
-    const url = `https://graph.facebook.com/v19.0/me/messages?access_token=${process.env.PAGE_ACCESS_TOKEN}`;
-    await fetch(url, {
+    await fetch(`https://graph.facebook.com/v18.0/me/messages?access_token=${PAGE_ACCESS_TOKEN}`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
-            recipient: { id: psid },
-            message: { text: message },
-        }),
+            recipient: { id: sender_psid },
+            message: { text: response }
+        })
     });
 }
 
