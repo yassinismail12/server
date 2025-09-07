@@ -53,25 +53,27 @@ async function incrementMessageCount(pageId) {
 
     console.log(`➕ Incrementing message count for pageId: ${pageId}`);
 
-    // Atomic upsert and increment
-    const updated = await clients.findOneAndUpdate(
+    // Try to increment existing document
+    let updated = await clients.findOneAndUpdate(
         { pageId },
-        {
-            $inc: { messageCount: 1 },
-            $setOnInsert: {
-                messageLimit: 1000,
-                active: true,
-                quotaWarningSent: false
-            }
-        },
-        { returnDocument: "after", upsert: true }
+        { $inc: { messageCount: 1 } },
+        { returnDocument: "after" }
     );
 
-    const doc = updated.value;
+    let doc = updated.value;
 
-    // Safety check
+    // If client doesn't exist, create it and return it
     if (!doc) {
-        throw new Error("Failed to increment message count: doc is undefined");
+        console.log("⚠️ Client not found, creating new one");
+        await clients.insertOne({
+            pageId,
+            messageCount: 1, // start at 1 since this is the first message
+            messageLimit: 1000,
+            active: true,
+            quotaWarningSent: false,
+        });
+
+        doc = await clients.findOne({ pageId });
     }
 
     // Check message limit
