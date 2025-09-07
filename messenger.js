@@ -54,7 +54,7 @@ async function incrementMessageCount(pageId) {
     const db = await connectDB();
     const clients = db.collection("Clients");
 
-    const pageIdStr = pageId.toString(); // <-- FIX: convert to string
+    const pageIdStr = pageId.toString().trim(); // <-- FIX: convert to string
 
     console.log(`➕ Incrementing message count for pageId: ${pageIdStr}`);
 
