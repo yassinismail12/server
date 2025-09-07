@@ -65,7 +65,7 @@ async function incrementMessageCount(pageId) {
     }
 
     const updated = await clients.findOneAndUpdate(
-        { clientId },
+        { clientId: pageId },
         { $inc: { messageCount: 1 } },
         { returnDocument: "after" }
     );
@@ -75,9 +75,9 @@ async function incrementMessageCount(pageId) {
     const remaining = doc.messageLimit - doc.messageCount;
     if (remaining === 100 && !doc.quotaWarningSent) {
         console.log("⚠️ Only 100 messages left, sending quota warning");
-        await sendQuotaWarning(clientId);
+        await sendQuotaWarning(pageId);
         await clients.updateOne(
-            { clientId },
+            { clientId: pageId },
             { $set: { quotaWarningSent: true } }
         );
     }
@@ -210,18 +210,16 @@ router.post("/", async (req, res) => {
                 let convo = await getConversation(pageId, sender_psid);
                 let history = convo?.history || [{ role: "system", content: finalSystemPrompt }];
 
-                let isNewConversation = false;
                 let firstName = "there";
+                let greeting = "";
 
+                // Prepare greeting but do not send separately
                 if (!convo || isNewDay(convo.lastInteraction)) {
-                    isNewConversation = true;
                     const userProfile = await getUserProfile(sender_psid, clientDoc.PAGE_ACCESS_TOKEN);
                     firstName = userProfile.first_name || "there";
                     await saveCustomer(pageId, sender_psid, userProfile);
 
-                    const greeting = `Hi ${firstName}, good to see you today 👋`;
-                    console.log("🤖 Sending greeting:", greeting);
-                    await sendMessengerReply(sender_psid, greeting);
+                    greeting = `Hi ${firstName}, good to see you today 👋`;
                     history.push({ role: "assistant", content: greeting, createdAt: new Date() });
                 }
 
@@ -233,6 +231,9 @@ router.post("/", async (req, res) => {
                 history.push({ role: "assistant", content: assistantMessage, createdAt: new Date() });
                 await saveConversation(pageId, sender_psid, history, new Date());
 
+                let combinedMessage = assistantMessage;
+                if (greeting) combinedMessage = `${greeting}\n\n${assistantMessage}`;
+
                 if (assistantMessage.includes("[TOUR_REQUEST]")) {
                     const data = extractTourData(assistantMessage);
                     data.clientId = pageId;
@@ -240,7 +241,7 @@ router.post("/", async (req, res) => {
                     await sendTourEmail(data);
                 }
 
-                await sendMessengerReply(sender_psid, assistantMessage);
+                await sendMessengerReply(sender_psid, combinedMessage);
             }
 
             if (webhook_event.postback?.payload) {
