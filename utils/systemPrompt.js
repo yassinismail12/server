@@ -13,26 +13,28 @@ const dbName = "Agent";
  * @returns {string} Final prompt with {{placeholders}} replaced
  */
 export async function SYSTEM_PROMPT({ clientId, pageId }) {
-    if (!client.topology?.isConnected()) await client.connect();
-    const db = client.db("Agent");
-    const clients = db.collection("Clients");
-
-    let clientData;
-    if (pageId) {
-        clientData = await clients.findOne({ pageId: pageId.toString().trim() });
-        if (!clientData) throw new Error(`Messenger client not found for pageId: ${pageId}`);
-    } else if (clientId) {
-        clientData = await clients.findOne({ clientId });
-        if (!clientData) throw new Error(`Web client not found for clientId: ${clientId}`);
-    } else {
-        throw new Error("SYSTEM_PROMPT: either pageId or clientId must be provided");
+    if (!client.topology || !client.topology.isConnected()) {
+        await client.connect();
     }
 
+    const db = client.db(dbName);
+    const clients = db.collection("Clients");
+
+    // Use pageId if provided, otherwise fall back to clientId
+    const query = pageId ? { pageId } : { clientId };
+
+    const clientData = await clients.findOne(query);
+
+    if (!clientData) throw new Error("Client not found");
+
     let finalPrompt = clientData.systemPrompt;
+
+    // Replace placeholders like {{faqs}}, {{listingsData}}, etc.
     for (const [key, value] of Object.entries(clientData)) {
         if (typeof value === "string" && finalPrompt) {
             finalPrompt = finalPrompt.replaceAll(`{{${key}}}`, value);
         }
+
     }
 
     return finalPrompt;
