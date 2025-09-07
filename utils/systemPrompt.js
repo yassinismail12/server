@@ -31,9 +31,10 @@ export async function SYSTEM_PROMPT({ clientId, pageId }) {
 
     // Replace placeholders like {{faqs}}, {{listingsData}}, etc.
     for (const [key, value] of Object.entries(clientData)) {
-        if (typeof value === "string") {
+        if (typeof value === "string" && finalPrompt) {
             finalPrompt = finalPrompt.replaceAll(`{{${key}}}`, value);
         }
+
     }
 
     return finalPrompt;
