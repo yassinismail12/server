@@ -52,38 +52,49 @@ async function incrementMessageCount(pageId) {
     const clients = db.collection("Clients");
 
     console.log(`➕ Incrementing message count for pageId: ${pageId}`);
-    let client = await clients.findOne({ pageId });
-    if (!client) {
-        console.log("⚠️ Client not found, creating new one");
-        client = { pageId, messageCount: 0, messageLimit: 1000, active: true, quotaWarningSent: false };
-        await clients.insertOne(client);
-    }
 
-    if (client.messageCount >= client.messageLimit) {
-        console.log("❌ Message limit reached");
-        return { allowed: false, messageCount: client.messageCount, messageLimit: client.messageLimit };
-    }
-
+    // Atomic upsert and increment
     const updated = await clients.findOneAndUpdate(
         { pageId },
-        { $inc: { messageCount: 1 } },
-        { returnDocument: "after" }
+        {
+            $inc: { messageCount: 1 },
+            $setOnInsert: {
+                messageLimit: 1000,
+                active: true,
+                quotaWarningSent: false
+            }
+        },
+        { returnDocument: "after", upsert: true }
     );
 
-    const doc = updated.value; // ← this is the updated document
+    const doc = updated.value;
+
+    // Safety check
+    if (!doc) {
+        throw new Error("Failed to increment message count: doc is undefined");
+    }
+
+    // Check message limit
+    if (doc.messageCount > doc.messageLimit) {
+        console.log("❌ Message limit reached");
+        return { allowed: false, messageCount: doc.messageCount, messageLimit: doc.messageLimit };
+    }
 
     const remaining = doc.messageLimit - doc.messageCount;
+
+    // Quota warning
     if (remaining === 100 && !doc.quotaWarningSent) {
         console.log("⚠️ Only 100 messages left, sending quota warning");
         await sendQuotaWarning(pageId);
         await clients.updateOne(
-            { pageId },  // fixed from clientId to pageId
+            { pageId },
             { $set: { quotaWarningSent: true } }
         );
     }
 
     return { allowed: true, messageCount: doc.messageCount, messageLimit: doc.messageLimit };
 }
+
 
 // ===== Conversations =====
 async function getConversation(pageId, userId) {
@@ -204,7 +215,7 @@ router.post("/", async (req, res) => {
                 const userMessage = webhook_event.message.text;
                 console.log("📝 Received user message:", userMessage);
 
-                const finalSystemPrompt = await SYSTEM_PROMPT({ clientId: pageId });
+                const finalSystemPrompt = await SYSTEM_PROMPT({ pageId });
                 let convo = await getConversation(pageId, sender_psid);
                 let history = convo?.history || [{ role: "system", content: finalSystemPrompt }];
 
