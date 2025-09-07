@@ -531,7 +531,7 @@ app.post("/api/clients", verifyToken, async (req, res) => {
 
         // 2. Create linked user
         // make sure password comes from clientData
-        const plainPassword = clientData.password || "defaultPass125"; // fallback if no password provided
+        const plainPassword = clientData.password || "default123"; // fallback if no password provided
         const hashedPassword = await bcrypt.hash(plainPassword, 10);
 
         const user = new User({
@@ -539,7 +539,7 @@ app.post("/api/clients", verifyToken, async (req, res) => {
             email: clientData.email,
             password: hashedPassword,
             role: "client",
-            clientId: client._id.toString(),
+            clientId: client.clientId || ""
         });
         await user.save();
 
