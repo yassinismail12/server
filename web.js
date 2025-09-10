@@ -65,7 +65,7 @@ async function saveConversation(clientId, userId, history) {
     const db = await connectDB();
     const conversations = db.collection("Conversations");
     await conversations.updateOne(
-        { clientId, userId },
+        { clientId, userId, source: "web" },
         { $set: { history, updatedAt: new Date() } },
         { upsert: true }
     );
