@@ -120,7 +120,7 @@ async function saveConversation(pageId, userId, history, lastInteraction) {
     const pageIdStr = normalizePageId(pageId);
     console.log(`💾 Saving conversation for pageId: ${pageIdStr}, userId: ${userId}`);
     await db.collection("Conversations").updateOne(
-        { pageId: pageIdStr, userId },
+        { pageId: pageIdStr, userId, source: "messenger" },
         { $set: { history, lastInteraction, updatedAt: new Date() } },
         { upsert: true }
     );

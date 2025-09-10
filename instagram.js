@@ -118,7 +118,7 @@ async function saveConversation(igId, userId, history, lastInteraction) {
     const igIdStr = normalizeIgId(igId);
     console.log(`💾 Saving conversation for igId: ${igIdStr}, userId: ${userId}`);
     await db.collection("Conversations").updateOne(
-        { igId: igIdStr, userId },
+        { igId: igIdStr, userId, source: "instagram" },
         { $set: { history, lastInteraction, updatedAt: new Date() } },
         { upsert: true }
     );

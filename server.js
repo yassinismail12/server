@@ -673,7 +673,10 @@ app.get("/api/conversations", verifyToken, async (req, res) => {
         return res.status(403).json({ error: "Forbidden" });
     }
     try {
-        let conversations = await Conversation.find().sort({ updatedAt: -1 }).lean();
+        const { source } = req.query; // optional filter
+        const query = source ? { source } : {};
+
+        let conversations = await Conversation.find(query).sort({ updatedAt: -1 }).lean();
 
         // Remove system messages before sending
         conversations = conversations.map(convo => ({
@@ -692,7 +695,10 @@ app.get("/api/conversations", verifyToken, async (req, res) => {
 app.get("/api/conversations/:clientId", verifyToken, requireClientOwnership, async (req, res) => {
     try {
         const clientId = req.params.clientId;
-        const conversations = await Conversation.find({ clientId }).lean();
+        const { source } = req.query; // optional filter
+        const query = source ? { clientId, source } : { clientId };
+
+        const conversations = await Conversation.find(query).lean();
 
         conversations.forEach(c => {
             c.history = c.history.filter(msg => msg.role !== "system");
@@ -704,7 +710,6 @@ app.get("/api/conversations/:clientId", verifyToken, requireClientOwnership, asy
         res.status(500).json({ error: "Server error" });
     }
 });
-
 
 
 
