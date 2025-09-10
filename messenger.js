@@ -118,10 +118,26 @@ async function getConversation(pageId, userId) {
 async function saveConversation(pageId, userId, history, lastInteraction) {
     const db = await connectDB();
     const pageIdStr = normalizePageId(pageId);
-    console.log(`💾 Saving conversation for pageId: ${pageIdStr}, userId: ${userId}`);
+
+    // 🔍 Lookup the client that owns this Messenger pageId
+    const client = await db.collection("Clients").findOne({ pageId: pageIdStr });
+    if (!client) {
+        console.error(`❌ No client found for pageId: ${pageIdStr}`);
+        return;
+    }
+
+    console.log(`💾 Saving Messenger conversation for clientId: ${client.clientId}, userId: ${userId}`);
+
     await db.collection("Conversations").updateOne(
-        { pageId: pageIdStr, userId, source: "messenger" },
-        { $set: { history, lastInteraction, updatedAt: new Date() } },
+        { clientId: client.clientId, userId, source: "messenger" },
+        {
+            $set: {
+                pageId: pageIdStr,       // keep a reference to the pageId too
+                history,
+                lastInteraction,
+                updatedAt: new Date(),
+            },
+        },
         { upsert: true }
     );
 }
