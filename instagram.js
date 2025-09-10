@@ -276,3 +276,5 @@ router.post("/", async (req, res) => {
     // ✅ Respond once after processing all entries
     res.status(200).send("EVENT_RECEIVED");
 });
+
+export default router;
