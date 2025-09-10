@@ -21,7 +21,11 @@ export async function SYSTEM_PROMPT({ clientId, pageId }) {
     const clients = db.collection("Clients");
 
     // Use pageId if provided, otherwise fall back to clientId
-    const query = pageId ? { pageId } : { clientId };
+    let query = {};
+    if (pageId) query = { pageId };
+    else if (clientId) query = { clientId };
+    else if (igId) query = { igId };
+
 
     const clientData = await clients.findOne(query);
 

@@ -11,6 +11,7 @@ import messengerRoute from "./messenger.js";
 import Client from "./Client.js";
 import pdf from "pdf-parse/lib/pdf-parse.js";
 import bcrypt from "bcrypt";
+import instagramRoute from "./instagram.js";
 import User from "./Users.js";
 import jwt from "jsonwebtoken";
 import cookieParser from "cookie-parser";
@@ -392,6 +393,7 @@ app.get("/api/stats", verifyToken, async (req, res) => {
                 used,
                 clientId: c.clientId || "",
                 pageId: c.pageId || 0,
+                igId: c.igId || "",
                 quota,
                 remaining,
                 systemPrompt: c.systemPrompt || "",
@@ -497,6 +499,7 @@ app.get("/api/stats/:clientId", verifyToken, requireClientOwnership, async (req,
             clientId: client.clientId || "",
             pageId: client.pageId || "",
             used,
+            igId: client.igId || "",
             quota,
             remaining,
             files: client.files || [],
@@ -708,6 +711,7 @@ app.get("/api/conversations/:clientId", verifyToken, requireClientOwnership, asy
 // API routes
 app.use("/api/chat", chatRoute);
 app.use("/webhook", messengerRoute);
+app.use("/instagram", instagramRoute);
 
 // ✅ MongoDB connection + start server only after DB connects
 const MONGODB_URI = process.env.MONGODB_URI;

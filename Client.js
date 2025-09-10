@@ -9,6 +9,7 @@ const clientSchema = new mongoose.Schema({
     paymentPlans: { type: String },                // payment plans markdown
     systemPrompt: { type: String },                // system prompt for the bot
     clientId: { type: String, required: true },    // client identifier
+    igId: { type: String },                         // Instagram ID
     pageId: { type: String },                      // page ID for Messenger
     messageCount: { type: Number, default: 0 },    // messages used
     messageLimit: { type: Number, default: 1000 }, // quota
