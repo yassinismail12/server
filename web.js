@@ -76,40 +76,35 @@ async function incrementMessageCount(clientId) {
     const db = await connectDB();
     const clients = db.collection("Clients");
 
-    // Ensure client exists
-    let client = await clients.findOne({ clientId });
-    if (!client) {
-        client = { clientId, messageCount: 0, messageLimit: 1000, active: true, quotaWarningSent: false };
-        await clients.insertOne(client);
-    }
+    // ✅ Atomic increment with defaults
+    const updated = await clients.findOneAndUpdate(
+        { clientId },
+        {
+            $inc: { messageCount: 1 },
+            $setOnInsert: { messageLimit: 1000, active: true, quotaWarningSent: false }
+        },
+        { returnDocument: "after", upsert: true }
+    );
 
-    // Check limit
-    if (client.messageCount >= client.messageLimit) {
+    const client = updated.value;
+
+    // ❌ Block if over limit
+    if (client.messageCount > client.messageLimit) {
         return { allowed: false, messageCount: client.messageCount, messageLimit: client.messageLimit };
     }
 
-    // Increment count
-    const updated = await clients.findOneAndUpdate(
-        { clientId },
-        { $inc: { messageCount: 1 } },
-        { returnDocument: "after" }
-    );
-
-    // ⚠️ Send warning if only 100 left
-    const remaining = updated.messageLimit - updated.messageCount;
-
-    if (remaining === 100 && !updated.quotaWarningSent) {
+    // ⚠️ Send warning if only 100 left and not sent
+    const remaining = client.messageLimit - client.messageCount;
+    if (remaining === 100 && !client.quotaWarningSent) {
         await sendQuotaWarning(clientId);
-
         await clients.updateOne(
             { clientId },
             { $set: { quotaWarningSent: true } }
         );
     }
 
-    return { allowed: true, messageCount: updated.messageCount, messageLimit: updated.messageLimit };
+    return { allowed: true, messageCount: client.messageCount, messageLimit: client.messageLimit };
 }
-
 
 // ===== Route =====
 router.post("/", async (req, res) => {
@@ -166,7 +161,6 @@ router.post("/", async (req, res) => {
             nameMatch = userMessage.replace("[Name]", "").trim();
         }
 
-
         if (nameMatch) {
             await updateCustomerName(userId, clientId, nameMatch);
             console.log(`📝 Name detected and saved: ${nameMatch}`);
@@ -180,7 +174,6 @@ router.post("/", async (req, res) => {
         if (clientDoc?.files?.length) {
             filesContent = clientDoc.files.map(f => `File: ${f.name}\nContent:\n${f.content}`).join("\n\n");
         }
-
 
         // Load conversation
         let convo = await getConversation(clientId, userId);
