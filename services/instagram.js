@@ -33,7 +33,7 @@ export async function sendInstagramReply(psid, text, igId) {
         // Fetch client doc to get PAGE_ACCESS_TOKEN
         const clientDoc = await clients.findOne({ igId: igIdStr });
 
-        if (!clientDoc || !clientDoc.igAcessToken) {
+        if (!clientDoc || !clientDoc.igAccessToken) {
             console.error("❌ Missing IG client or PAGE_ACCESS_TOKEN for igId:", igIdStr);
             return;
         }

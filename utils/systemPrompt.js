@@ -12,7 +12,7 @@ const dbName = "Agent";
  * @param {Object} params - Object containing either `clientId` or `pageId`
  * @returns {string} Final prompt ready for AI
  */
-export async function SYSTEM_PROMPT({ clientId, pageId }) {
+export async function SYSTEM_PROMPT({ clientId, pageId,igId }) {
     if (!client.topology || !client.topology.isConnected()) {
         await client.connect();
     }

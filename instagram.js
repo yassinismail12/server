@@ -145,9 +145,10 @@ async function saveCustomer(igId, psid, userProfile) {
 }
 
 // ===== Users =====
-async function getUserProfile(psid, pageAccessToken) {
+// ===== Users =====
+async function getUserProfile(psid, igAccessToken) {
     console.log(`🔍 Fetching IG user profile for PSID: ${psid}`);
-    const url = `https://graph.facebook.com/${psid}?fields=username&access_token=${pageAccessToken}`;
+    const url = `https://graph.facebook.com/${psid}?fields=username&access_token=${igAccessToken}`;
     const res = await fetch(url);
     if (!res.ok) {
         console.warn("⚠️ Failed to fetch IG user profile, using fallback name 'there'");
