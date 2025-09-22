@@ -46,7 +46,7 @@ async function getClientDoc(igId) {
             messageLimit: 1000,
             active: true,
             VERIFY_TOKEN: null,
-            PAGE_ACCESS_TOKEN: null,
+            igAccessToken: null,
             quotaWarningSent: false,
         };
         await clients.insertOne(client);
@@ -238,7 +238,8 @@ router.post("/", async (req, res) => {
                     let greeting = "";
 
                     if (!convo || isNewDay(convo?.lastInteraction)) {
-                        const userProfile = await getUserProfile(sender_psid, clientDoc.PAGE_ACCESS_TOKEN);
+                      const userProfile = await getUserProfile(sender_psid, clientDoc.igAccessToken);
+
                         firstName = userProfile.username || "there";
                         await saveCustomer(igId, sender_psid, userProfile);
 

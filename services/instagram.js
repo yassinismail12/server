@@ -33,12 +33,12 @@ export async function sendInstagramReply(psid, text, igId) {
         // Fetch client doc to get PAGE_ACCESS_TOKEN
         const clientDoc = await clients.findOne({ igId: igIdStr });
 
-        if (!clientDoc || !clientDoc.PAGE_ACCESS_TOKEN) {
+        if (!clientDoc || !clientDoc.igAcessToken) {
             console.error("❌ Missing IG client or PAGE_ACCESS_TOKEN for igId:", igIdStr);
             return;
         }
 
-        const PAGE_ACCESS_TOKEN = clientDoc.PAGE_ACCESS_TOKEN;
+        const PAGE_ACCESS_TOKEN = clientDoc.igAccessToken;
 
         const url = `https://graph.facebook.com/v21.0/${igIdStr}/messages?access_token=${PAGE_ACCESS_TOKEN}`;
 

@@ -402,7 +402,8 @@ app.get("/api/stats", verifyToken, async (req, res) => {
                 lastActive: c.updatedAt || c.createdAt,
                 active: c.active ?? false,
                 PAGE_ACCESS_TOKEN: c.PAGE_ACCESS_TOKEN || "",
-                VERIFY_TOKEN: c.VERIFY_TOKEN || ""
+                VERIFY_TOKEN: c.VERIFY_TOKEN || "",
+                igAccessToken: c.igAccessToken || ""
             };
         });
 
@@ -508,6 +509,8 @@ app.get("/api/stats/:clientId", verifyToken, requireClientOwnership, async (req,
             faqs: client.faqs || "",
             lastActive: client.updatedAt || client.createdAt,
             active: client.active ?? false,
+            PAGE_ACCESS_TOKEN: client.PAGE_ACCESS_TOKEN || "",
+            igAccessToken: client.igAccessToken || "",
             chartResults
         });
     } catch (err) {
