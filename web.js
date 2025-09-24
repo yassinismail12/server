@@ -73,38 +73,58 @@ async function saveConversation(clientId, userId, history) {
 
 // ===== Clients (Message Count & Limit) =====
 async function incrementMessageCount(clientId) {
-    const db = await connectDB();
-    const clients = db.collection("Clients");
+  const db = await connectDB();
+  const clients = db.collection("Clients");
 
-    // ✅ Atomic increment with defaults
-    const updated = await clients.findOneAndUpdate(
-        { clientId },
-        {
-            $inc: { messageCount: 1 },
-            $setOnInsert: { messageLimit: 1000, active: true, quotaWarningSent: false }
-        },
-        { returnDocument: "after", upsert: true }
+  const updated = await clients.findOneAndUpdate(
+    { clientId },
+    {
+      $inc: { messageCount: 1 },
+      $setOnInsert: { messageLimit: 1000, active: true, quotaWarningSent: false }
+    },
+    {
+      returnDocument: "after", // ensures you get the doc after update
+      upsert: true
+    }
+  );
+
+  let client = updated.value;
+
+  // if still null (driver quirk), fetch manually
+  if (!client) {
+    client = await clients.findOne({ clientId });
+  }
+
+  if (!client) {
+    throw new Error(`Failed to create/find client ${clientId}`);
+  }
+
+  // block if over limit
+  if (client.messageCount > client.messageLimit) {
+    return {
+      allowed: false,
+      messageCount: client.messageCount,
+      messageLimit: client.messageLimit
+    };
+  }
+
+  // warning if close to limit
+  const remaining = client.messageLimit - client.messageCount;
+  if (remaining === 100 && !client.quotaWarningSent) {
+    await sendQuotaWarning(clientId);
+    await clients.updateOne(
+      { clientId },
+      { $set: { quotaWarningSent: true } }
     );
+  }
 
-    const client = updated.value;
-
-    // ❌ Block if over limit
-    if (client.messageCount > client.messageLimit) {
-        return { allowed: false, messageCount: client.messageCount, messageLimit: client.messageLimit };
-    }
-
-    // ⚠️ Send warning if only 100 left and not sent
-    const remaining = client.messageLimit - client.messageCount;
-    if (remaining === 100 && !client.quotaWarningSent) {
-        await sendQuotaWarning(clientId);
-        await clients.updateOne(
-            { clientId },
-            { $set: { quotaWarningSent: true } }
-        );
-    }
-
-    return { allowed: true, messageCount: client.messageCount, messageLimit: client.messageLimit };
+  return {
+    allowed: true,
+    messageCount: client.messageCount,
+    messageLimit: client.messageLimit
+  };
 }
+
 
 // ===== Route =====
 router.post("/", async (req, res) => {
