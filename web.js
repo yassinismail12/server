@@ -154,11 +154,9 @@ router.post("/", async (req, res) => {
         }
 
         // ❌ Block if inactive
-        if (clientDoc.active === false) {
-            return res.json({
-                reply: "" // or "⚠️ Bot is deactivated" if you want a message
-            });
-        }
+    if (clientDoc.active === false) {
+    return res.status(204).end(); // 204 = No Content
+}
 
         // ✅ Then check message limit
         const usage = await incrementMessageCount(clientId);

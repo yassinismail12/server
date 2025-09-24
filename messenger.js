@@ -228,11 +228,12 @@ router.post("/", async (req, res) => {
         try {
             const clientDoc = await getClientDoc(pageId);
 
-            if (clientDoc.active === false) {
-                console.log("⚠️ Bot inactive for this page");
-                await sendMessengerReply(sender_psid, "⚠️ This bot is currently disabled.", pageId);
-                continue;
-            }
+        if (clientDoc.active === false) {
+    console.log("⚠️ Bot inactive for this page");
+    // await sendMessengerReply(sender_psid, "⚠️ This bot is currently disabled.", pageId);
+    continue; // skips this message, sends nothing
+}
+
 
             const usage = await incrementMessageCount(pageId);
             if (!usage.allowed) {
