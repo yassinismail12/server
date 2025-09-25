@@ -54,7 +54,8 @@ const fileFilter = (req, file, cb) => {
         "text/markdown",       // .md
         "text/csv",            // .csv
         "text/tab-separated-values", // .tsv
-        "application/pdf"      // .pdf
+        "application/pdf"  ,
+          "application/json"     // .pdf
     ];
 
     if (allowedTypes.includes(file.mimetype)) {
@@ -95,6 +96,15 @@ function cleanFileContent(content, mimetype) {
     if (mimetype === "text/csv" || mimetype === "text/tab-separated-values") {
         const rows = cleaned.split("\n").map(r => r.split(/,|\t/).join(" | "));
         cleaned = rows.join("\n");
+    }
+    
+    if (mimetype === "application/json") {
+        try {
+            const parsed = JSON.parse(content);
+            cleaned = JSON.stringify(parsed, null, 2); // pretty print JSON
+        } catch (err) {
+            // leave as-is or handle error
+        }
     }
 
     // Markdown: keep it, maybe just trim
