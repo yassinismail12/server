@@ -263,49 +263,59 @@ router.post("/", async (req, res) => {
                 continue;
             }
 
-            if (webhook_event.message?.text) {
-                const userMessage = webhook_event.message.text;
-                console.log("📝 Received user message:", userMessage);
+     if (webhook_event.message?.text) {
+    const userMessage = webhook_event.message.text;
+    console.log("📝 Received user message:", userMessage);
 
-                const finalSystemPrompt = await SYSTEM_PROMPT({ pageId });
-                let convo = await getConversation(pageId, sender_psid);
-                let history = convo?.history || [{ role: "system", content: finalSystemPrompt }];
+    const finalSystemPrompt = await SYSTEM_PROMPT({ pageId });
+    let convo = await getConversation(pageId, sender_psid);
+    let history = convo?.history || [{ role: "system", content: finalSystemPrompt }];
 
-                let firstName = "there";
-                let greeting = "";
+    let firstName = "there";
+    let greeting = "";
 
-                if (!convo || isNewDay(convo.lastInteraction)) {
-                    const userProfile = await getUserProfile(sender_psid, clientDoc.PAGE_ACCESS_TOKEN);
-                    firstName = userProfile.first_name || "there";
-                    await saveCustomer(pageId, sender_psid, userProfile);
+    if (!convo || isNewDay(convo.lastInteraction)) {
+        const userProfile = await getUserProfile(sender_psid, clientDoc.PAGE_ACCESS_TOKEN);
+        firstName = userProfile.first_name || "there";
+        await saveCustomer(pageId, sender_psid, userProfile);
 
-                    greeting = `Hi ${firstName}, good to see you today 👋`;
-                    history.push({ role: "assistant", content: greeting, createdAt: new Date() });
-                }
+        greeting = `Hi ${firstName}, good to see you today 👋`;
+        history.push({ role: "assistant", content: greeting, createdAt: new Date() });
+    }
 
-                history.push({ role: "user", content: userMessage, createdAt: new Date() });
+    history.push({ role: "user", content: userMessage, createdAt: new Date() });
 
-                // 👉 Show typing before generating reply
-                await sendTypingIndicator(sender_psid, pageId);
+    // ===== Keep typing alive =====
+    let typing = true;
+    const typingInterval = setInterval(async () => {
+        if (!typing) return clearInterval(typingInterval);
+        await sendTypingIndicator(sender_psid, pageId);
+    }, 4000); // send every 4 seconds
 
-                const assistantMessage = await getChatCompletion(history);
-                console.log("🤖 Assistant message:", assistantMessage);
+    // Generate AI reply
+    const assistantMessage = await getChatCompletion(history);
 
-                history.push({ role: "assistant", content: assistantMessage, createdAt: new Date() });
-                await saveConversation(pageId, sender_psid, history, new Date());
+    // ===== Stop typing =====
+    typing = false;
+    clearInterval(typingInterval);
 
-                let combinedMessage = assistantMessage;
-                if (greeting) combinedMessage = `${greeting}\n\n${assistantMessage}`;
+    console.log("🤖 Assistant message:", assistantMessage);
 
-                if (assistantMessage.includes("[TOUR_REQUEST]")) {
-                    const data = extractTourData(assistantMessage);
-                    data.pageId = pageId;
-                    console.log("✈️ Tour request detected, sending email", data);
-                    await sendTourEmail(data);
-                }
+    history.push({ role: "assistant", content: assistantMessage, createdAt: new Date() });
+    await saveConversation(pageId, sender_psid, history, new Date());
 
-                await sendMessengerReply(sender_psid, combinedMessage, pageId);
-            }
+    let combinedMessage = assistantMessage;
+    if (greeting) combinedMessage = `${greeting}\n\n${assistantMessage}`;
+
+    if (assistantMessage.includes("[TOUR_REQUEST]")) {
+        const data = extractTourData(assistantMessage);
+        data.pageId = pageId;
+        console.log("✈️ Tour request detected, sending email", data);
+        await sendTourEmail(data);
+    }
+
+    await sendMessengerReply(sender_psid, combinedMessage, pageId);
+}
 
             if (webhook_event.postback?.payload) {
                 const payload = webhook_event.postback.payload;
