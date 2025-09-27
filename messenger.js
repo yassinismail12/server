@@ -19,25 +19,7 @@ function normalizePageId(id) {
 }
 
 // ===== Typing Indicator =====
-async function sendTypingIndicator(sender_psid, pageId) {
-    try {
-        const db = await connectDB();
-        const clientDoc = await db.collection("Clients").findOne({ pageId: normalizePageId(pageId) });
-        if (!clientDoc?.PAGE_ACCESS_TOKEN) return;
 
-        await fetch(`https://graph.facebook.com/v18.0/me/messages?access_token=${clientDoc.PAGE_ACCESS_TOKEN}`, {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({
-                recipient: { id: sender_psid },
-                sender_action: "typing_on"
-            })
-        });
-        console.log("💬 Sent typing indicator");
-    } catch (err) {
-        console.error("❌ Failed to send typing indicator:", err.message);
-    }
-}
 
 // ===== DB Connection =====
 async function connectDB() {
@@ -341,7 +323,7 @@ if (webhook_event.message?.text) {
                 };
                 if (responses[payload]) {
                     // 👉 Show typing before sending postback response
-                    await sendTypingIndicator(sender_psid, pageId);
+                    await sendTypingIndicator(sender_psid, pageId, on = true);
 
                     await sendMessengerReply(sender_psid, responses[payload], pageId);
                     console.log("🤖 Sent postback response");
