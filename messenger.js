@@ -263,7 +263,7 @@ router.post("/", async (req, res) => {
                 continue;
             }
 
-     if (webhook_event.message?.text) {
+   if (webhook_event.message?.text) {
     const userMessage = webhook_event.message.text;
     console.log("📝 Received user message:", userMessage);
 
@@ -285,22 +285,20 @@ router.post("/", async (req, res) => {
 
     history.push({ role: "user", content: userMessage, createdAt: new Date() });
 
-    // ===== Keep typing alive =====
-  // ===== Keep typing alive =====
-let typing = true;
-const typingInterval = setInterval(async () => {
-    if (!typing) return clearInterval(typingInterval);
-    await sendTypingIndicator(sender_psid, pageId, true); // "typing_on"
-}, 4000); // repeat every 4 seconds
+    // ===== START Typing =====
+    let typing = true;
+    const typingInterval = setInterval(async () => {
+        if (!typing) return clearInterval(typingInterval);
+        await sendTypingIndicator(sender_psid, pageId, true); // keep typing on
+    }, 3000); // every 3 sec
 
-// Generate AI reply
-const assistantMessage = await getChatCompletion(history);
+    // generate AI reply
+    const assistantMessage = await getChatCompletion(history);
 
-// ===== Stop typing =====
-typing = false;
-clearInterval(typingInterval);
-await sendTypingIndicator(sender_psid, pageId, false); // explicitly turn typing off
-
+    // ===== STOP Typing =====
+    typing = false;
+    clearInterval(typingInterval);
+    await sendTypingIndicator(sender_psid, pageId, false); // turn off typing
 
     console.log("🤖 Assistant message:", assistantMessage);
 
@@ -319,6 +317,7 @@ await sendTypingIndicator(sender_psid, pageId, false); // explicitly turn typing
 
     await sendMessengerReply(sender_psid, combinedMessage, pageId);
 }
+
 
             if (webhook_event.postback?.payload) {
                 const payload = webhook_event.postback.payload;
