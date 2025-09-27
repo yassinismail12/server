@@ -249,22 +249,17 @@ if (webhook_event.message?.text) {
     const userMessage = webhook_event.message.text;
     console.log("📝 Received user message:", userMessage);
 
-    // ===== START Typing immediately =====
-    sendTypingIndicator(sender_psid, pageId, true).catch(console.error);
-    let typing = true;
-    const typingInterval = setInterval(async () => {
-        if (!typing) return clearInterval(typingInterval);
-        await sendTypingIndicator(sender_psid, pageId, true);
-    }, 3000);
+    // ===== Robust Typing Handler =====
+    async function processMessageWithTyping() {
+        let convo, history, greeting, firstName;
 
-    // ===== THEN do DB & AI work =====
-    try {
+        // ===== AI + DB work =====
         const finalSystemPrompt = await SYSTEM_PROMPT({ pageId });
-        let convo = await getConversation(pageId, sender_psid);
-        let history = convo?.history || [{ role: "system", content: finalSystemPrompt }];
+        convo = await getConversation(pageId, sender_psid);
+        history = convo?.history || [{ role: "system", content: finalSystemPrompt }];
 
-        let firstName = "there";
-        let greeting = "";
+        firstName = "there";
+        greeting = "";
 
         if (!convo || isNewDay(convo.lastInteraction)) {
             const userProfile = await getUserProfile(sender_psid, clientDoc.PAGE_ACCESS_TOKEN);
@@ -277,15 +272,8 @@ if (webhook_event.message?.text) {
 
         history.push({ role: "user", content: userMessage, createdAt: new Date() });
 
-        // ===== Generate AI reply =====
+        // Generate AI reply
         const assistantMessage = await getChatCompletion(history);
-
-        // ===== STOP Typing =====
-        typing = false;
-        clearInterval(typingInterval);
-        await sendTypingIndicator(sender_psid, pageId, false);
-
-        console.log("🤖 Assistant message:", assistantMessage);
 
         history.push({ role: "assistant", content: assistantMessage, createdAt: new Date() });
         await saveConversation(pageId, sender_psid, history, new Date());
@@ -301,14 +289,43 @@ if (webhook_event.message?.text) {
         }
 
         await sendMessengerReply(sender_psid, combinedMessage, pageId);
-    } catch (err) {
-        console.error(err);
-        typing = false;
-        clearInterval(typingInterval);
-        await sendTypingIndicator(sender_psid, pageId, false);
-        await sendMessengerReply(sender_psid, "⚠️ حصلت مشكلة. جرب تاني بعد شوية.", pageId);
     }
+
+    // ===== Show typing while processing =====
+    async function showTypingWhileProcessing(sender_psid, pageId, asyncFn) {
+        let active = true;
+
+        // Start typing immediately
+        await sendTypingIndicator(sender_psid, pageId, true);
+
+        // Keep refreshing typing every 8 seconds
+        const interval = setInterval(async () => {
+            if (!active) return clearInterval(interval);
+            try {
+                await sendTypingIndicator(sender_psid, pageId, true);
+            } catch (err) {
+                console.error("❌ Typing refresh failed:", err.message);
+            }
+        }, 8000);
+
+        try {
+            return await asyncFn();
+        } finally {
+            // Stop typing and clear interval
+            active = false;
+            clearInterval(interval);
+            await sendTypingIndicator(sender_psid, pageId, false);
+        }
+    }
+
+    // ===== Execute =====
+    await showTypingWhileProcessing(sender_psid, pageId, processMessageWithTyping)
+        .catch(async (err) => {
+            console.error(err);
+            await sendMessengerReply(sender_psid, "⚠️ حصلت مشكلة. جرب تاني بعد شوية.", pageId);
+        });
 }
+
 
         
 
