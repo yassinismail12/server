@@ -263,60 +263,72 @@ router.post("/", async (req, res) => {
                 continue;
             }
 
-   if (webhook_event.message?.text) {
+if (webhook_event.message?.text) {
     const userMessage = webhook_event.message.text;
     console.log("📝 Received user message:", userMessage);
 
-    const finalSystemPrompt = await SYSTEM_PROMPT({ pageId });
-    let convo = await getConversation(pageId, sender_psid);
-    let history = convo?.history || [{ role: "system", content: finalSystemPrompt }];
-
-    let firstName = "there";
-    let greeting = "";
-
-    if (!convo || isNewDay(convo.lastInteraction)) {
-        const userProfile = await getUserProfile(sender_psid, clientDoc.PAGE_ACCESS_TOKEN);
-        firstName = userProfile.first_name || "there";
-        await saveCustomer(pageId, sender_psid, userProfile);
-
-        greeting = `Hi ${firstName}, good to see you today 👋`;
-        history.push({ role: "assistant", content: greeting, createdAt: new Date() });
-    }
-
-    history.push({ role: "user", content: userMessage, createdAt: new Date() });
-
-    // ===== START Typing =====
+    // ===== START Typing immediately =====
+    sendTypingIndicator(sender_psid, pageId, true).catch(console.error);
     let typing = true;
     const typingInterval = setInterval(async () => {
         if (!typing) return clearInterval(typingInterval);
-        await sendTypingIndicator(sender_psid, pageId, true); // keep typing on
-    }, 3000); // every 3 sec
+        await sendTypingIndicator(sender_psid, pageId, true);
+    }, 3000);
 
-    // generate AI reply
-    const assistantMessage = await getChatCompletion(history);
+    // ===== THEN do DB & AI work =====
+    try {
+        const finalSystemPrompt = await SYSTEM_PROMPT({ pageId });
+        let convo = await getConversation(pageId, sender_psid);
+        let history = convo?.history || [{ role: "system", content: finalSystemPrompt }];
 
-    // ===== STOP Typing =====
-    typing = false;
-    clearInterval(typingInterval);
-    await sendTypingIndicator(sender_psid, pageId, false); // turn off typing
+        let firstName = "there";
+        let greeting = "";
 
-    console.log("🤖 Assistant message:", assistantMessage);
+        if (!convo || isNewDay(convo.lastInteraction)) {
+            const userProfile = await getUserProfile(sender_psid, clientDoc.PAGE_ACCESS_TOKEN);
+            firstName = userProfile.first_name || "there";
+            await saveCustomer(pageId, sender_psid, userProfile);
 
-    history.push({ role: "assistant", content: assistantMessage, createdAt: new Date() });
-    await saveConversation(pageId, sender_psid, history, new Date());
+            greeting = `Hi ${firstName}, good to see you today 👋`;
+            history.push({ role: "assistant", content: greeting, createdAt: new Date() });
+        }
 
-    let combinedMessage = assistantMessage;
-    if (greeting) combinedMessage = `${greeting}\n\n${assistantMessage}`;
+        history.push({ role: "user", content: userMessage, createdAt: new Date() });
 
-    if (assistantMessage.includes("[TOUR_REQUEST]")) {
-        const data = extractTourData(assistantMessage);
-        data.pageId = pageId;
-        console.log("✈️ Tour request detected, sending email", data);
-        await sendTourEmail(data);
+        // ===== Generate AI reply =====
+        const assistantMessage = await getChatCompletion(history);
+
+        // ===== STOP Typing =====
+        typing = false;
+        clearInterval(typingInterval);
+        await sendTypingIndicator(sender_psid, pageId, false);
+
+        console.log("🤖 Assistant message:", assistantMessage);
+
+        history.push({ role: "assistant", content: assistantMessage, createdAt: new Date() });
+        await saveConversation(pageId, sender_psid, history, new Date());
+
+        let combinedMessage = assistantMessage;
+        if (greeting) combinedMessage = `${greeting}\n\n${assistantMessage}`;
+
+        if (assistantMessage.includes("[TOUR_REQUEST]")) {
+            const data = extractTourData(assistantMessage);
+            data.pageId = pageId;
+            console.log("✈️ Tour request detected, sending email", data);
+            await sendTourEmail(data);
+        }
+
+        await sendMessengerReply(sender_psid, combinedMessage, pageId);
+    } catch (err) {
+        console.error(err);
+        typing = false;
+        clearInterval(typingInterval);
+        await sendTypingIndicator(sender_psid, pageId, false);
+        await sendMessengerReply(sender_psid, "⚠️ حصلت مشكلة. جرب تاني بعد شوية.", pageId);
     }
-
-    await sendMessengerReply(sender_psid, combinedMessage, pageId);
 }
+
+        
 
 
             if (webhook_event.postback?.payload) {
