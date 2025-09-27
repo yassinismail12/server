@@ -340,7 +340,7 @@ if (webhook_event.message?.text) {
                 };
                 if (responses[payload]) {
                     // 👉 Show typing before sending postback response
-                    await sendTypingIndicator(sender_psid, pageId, on = true);
+                    await sendTypingIndicator(sender_psid, pageId, true);
 
                     await sendMessengerReply(sender_psid, responses[payload], pageId);
                     console.log("🤖 Sent postback response");
