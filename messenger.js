@@ -18,6 +18,27 @@ function normalizePageId(id) {
     return id.toString().trim();
 }
 
+// ===== Typing Indicator =====
+async function sendTypingIndicator(sender_psid, pageId) {
+    try {
+        const db = await connectDB();
+        const clientDoc = await db.collection("Clients").findOne({ pageId: normalizePageId(pageId) });
+        if (!clientDoc?.PAGE_ACCESS_TOKEN) return;
+
+        await fetch(`https://graph.facebook.com/v18.0/me/messages?access_token=${clientDoc.PAGE_ACCESS_TOKEN}`, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+                recipient: { id: sender_psid },
+                sender_action: "typing_on"
+            })
+        });
+        console.log("💬 Sent typing indicator");
+    } catch (err) {
+        console.error("❌ Failed to send typing indicator:", err.message);
+    }
+}
+
 // ===== DB Connection =====
 async function connectDB() {
     if (!mongoClient.topology?.isConnected()) {
@@ -264,6 +285,9 @@ router.post("/", async (req, res) => {
 
                 history.push({ role: "user", content: userMessage, createdAt: new Date() });
 
+                // 👉 Show typing before generating reply
+                await sendTypingIndicator(sender_psid, pageId);
+
                 const assistantMessage = await getChatCompletion(history);
                 console.log("🤖 Assistant message:", assistantMessage);
 
@@ -292,6 +316,9 @@ router.post("/", async (req, res) => {
                     ICE_BREAKER_PAYMENT: "Yes! We offer several payment plans. What’s your budget or preferred duration?",
                 };
                 if (responses[payload]) {
+                    // 👉 Show typing before sending postback response
+                    await sendTypingIndicator(sender_psid, pageId);
+
                     await sendMessengerReply(sender_psid, responses[payload], pageId);
                     console.log("🤖 Sent postback response");
                 }
