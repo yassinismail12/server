@@ -286,18 +286,21 @@ router.post("/", async (req, res) => {
     history.push({ role: "user", content: userMessage, createdAt: new Date() });
 
     // ===== Keep typing alive =====
-    let typing = true;
-    const typingInterval = setInterval(async () => {
-        if (!typing) return clearInterval(typingInterval);
-        await sendTypingIndicator(sender_psid, pageId);
-    }, 4000); // send every 4 seconds
+  // ===== Keep typing alive =====
+let typing = true;
+const typingInterval = setInterval(async () => {
+    if (!typing) return clearInterval(typingInterval);
+    await sendTypingIndicator(sender_psid, pageId, true); // "typing_on"
+}, 4000); // repeat every 4 seconds
 
-    // Generate AI reply
-    const assistantMessage = await getChatCompletion(history);
+// Generate AI reply
+const assistantMessage = await getChatCompletion(history);
 
-    // ===== Stop typing =====
-    typing = false;
-    clearInterval(typingInterval);
+// ===== Stop typing =====
+typing = false;
+clearInterval(typingInterval);
+await sendTypingIndicator(sender_psid, pageId, false); // explicitly turn typing off
+
 
     console.log("🤖 Assistant message:", assistantMessage);
 
