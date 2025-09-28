@@ -169,20 +169,25 @@ router.post("/", async (req, res) => {
         // Ensure customer exists
         await findOrCreateCustomer(userId, clientId);
 
-        // Detect if user provided their name
-        let nameMatch = null;
-        const lowerMsg = userMessage.toLowerCase();
+       // Detect if user provided their name
+let nameMatch = null;
 
-        if (lowerMsg.includes("my name is ")) {
-            nameMatch = userMessage.split(/my name is/i)[1]?.trim();
-        } else if (userMessage.includes("[Name]")) {
-            nameMatch = userMessage.replace("[Name]", "").trim();
-        }
+// Case 1: "my name is ..."
+const myNameMatch = userMessage.match(/my name is\s+(.+)/i);
+if (myNameMatch) {
+    nameMatch = myNameMatch[1].trim();
+}
 
-        if (nameMatch) {
-            await updateCustomerName(userId, clientId, nameMatch);
-            console.log(`📝 Name detected and saved: ${nameMatch}`);
-        }
+// Case 2: "[Name]: ..." with optional spaces
+const bracketNameMatch = userMessage.match(/\[name\]\s*:\s*(.+)/i);
+if (bracketNameMatch) {
+    nameMatch = bracketNameMatch[1].trim();
+}
+
+if (nameMatch) {
+    await updateCustomerName(userId, clientId, nameMatch);
+    console.log(`📝 Name detected and saved: ${nameMatch}`);
+}
 
         // Get system prompt
         const finalSystemPrompt = await SYSTEM_PROMPT({ clientId });
