@@ -4,7 +4,8 @@ export function extractTourData(message) {
     const phoneMatch = message.match(/\[?Phone\]?:\s*(.+)/i);
     const emailMatch = message.match(/\[?Email\]?:\s*(.+)/i);
     const dateMatch = message.match(/\[?Date\]?:\s*(.+)/i);
-    const unitMatch = message.match(/Unit Type?:\s*(.+)/i);
+   const unitMatch = message.match(/\[?Unit Type\]?:\s*(.+)/i);
+
 
     return {
         name: nameMatch ? nameMatch[1].trim() : "Unknown",
