@@ -725,6 +725,19 @@ app.get("/api/conversations/:clientId", verifyToken, requireClientOwnership, asy
     }
 });
 
+// Health check endpoint
+app.get("/health", async (req, res) => {
+  try {
+    // Check DB
+    const db = await connectDB();
+    await db.command({ ping: 1 });
+
+    res.json({ status: "ok", time: new Date().toISOString() });
+  } catch (err) {
+    console.error("❌ Health check failed:", err.message);
+    res.status(500).json({ status: "error", error: err.message });
+  }
+});
 
 
 // API routes
