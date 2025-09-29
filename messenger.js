@@ -273,7 +273,26 @@ if (webhook_event.message?.text) {
         history.push({ role: "user", content: userMessage, createdAt: new Date() });
 
         // Generate AI reply
-        const assistantMessage = await getChatCompletion(history);
+       let assistantMessage;
+try {
+    assistantMessage = await getChatCompletion(history);
+} catch (err) {
+    console.error("❌ OpenAI error:", err.message);
+
+    // Save error log in MongoDB
+    const db = await connectDB();
+    await db.collection("Logs").insertOne({
+        pageId,
+        psid: sender_psid,
+        level: "error",
+        source: "openai",
+        message: err.message,
+        timestamp: new Date(),
+    });
+
+    assistantMessage = "⚠️ I'm having trouble right now. Please try again shortly.";
+}
+
 
         history.push({ role: "assistant", content: assistantMessage, createdAt: new Date() });
         await saveConversation(pageId, sender_psid, history, new Date());
@@ -281,12 +300,27 @@ if (webhook_event.message?.text) {
         let combinedMessage = assistantMessage;
         if (greeting) combinedMessage = `${greeting}\n\n${assistantMessage}`;
 
-        if (assistantMessage.includes("[TOUR_REQUEST]")) {
-            const data = extractTourData(assistantMessage);
-            data.pageId = pageId;
-            console.log("✈️ Tour request detected, sending email", data);
-            await sendTourEmail(data);
-        }
+   if (assistantMessage.includes("[TOUR_REQUEST]")) {
+    const data = extractTourData(assistantMessage);
+    data.pageId = pageId;
+    console.log("✈️ Tour request detected, sending email", data);
+
+    try {
+        await sendTourEmail(data);
+    } catch (err) {
+        console.error("❌ Failed to send tour email:", err.message);
+        const db = await connectDB();
+        await db.collection("Logs").insertOne({
+            pageId,
+            psid: sender_psid,
+            level: "error",
+            source: "email",
+            message: err.message,
+            timestamp: new Date(),
+        });
+    }
+}
+
 
         await sendMessengerReply(sender_psid, combinedMessage, pageId);
     }
@@ -319,11 +353,23 @@ if (webhook_event.message?.text) {
     }
 
     // ===== Execute =====
-    await showTypingWhileProcessing(sender_psid, pageId, processMessageWithTyping)
-        .catch(async (err) => {
-            console.error(err);
-            await sendMessengerReply(sender_psid, "⚠️ حصلت مشكلة. جرب تاني بعد شوية.", pageId);
+  await showTypingWhileProcessing(sender_psid, pageId, processMessageWithTyping)
+    .catch(async (err) => {
+        console.error("❌ Processing error:", err.message);
+
+        const db = await connectDB();
+        await db.collection("Logs").insertOne({
+            pageId,
+            psid: sender_psid,
+            level: "error",
+            source: "messenger",
+            message: err.message,
+            timestamp: new Date(),
         });
+
+        await sendMessengerReply(sender_psid, "⚠️ حصلت مشكلة. جرب تاني بعد شوية.", pageId);
+    });
+
 }
 
 

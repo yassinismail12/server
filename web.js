@@ -224,7 +224,26 @@ if (nameMatch) {
         history.push({ role: "user", content: userMessage, createdAt: new Date() });
 
         // Call OpenAI
-        const assistantMessage = await getChatCompletion(history);
+     let assistantMessage;
+try {
+    assistantMessage = await getChatCompletion(history);
+} catch (err) {
+    console.error("❌ OpenAI error:", err.message);
+
+    // Optional: log error in DB
+    const db = await connectDB();
+    await db.collection("Logs").insertOne({
+        clientId,
+        userId,
+        level: "error",
+        source: "openai",
+        message: err.message,
+        timestamp: new Date(),
+    });
+
+    assistantMessage = "⚠️ I'm having trouble right now. Please try again later.";
+}
+
 
         // Append assistant reply
         history.push({ role: "assistant", content: assistantMessage, createdAt: new Date() });
@@ -233,13 +252,27 @@ if (nameMatch) {
         await saveConversation(clientId, userId, history);
 
         // Handle tour booking
-        if (assistantMessage.includes("[TOUR_REQUEST]")) {
-            const data = extractTourData(assistantMessage);
-            data.clientId = clientId;
+     if (assistantMessage.includes("[TOUR_REQUEST]")) {
+    const data = extractTourData(assistantMessage);
+    data.clientId = clientId;
 
-            console.log("Sending tour email with data:", data);
-            await sendTourEmail(data);
-        }
+    console.log("Sending tour email with data:", data);
+    try {
+        await sendTourEmail(data);
+    } catch (err) {
+        console.error("❌ Failed to send tour email:", err.message);
+        const db = await connectDB();
+        await db.collection("Logs").insertOne({
+            clientId,
+            userId,
+            level: "error",
+            source: "email",
+            message: err.message,
+            timestamp: new Date(),
+        });
+    }
+}
+
 
         // Return reply
         res.json({
@@ -247,10 +280,25 @@ if (nameMatch) {
             userId,
             usage: { count: usage.messageCount, limit: usage.messageLimit }
         });
-    } catch (error) {
-        console.error("❌ Error:", error);
-        res.status(500).json({ reply: "⚠️ Sorry, something went wrong." });
+   } catch (error) {
+    console.error("❌ Error:", error.message);
+
+    try {
+        const db = await connectDB();
+        await db.collection("Logs").insertOne({
+            clientId,
+            userId,
+            level: "error",
+            source: "web",
+            message: error.message,
+            timestamp: new Date(),
+        });
+    } catch (dbErr) {
+        console.error("❌ Failed to log error in DB:", dbErr.message);
     }
+
+    res.status(500).json({ reply: "⚠️ Sorry, something went wrong." });
+}
 });
 
 export default router;

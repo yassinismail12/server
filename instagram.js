@@ -250,7 +250,23 @@ router.post("/", async (req, res) => {
 
                     history.push({ role: "user", content: userMessage, createdAt: new Date() });
 
-                    const assistantMessage = await getChatCompletion(history);
+                let assistantMessage;
+try {
+    assistantMessage = await getChatCompletion(history);
+} catch (err) {
+    console.error("❌ OpenAI error:", err.message);
+    const db = await connectDB();
+    await db.collection("Logs").insertOne({
+        igId,
+        userId: sender_psid,
+        source: "openai",
+        level: "error",
+        message: err.message,
+        timestamp: new Date(),
+    });
+    assistantMessage = "⚠️ Sorry, I’m having trouble. Please try again later.";
+}
+
                     console.log("🤖 Assistant message:", assistantMessage);
 
                     history.push({ role: "assistant", content: assistantMessage, createdAt: new Date() });
@@ -263,15 +279,43 @@ router.post("/", async (req, res) => {
                         const data = extractTourData(assistantMessage);
                         data.igId = igId;
                         console.log("✈️ Tour request detected, sending email", data);
-                        await sendTourEmail(data);
+                      try {
+    await sendTourEmail(data);
+} catch (err) {
+    console.error("❌ Failed to send tour email:", err.message);
+    const db = await connectDB();
+    await db.collection("Logs").insertOne({
+        igId,
+        userId: sender_psid,
+        source: "email",
+        level: "error",
+        message: err.message,
+        timestamp: new Date(),
+    });
+}
+
                     }
 
                     await sendInstagramReply(sender_psid, combinedMessage, igId);
                 }
-            } catch (error) {
-                console.error("❌ Instagram error:", error);
-                await sendInstagramReply(sender_psid, "⚠️ حصلت مشكلة. جرب تاني بعد شوية.", igId);
-            }
+          } catch (error) {
+    console.error("❌ Instagram error:", error.message);
+    try {
+        const db = await connectDB();
+        await db.collection("Logs").insertOne({
+            igId,
+            userId: sender_psid,
+            source: "instagram",
+            level: "error",
+            message: error.message,
+            timestamp: new Date(),
+        });
+    } catch (dbErr) {
+        console.error("❌ Failed to log IG error:", dbErr.message);
+    }
+    await sendInstagramReply(sender_psid, "⚠️ حصلت مشكلة. جرب تاني بعد شوية.", igId);
+}
+
         }
     }
 
