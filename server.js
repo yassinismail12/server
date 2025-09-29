@@ -634,6 +634,16 @@ app.post("/api/logout", (req, res) => {
 });
 
 
+app.get("/api/clients/:clientId", verifyToken, requireClientOwnership, async (req, res) => {
+    try {
+        const client = await Client.findOne({ clientId: req.params.clientId });
+        if (!client) return res.status(404).json({ error: "Client not found" });
+        res.json(client);
+    } catch (err) {
+        console.error(err);
+        res.status(500).json({ error: "Server error" });
+    }
+});
 
 
 // ✅ Update existing client (admin or owner)
