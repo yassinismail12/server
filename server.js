@@ -115,17 +115,19 @@ function cleanFileContent(content, mimetype) {
     return cleaned;
 }
 function requireClientOwnership(req, res, next) {
-    if (req.user.role === "admin") return next(); // admins can see any client
+    if (req.user.role === "admin") return next(); // admins can update any client
 
     // For clients, enforce ownership
     if (req.user.role === "client") {
-        if (req.params.clientId !== req.user.clientId) {
+        const paramId = req.params.clientId || req.params.id; // use either
+        if (paramId !== req.user.clientId) {
             return res.status(403).json({ error: "Forbidden" });
         }
     }
 
     next();
 }
+
 
 app.post("/api/create-admin", async (req, res) => {
     try {
@@ -634,16 +636,6 @@ app.post("/api/logout", (req, res) => {
 });
 
 
-app.get("/api/clients/:clientId", verifyToken, requireClientOwnership, async (req, res) => {
-    try {
-        const client = await Client.findOne({ clientId: req.params.clientId });
-        if (!client) return res.status(404).json({ error: "Client not found" });
-        res.json(client);
-    } catch (err) {
-        console.error(err);
-        res.status(500).json({ error: "Server error" });
-    }
-});
 
 
 // ✅ Update existing client (admin or owner)
