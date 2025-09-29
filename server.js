@@ -127,6 +127,39 @@ function requireClientOwnership(req, res, next) {
 
     next();
 }
+// Get a single client by clientId (for frontend)
+app.get("/api/clients/:id", verifyToken, requireClientOwnership, async (req, res) => {
+    try {
+        const { id } = req.params;
+        const client = await Client.findOne({ clientId: id });
+
+        if (!client) {
+            return res.status(404).json({ error: "Client not found" });
+        }
+
+        res.json({
+            _id: client._id,
+            name: client.name,
+            email: client.email || "",
+            clientId: client.clientId || "",
+            pageId: client.pageId || "",
+            igId: client.igId || "",
+            used: client.messageCount || 0,
+            quota: client.messageLimit || 0,
+            remaining: (client.messageLimit || 0) - (client.messageCount || 0),
+            files: client.files || [],
+            lastActive: client.updatedAt || client.createdAt,
+            systemPrompt: client.systemPrompt || "",
+            faqs: client.faqs || "",
+            active: client.active ?? false,
+            PAGE_ACCESS_TOKEN: client.PAGE_ACCESS_TOKEN || "",
+            igAccessToken: client.igAccessToken || ""
+        });
+    } catch (err) {
+        console.error("❌ Error fetching client:", err);
+        res.status(500).json({ error: "Server error" });
+    }
+});
 
 
 app.post("/api/create-admin", async (req, res) => {
