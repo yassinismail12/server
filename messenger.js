@@ -261,14 +261,14 @@ if (webhook_event.message?.text) {
         firstName = "there";
         greeting = "";
 
-      
+        if (!convo || isNewDay(convo.lastInteraction)) {
             const userProfile = await getUserProfile(sender_psid, clientDoc.PAGE_ACCESS_TOKEN);
             firstName = userProfile.first_name || "there";
             await saveCustomer(pageId, sender_psid, userProfile);
 
             greeting = `Hi ${firstName}, good to see you today 👋`;
             history.push({ role: "assistant", content: greeting, createdAt: new Date() });
-        
+        }
 
         history.push({ role: "user", content: userMessage, createdAt: new Date() });
 
