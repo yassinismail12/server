@@ -375,6 +375,7 @@ try {
 
         if (webhook_event.message?.text === "test typing") {
   await sendWithTyping(sender_psid, pageId, "Hello! Typing works.", 2000);
+    continue; 
 }
 
 
