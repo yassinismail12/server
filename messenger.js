@@ -331,7 +331,7 @@ try {
 
         // Start typing immediately
         await sendTypingIndicator(sender_psid, pageId, true);
-   await new Promise(resolve => setTimeout(resolve, 3500));
+
         // Keep refreshing typing every 8 seconds
         const interval = setInterval(async () => {
             if (!active) return clearInterval(interval);
