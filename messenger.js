@@ -326,42 +326,31 @@ try {
     }
 
     // ===== Show typing while processing =====
-   async function showTypingWhileProcessing(sender_psid, pageId, asyncFn) {
-    let active = true;
+    async function showTypingWhileProcessing(sender_psid, pageId, asyncFn) {
+        let active = true;
 
-    // Start typing immediately
-    await sendTypingIndicator(sender_psid, pageId, true);
+        // Start typing immediately
+        await sendTypingIndicator(sender_psid, pageId, true);
 
-    // Keep refreshing typing every 8 seconds (Messenger timeout is ~10s)
-    const interval = setInterval(async () => {
-        if (!active) return clearInterval(interval);
+        // Keep refreshing typing every 8 seconds
+        const interval = setInterval(async () => {
+            if (!active) return clearInterval(interval);
+            try {
+                await sendTypingIndicator(sender_psid, pageId, true);
+            } catch (err) {
+                console.error("❌ Typing refresh failed:", err.message);
+            }
+        }, 8000);
+
         try {
-            await sendTypingIndicator(sender_psid, pageId, true);
-        } catch (err) {
-            console.error("❌ Typing refresh failed:", err.message);
+            return await asyncFn();
+        } finally {
+            // Stop typing and clear interval
+            active = false;
+            clearInterval(interval);
+            await sendTypingIndicator(sender_psid, pageId, false);
         }
-    }, 8000);
-
-    try {
-        const start = Date.now();
-        const result = await asyncFn();
-
-        // 🕑 Force at least 2.5s typing before reply
-        const elapsed = Date.now() - start;
-        if (elapsed < 2500) {
-            await new Promise(res => setTimeout(res, 2500 - elapsed));
-        }
-
-        return result;
-    } finally {
-        active = false;
-        clearInterval(interval);
-
-        // ❌ Don't bother sending typing_off, Messenger auto-hides it after the message
-        // await sendTypingIndicator(sender_psid, pageId, false);
     }
-}
-
 
     // ===== Execute =====
   await showTypingWhileProcessing(sender_psid, pageId, processMessageWithTyping)
