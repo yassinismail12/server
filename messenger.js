@@ -3,7 +3,7 @@ import express from "express";
 import fetch from "node-fetch";
 import { getChatCompletion } from "./services/openai.js";
 import { SYSTEM_PROMPT } from "./utils/systemPrompt.js";
-import { sendMessengerReply,sendTypingIndicator,sendWithTyping } from "./services/messenger.js";
+import { sendMessengerReply,sendTypingIndicator } from "./services/messenger.js";
 import { sendQuotaWarning } from "./sendQuotaWarning.js";
 import { sendTourEmail } from "./sendEmail.js";
 import { extractTourData } from "./extractTourData.js";
@@ -246,11 +246,6 @@ router.post("/", async (req, res) => {
             }
 
 if (webhook_event.message?.text) {
-          if (webhook_event.message?.text === "test typing") {
-  await sendWithTyping(sender_psid, pageId, "Hello! Typing works.", 2000);
-    continue; 
-}
-
     const userMessage = webhook_event.message.text;
     console.log("📝 Received user message:", userMessage);
 
@@ -378,7 +373,8 @@ try {
 }
 
 
-  
+        
+
 
             if (webhook_event.postback?.payload) {
                 const payload = webhook_event.postback.payload;
