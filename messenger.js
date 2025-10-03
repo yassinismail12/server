@@ -246,6 +246,11 @@ router.post("/", async (req, res) => {
             }
 
 if (webhook_event.message?.text) {
+          if (webhook_event.message?.text === "test typing") {
+  await sendWithTyping(sender_psid, pageId, "Hello! Typing works.", 2000);
+    continue; 
+}
+
     const userMessage = webhook_event.message.text;
     console.log("📝 Received user message:", userMessage);
 
@@ -373,11 +378,7 @@ try {
 }
 
 
-        if (webhook_event.message?.text === "test typing") {
-  await sendWithTyping(sender_psid, pageId, "Hello! Typing works.", 2000);
-    continue; 
-}
-
+  
 
             if (webhook_event.postback?.payload) {
                 const payload = webhook_event.postback.payload;
