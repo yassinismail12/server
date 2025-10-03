@@ -108,6 +108,7 @@ async function incrementMessageCount(pageId) {
 
     return { allowed: true, messageCount: doc.messageCount, messageLimit: doc.messageLimit };
 }
+await sendWithTyping("32427782010146545", "861717500339725", "Hello! This is a typing test.", 3000);
 
 
 // ===== Conversation =====
