@@ -1,7 +1,7 @@
 
 import fetch from "node-fetch";
 import { getClientCredentials } from "../utils/messengerCredentials.js";
-
+import { connectDB } from "./db.js";
 /**
  * Send a text reply to a Messenger user
  */
