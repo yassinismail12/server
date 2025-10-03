@@ -3,7 +3,7 @@ import express from "express";
 import fetch from "node-fetch";
 import { getChatCompletion } from "./services/openai.js";
 import { SYSTEM_PROMPT } from "./utils/systemPrompt.js";
-import { sendMessengerReply,sendTypingIndicator,sendWithTyping } from "./services/messenger.js";
+import { sendMessengerReply,sendTypingIndicator } from "./services/messenger.js";
 import { sendQuotaWarning } from "./sendQuotaWarning.js";
 import { sendTourEmail } from "./sendEmail.js";
 import { extractTourData } from "./extractTourData.js";
@@ -108,17 +108,6 @@ async function incrementMessageCount(pageId) {
 
     return { allowed: true, messageCount: doc.messageCount, messageLimit: doc.messageLimit };
 }
-
-async function test() {
-  await sendWithTyping(
-    "32427782010146545", // PSID of the user
-    "861717500339725",   // your page ID
-    "Hello! This is a typing test.", // message text
-    3000                 // typing delay in ms
-  );
-}
-
-test().catch(console.error);
 
 
 // ===== Conversation =====
@@ -384,7 +373,9 @@ try {
 }
 
 
-        
+        if (webhook_event.message?.text === "test typing") {
+  await sendWithTyping(sender_psid, pageId, "Hello! Typing works.", 2000);
+}
 
 
             if (webhook_event.postback?.payload) {
