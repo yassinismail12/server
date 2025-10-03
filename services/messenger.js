@@ -1,7 +1,7 @@
 
 import fetch from "node-fetch";
 import { getClientCredentials } from "../utils/messengerCredentials.js";
-import { connectDB } from "./db.js";
+import { connectToDB } from "./db.js";
 /**
  * Send a text reply to a Messenger user
  */
@@ -31,7 +31,7 @@ export async function sendTypingIndicator(psid, pageId, isTyping = true) {
   try {
     // You need the PAGE_ACCESS_TOKEN from your DB
     // (not just process.env.PAGE_ACCESS_TOKEN because you’re multi-client now)
-    const db = await connectDB();
+    const db = await connectToDB();
     const client = await db.collection("Clients").findOne({ pageId });
 
     if (!client || !client.PAGE_ACCESS_TOKEN) {
