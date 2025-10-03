@@ -1,31 +1,4 @@
-import fetch from "node-fetch";
-import { getClientCredentials } from "../utils/messengerCredentials.js";
 
-/**
- * Send a text reply to a Messenger user
- */
-export async function sendMessengerReply(sender_psid, response, pageId) {
-    try {
-        const { PAGE_ACCESS_TOKEN } = await getClientCredentials(pageId);
-
-        await fetch(`https://graph.facebook.com/v18.0/me/messages?access_token=${PAGE_ACCESS_TOKEN}`, {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({
-                recipient: { id: sender_psid },
-                message: { text: response }
-            })
-        });
-
-        console.log(`✅ Sent reply to PSID: ${sender_psid}, pageId: ${pageId}`);
-    } catch (err) {
-        console.error("❌ Failed to send Messenger reply:", err.message);
-    }
-}
-
-/**
- * Show or hide Messenger typing indicator
- */
 import fetch from "node-fetch";
 import { getClientCredentials } from "../utils/messengerCredentials.js";
 
