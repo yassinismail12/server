@@ -3,7 +3,7 @@ import express from "express";
 import fetch from "node-fetch";
 import { getChatCompletion } from "./services/openai.js";
 import { SYSTEM_PROMPT } from "./utils/systemPrompt.js";
-import { sendMessengerReply,sendTypingIndicator } from "./services/messenger.js";
+import { sendMessengerReply,sendTypingIndicator,sendWithTyping } from "./services/messenger.js";
 import { sendQuotaWarning } from "./sendQuotaWarning.js";
 import { sendTourEmail } from "./sendEmail.js";
 import { extractTourData } from "./extractTourData.js";
