@@ -3,7 +3,7 @@ import express from "express";
 import fetch from "node-fetch";
 import { getChatCompletion } from "./services/openai.js";
 import { SYSTEM_PROMPT } from "./utils/systemPrompt.js";
-import { sendMessengerReply,sendTypingIndicator } from "./services/messenger.js";
+import { sendMessengerReply,sendMarkAsRead } from "./services/messenger.js";
 import { sendQuotaWarning } from "./sendQuotaWarning.js";
 import { sendTourEmail } from "./sendEmail.js";
 import { extractTourData } from "./extractTourData.js";
@@ -326,56 +326,34 @@ try {
     }
 
     // ===== Show typing while processing =====
-    async function showTypingWhileProcessing(sender_psid, pageId, asyncFn) {
-        let active = true;
+  // ===== Show mark_seen while processing =====
+await sendMarkAsRead(sender_psid, pageId); // Let user know message is seen
+await new Promise((resolve) => setTimeout(resolve, 1200)); // Small natural pause
+await processMessageWithTyping().catch(async (err) => {
+  console.error("❌ Processing error:", err.message);
 
-        // Start typing immediately
-        await sendTypingIndicator(sender_psid, pageId, true);
+  const db = await connectDB();
+  await db.collection("Logs").insertOne({
+    pageId,
+    psid: sender_psid,
+    level: "error",
+    source: "messenger",
+    message: err.message,
+    timestamp: new Date(),
+  });
 
-        // Keep refreshing typing every 8 seconds
-        const interval = setInterval(async () => {
-            if (!active) return clearInterval(interval);
-            try {
-                await sendTypingIndicator(sender_psid, pageId, true);
-            } catch (err) {
-                console.error("❌ Typing refresh failed:", err.message);
-            }
-        }, 8000);
+  await sendMessengerReply(
+    sender_psid,
+    "⚠️ حصلت مشكلة. جرب تاني بعد شوية.",
+    pageId
+  );
+});
 
-        try {
-            return await asyncFn();
-        } finally {
-            // Stop typing and clear interval
-            active = false;
-            clearInterval(interval);
-            await sendTypingIndicator(sender_psid, pageId, false);
-        }
-    }
 
-    // ===== Execute =====
-  await showTypingWhileProcessing(sender_psid, pageId, processMessageWithTyping)
-    .catch(async (err) => {
-        console.error("❌ Processing error:", err.message);
 
-        const db = await connectDB();
-        await db.collection("Logs").insertOne({
-            pageId,
-            psid: sender_psid,
-            level: "error",
-            source: "messenger",
-            message: err.message,
-            timestamp: new Date(),
-        });
 
-        await sendMessengerReply(sender_psid, "⚠️ حصلت مشكلة. جرب تاني بعد شوية.", pageId);
-    });
 
 }
-
-
-        
-
-
             if (webhook_event.postback?.payload) {
                 const payload = webhook_event.postback.payload;
                 console.log("📌 Postback received:", payload);
@@ -386,7 +364,8 @@ try {
                 };
                 if (responses[payload]) {
                     // 👉 Show typing before sending postback response
-                    await sendTypingIndicator(sender_psid, pageId, true);
+                    await sendMarkAsRead(sender_psid, pageId)
+
 
                     await sendMessengerReply(sender_psid, responses[payload], pageId);
                     console.log("🤖 Sent postback response");

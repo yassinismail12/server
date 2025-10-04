@@ -34,9 +34,10 @@ export async function sendMessengerReply(sender_psid, response, pageId) {
 }
 
 /**
- * Show or hide Messenger typing indicator
+ * Send "mark_seen" to acknowledge the user's message
+ * (Replaces typing indicator until it's stable)
  */
-export async function sendTypingIndicator(psid, pageId, isTyping = true) {
+export async function sendMarkAsRead(psid, pageId) {
   try {
     const db = await connectToDB();
     const client = await db.collection("Clients").findOne({ pageId });
@@ -50,7 +51,7 @@ export async function sendTypingIndicator(psid, pageId, isTyping = true) {
 
     const body = {
       recipient: { id: psid },
-      sender_action: isTyping ? "typing_on" : "typing_off",
+      sender_action: "mark_seen",
     };
 
     const res = await fetch(url, {
@@ -61,24 +62,23 @@ export async function sendTypingIndicator(psid, pageId, isTyping = true) {
 
     const data = await res.json();
     if (!res.ok) {
-      console.error("❌ Typing indicator failed:", data);
+      console.error("❌ Mark as read failed:", data);
     } else {
-      console.log(`💬 Sent ${isTyping ? "typing_on" : "typing_off"} to ${psid}`);
+      console.log(`👁️ Marked message as read for ${psid}`);
     }
   } catch (err) {
-    console.error("❌ Typing error:", err.message);
+    console.error("❌ Mark as read error:", err.message);
   }
 }
 
 /**
- * Send reply with typing delay (helper)
- * → Shows typing bubble for ~2 seconds before sending message
+ * Send reply with "mark_seen" delay (helper)
+ * → Shows 'seen' confirmation before sending message
  */
-export async function sendWithTyping(sender_psid, pageId, response, delayMs = 2000) {
-  await sendTypingIndicator(sender_psid, pageId, true);
+export async function sendWithMarkSeen(sender_psid, pageId, response, delayMs = 2000) {
+  await sendMarkAsRead(sender_psid, pageId);
   await new Promise((resolve) => setTimeout(resolve, delayMs));
   await sendMessengerReply(sender_psid, response, pageId);
-  await sendTypingIndicator(sender_psid, pageId, false);
 }
 
 /**
