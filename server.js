@@ -1,6 +1,7 @@
 import express from "express";
 import mongoose from "mongoose";
 import dotenv from "dotenv";
+import fetch from "node-fetch";
 import cors from "cors";
 import Conversation from "./conversations.js";  // ✅ Add this at the top with other imports
 import multer from "multer";
@@ -771,6 +772,79 @@ app.get("/health", async (req, res) => {
   } catch (err) {
     console.error("❌ Health check failed:", err.message);
     res.status(500).json({ status: "error", error: err.message });
+  }
+});
+// --------------------
+// 🌐 FACEBOOK OAUTH FLOW
+// --------------------
+
+// Step 1: Start OAuth flow
+app.get("/auth/facebook", async (req, res) => {
+  try {
+    const { clientId } = req.query; // the one from your dashboard
+
+    const redirectUri = process.env.FACEBOOK_REDIRECT_URI;
+    const fbAuthUrl = `https://www.facebook.com/v21.0/dialog/oauth?client_id=${process.env.FACEBOOK_APP_ID}&redirect_uri=${encodeURIComponent(
+      redirectUri
+    )}&scope=pages_show_list,pages_messaging,pages_manage_metadata,instagram_basic,pages_read_engagement&state=${clientId}`;
+
+    res.redirect(fbAuthUrl);
+  } catch (err) {
+    console.error("❌ Error starting Facebook OAuth:", err);
+    res.status(500).send("OAuth start error");
+  }
+});
+
+// Step 2: Handle callback
+app.get("/auth/facebook/callback", async (req, res) => {
+  const { code, state } = req.query; // state = clientId
+  const clientId = state;
+  const redirectUri = process.env.FACEBOOK_REDIRECT_URI;
+
+  try {
+    // Exchange code for access token
+    const tokenRes = await fetch(
+      `https://graph.facebook.com/v21.0/oauth/access_token?client_id=${process.env.FACEBOOK_APP_ID}&redirect_uri=${encodeURIComponent(
+        redirectUri
+      )}&client_secret=${process.env.FACEBOOK_APP_SECRET}&code=${code}`
+    );
+
+    const tokenData = await tokenRes.json();
+    if (!tokenData.access_token) {
+      console.error("❌ Failed to get access token:", tokenData);
+      return res.status(400).send("Failed to get access token");
+    }
+
+    const userRes = await fetch(
+      `https://graph.facebook.com/me/accounts?access_token=${tokenData.access_token}`
+    );
+    const userPages = await userRes.json();
+
+    if (!userPages.data || !userPages.data.length) {
+      return res.status(400).send("No managed pages found");
+    }
+
+    const page = userPages.data[0]; // pick first page
+    const { id: pageId, access_token: pageAccessToken } = page;
+
+    // ✅ Save to MongoDB client
+    const client = await Client.findOne({ clientId });
+    if (!client) {
+      return res.status(404).send("Client not found");
+    }
+
+    client.pageId = pageId;
+    client.PAGE_ACCESS_TOKEN = pageAccessToken;
+    client.active = true;
+    await client.save();
+
+    console.log(`✅ Connected page ${pageId} to client ${clientId}`);
+
+    // Redirect back to your dashboard
+    res.redirect(`http://localhost:5173/dashboard?connected=success`);
+  } catch (err) {
+    console.error("❌ OAuth callback error:", err);
+    res.status(500).send("OAuth callback error");
   }
 });
 
