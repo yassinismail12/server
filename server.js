@@ -794,40 +794,45 @@ app.get("/auth/facebook", async (req, res) => {
 });
 
 // Step 2: Handle callback
+// server.js or auth route file
 app.get("/auth/facebook/callback", async (req, res) => {
   const { code, state } = req.query; // state = clientId
   const clientId = state;
   const redirectUri = process.env.FACEBOOK_REDIRECT_URI;
 
   try {
-    // Exchange code for access token
- const tokenRes = await fetch(
-  `https://graph.facebook.com/v20.0/oauth/access_token?client_id=${process.env.FACEBOOK_APP_ID}&redirect_uri=${redirectUri}&client_secret=${process.env.FACEBOOK_APP_SECRET}&code=${code}`
-);
-
-
-
+    // 🔹 Exchange code for access token
+    const tokenRes = await fetch(
+      `https://graph.facebook.com/v20.0/oauth/access_token?client_id=${process.env.FACEBOOK_APP_ID}&redirect_uri=${redirectUri}&client_secret=${process.env.FACEBOOK_APP_SECRET}&code=${code}`
+    );
     const tokenData = await tokenRes.json();
+
     if (!tokenData.access_token) {
       console.error("❌ Failed to get access token:", tokenData);
       return res.status(400).send("Failed to get access token");
     }
 
+    console.log("🔹 Facebook access token received:", tokenData.access_token);
+
+    // 🔹 Get the pages managed by this user
     const userRes = await fetch(
       `https://graph.facebook.com/me/accounts?access_token=${tokenData.access_token}`
     );
     const userPages = await userRes.json();
 
     if (!userPages.data || !userPages.data.length) {
+      console.error("❌ No managed pages found:", userPages);
       return res.status(400).send("No managed pages found");
     }
 
     const page = userPages.data[0]; // pick first page
     const { id: pageId, access_token: pageAccessToken } = page;
+    console.log(`🔹 Selected page: ${page.name} (${pageId})`);
 
-    // ✅ Save to MongoDB client
+    // 🔹 Save page info to MongoDB client
     const client = await Client.findOne({ clientId });
     if (!client) {
+      console.error("❌ Client not found in DB:", clientId);
       return res.status(404).send("Client not found");
     }
 
@@ -838,13 +843,14 @@ app.get("/auth/facebook/callback", async (req, res) => {
 
     console.log(`✅ Connected page ${pageId} to client ${clientId}`);
 
-    // Redirect back to your dashboard
+    // 🔹 Redirect back to dashboard
     res.redirect(`http://localhost:5173/dashboard?connected=success`);
   } catch (err) {
     console.error("❌ OAuth callback error:", err);
     res.status(500).send("OAuth callback error");
   }
 });
+
 
 
 // API routes
