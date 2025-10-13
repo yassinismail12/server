@@ -784,9 +784,9 @@ app.get("/auth/facebook", async (req, res) => {
     const { clientId } = req.query; // the one from your dashboard
 
     const redirectUri = process.env.FACEBOOK_REDIRECT_URI;
-    const fbAuthUrl = `https://www.facebook.com/v21.0/dialog/oauth?client_id=${process.env.FACEBOOK_APP_ID}&redirect_uri=${encodeURIComponent(
+    const fbAuthUrl = `https://www.facebook.com/v20.0/dialog/oauth?client_id=${process.env.FACEBOOK_APP_ID}&redirect_uri=${encodeURIComponent(
       redirectUri
-    )}&scope=pages_show_list,pages_messaging,pages_manage_metadata,instagram_basic,pages_read_engagement&state=${clientId}`;
+    )}&scope=pages_show_list,pages_messagingpages_read_engagement&state=${clientId}`;
 
     res.redirect(fbAuthUrl);
   } catch (err) {
@@ -804,7 +804,7 @@ app.get("/auth/facebook/callback", async (req, res) => {
   try {
     // Exchange code for access token
     const tokenRes = await fetch(
-      `https://graph.facebook.com/v21.0/oauth/access_token?client_id=${process.env.FACEBOOK_APP_ID}&redirect_uri=${encodeURIComponent(
+      `https://graph.facebook.com/v20.0/oauth/access_token?client_id=${process.env.FACEBOOK_APP_ID}&redirect_uri=${encodeURIComponent(
         redirectUri
       )}&client_secret=${process.env.FACEBOOK_APP_SECRET}&code=${code}`
     );
