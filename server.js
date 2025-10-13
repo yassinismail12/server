@@ -786,7 +786,7 @@ app.get("/auth/facebook", async (req, res) => {
     const redirectUri = process.env.FACEBOOK_REDIRECT_URI;
     const fbAuthUrl = `https://www.facebook.com/v20.0/dialog/oauth?client_id=${process.env.FACEBOOK_APP_ID}&redirect_uri=${encodeURIComponent(
       redirectUri
-    )}&scope=pages_show_list,pages_messagingpages_read_engagement&state=${clientId}`;
+    )}&scope=pages_show_list,pages_messaging&state=${clientId}`;
 
     res.redirect(fbAuthUrl);
   } catch (err) {
