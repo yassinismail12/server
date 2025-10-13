@@ -803,11 +803,10 @@ app.get("/auth/facebook/callback", async (req, res) => {
 
   try {
     // Exchange code for access token
-    const tokenRes = await fetch(
-      `https://graph.facebook.com/v20.0/oauth/access_token?client_id=${process.env.FACEBOOK_APP_ID}&redirect_uri=${encodeURIComponent(
-        redirectUri
-      )}&client_secret=${process.env.FACEBOOK_APP_SECRET}&code=${code}`
-    );
+  const tokenRes = await fetch(
+  `https://graph.facebook.com/v20.0/oauth/access_token?client_id=${process.env.FACEBOOK_APP_ID}&redirect_uri=${encodeURIComponent(process.env.FACEBOOK_REDIRECT_URI)}&client_secret=${process.env.FACEBOOK_APP_SECRET}&code=${code}`
+);
+
 
     const tokenData = await tokenRes.json();
     if (!tokenData.access_token) {
