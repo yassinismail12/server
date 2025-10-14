@@ -781,10 +781,10 @@ app.get("/health", async (req, res) => {
 // Step 1: Start OAuth flow
 app.get("/auth/facebook", async (req, res) => {
   try {
-    const { clientId } = req.query; // the one from your dashboard
+    const { clientId } = req.query; // from your dashboard or frontend
 
     const redirectUri = process.env.FACEBOOK_REDIRECT_URI;
-    const fbAuthUrl = `https://www.facebook.com/v20.0/dialog/oauth?client_id=${process.env.FACEBOOK_APP_ID}&redirect_uri=${redirectUri}&scope=pages_show_list,pages_messaging&state=${clientId}`;
+    const fbAuthUrl = `https://www.facebook.com/v20.0/dialog/oauth?client_id=${process.env.FACEBOOK_APP_ID}&redirect_uri=${redirectUri}&scope=pages_show_list,pages_read_engagement,pages_manage_metadata,pages_messaging&state=${clientId}`;
 
     res.redirect(fbAuthUrl);
   } catch (err) {
@@ -792,6 +792,7 @@ app.get("/auth/facebook", async (req, res) => {
     res.status(500).send("OAuth start error");
   }
 });
+
 
 // Step 2: Handle callback
 // server.js or auth route file
