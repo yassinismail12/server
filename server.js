@@ -802,7 +802,7 @@ app.get("/auth/facebook/callback", async (req, res) => {
   const redirectUri = process.env.FACEBOOK_REDIRECT_URI;
 
   try {
-    // 🔹 Exchange code for access token
+    // 🔹 Exchange code for user access token
     const tokenRes = await fetch(
       `https://graph.facebook.com/v20.0/oauth/access_token?client_id=${process.env.FACEBOOK_APP_ID}&redirect_uri=${redirectUri}&client_secret=${process.env.FACEBOOK_APP_SECRET}&code=${code}`
     );
@@ -813,7 +813,7 @@ app.get("/auth/facebook/callback", async (req, res) => {
       return res.status(400).send("Failed to get access token");
     }
 
-    console.log("🔹 Facebook access token received:", tokenData.access_token);
+    console.log("🔹 Facebook user access token received:", tokenData.access_token);
 
     // 🔹 Get the pages managed by this user
     const userRes = await fetch(
@@ -826,21 +826,30 @@ app.get("/auth/facebook/callback", async (req, res) => {
       return res.status(400).send("No managed pages found");
     }
 
-    const page = userPages.data[0]; // pick first page
-    const { id: pageId, access_token: pageAccessToken } = page;
-    console.log(`🔹 Selected page: ${page.name} (${pageId})`);
+    // 🔹 Pick the first page (or you can let the user select)
+    const page = userPages.data[0];
+    const { id: pageId, access_token: pageAccessToken, name: pageName } = page;
+    console.log(`🔹 Selected page: ${pageName} (${pageId})`);
 
-    // 🔹 Save page info to MongoDB client
-    const client = await Client.findOne({ clientId });
+    // 🔹 Find client or create if missing
+    let client = await Client.findOne({ clientId });
     if (!client) {
-      console.error("❌ Client not found in DB:", clientId);
-      return res.status(404).send("Client not found");
+      console.log("⚠️ Client not found, creating new one");
+      client = await Client.create({
+        clientId,
+        name: pageName, // fallback name if missing
+        pageId,
+        pageAccessToken,
+        active: true,
+      });
+    } else {
+      // Update existing client
+      client.pageId = pageId;
+      client.pageAccessToken = pageAccessToken;
+      client.name = client.name || pageName; // ensure name exists
+      client.active = true;
+      await client.save();
     }
-
-    client.pageId = pageId;
-    client.PAGE_ACCESS_TOKEN = pageAccessToken;
-    client.active = true;
-    await client.save();
 
     console.log(`✅ Connected page ${pageId} to client ${clientId}`);
 
@@ -851,6 +860,7 @@ app.get("/auth/facebook/callback", async (req, res) => {
     res.status(500).send("OAuth callback error");
   }
 });
+
 
 
 
