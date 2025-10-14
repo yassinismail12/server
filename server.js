@@ -798,7 +798,7 @@ app.get("/auth/facebook", async (req, res) => {
 // server.js or auth route file
 app.get("/auth/facebook/callback", async (req, res) => {
   const { code, state } = req.query; // state = clientId
-  const clientId = state;
+  const clientId = req.query.state;
   const redirectUri = process.env.FACEBOOK_REDIRECT_URI;
 
   try {
