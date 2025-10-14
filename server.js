@@ -830,6 +830,35 @@ app.get("/auth/facebook/callback", async (req, res) => {
     const page = userPages.data[0];
     const { id: pageId, access_token: pageAccessToken, name: pageName } = page;
     console.log(`🔹 Selected page: ${pageName} (${pageId})`);
+// 🔹 Subscribe the Page to your webhook
+try {
+  const subscribeRes = await fetch(
+    `https://graph.facebook.com/v20.0/${pageId}/subscribed_apps`,
+    {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        subscribed_fields: [
+          "messages",
+          "messaging_postbacks",
+          "messaging_optins"
+        ],
+        access_token: pageAccessToken
+      })
+    }
+  );
+
+  const subscribeData = await subscribeRes.json();
+  console.log("🔹 Subscription response:", subscribeData);
+
+  if (subscribeData.success) {
+    console.log(`✅ Page ${pageId} successfully subscribed to webhook events`);
+  } else {
+    console.warn(`⚠️ Failed to subscribe page ${pageId}:`, subscribeData);
+  }
+} catch (subErr) {
+  console.error("❌ Error subscribing page:", subErr);
+}
 
     // 🔹 Find client or create if missing
     let client = await Client.findOne({ clientId });
