@@ -143,20 +143,23 @@ router.post("/", async (req, res) => {
 
     try {
         // ✅ Connect to DB and fetch client doc
-        const db = await connectDB();
-        const clientsCollection = db.collection("Clients");
-        let clientDoc = await clientsCollection.findOne({ clientId });
+      // ✅ Connect to DB and fetch client doc
+const db = await connectDB();
+const clientsCollection = db.collection("Clients");
+const clientDoc = await clientsCollection.findOne({ clientId });
 
-        // If no doc, create with defaults
-        if (!clientDoc) {
-            clientDoc = { clientId, messageCount: 0, messageLimit: 1000, active: true };
-            await clientsCollection.insertOne(clientDoc);
-        }
-
-        // ❌ Block if inactive
-    if (clientDoc.active === false) {
-    return res.status(204).end(); // 204 = No Content
+// ❌ If client not found, ignore request
+if (!clientDoc) {
+    console.log(`❌ Unknown clientId: ${clientId}`);
+    return res.status(204).end(); // No Content = bot stays silent
 }
+
+// ❌ If client is inactive, ignore too
+if (clientDoc.active === false) {
+    console.log(`🚫 Inactive client: ${clientId}`);
+    return res.status(204).end();
+}
+
 
         // ✅ Then check message limit
         const usage = await incrementMessageCount(clientId);
