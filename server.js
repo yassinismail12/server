@@ -16,7 +16,7 @@ import instagramRoute from "./instagram.js";
 import User from "./Users.js";
 import jwt from "jsonwebtoken";
 import cookieParser from "cookie-parser";
-
+import Page from "./pages.js";
 
 const app = express();
 dotenv.config();
@@ -781,9 +781,9 @@ app.get("/health", async (req, res) => {
 // Step 1: Start OAuth flow
 app.get("/auth/facebook", async (req, res) => {
   try {
-    const { clientId } = req.query; // from your dashboard or frontend
-
+    const { clientId } = req.query; // from dashboard/frontend
     const redirectUri = process.env.FACEBOOK_REDIRECT_URI;
+
     const fbAuthUrl = `https://www.facebook.com/v20.0/dialog/oauth?client_id=${process.env.FACEBOOK_APP_ID}&redirect_uri=${redirectUri}&scope=pages_show_list,pages_read_engagement,pages_manage_metadata,pages_messaging&state=${clientId}`;
 
     res.redirect(fbAuthUrl);
@@ -794,30 +794,30 @@ app.get("/auth/facebook", async (req, res) => {
 });
 
 
-// Step 2: Handle callback
-// server.js or auth route file
+// STEP 2️⃣ — Handle callback
 app.get("/auth/facebook/callback", async (req, res) => {
   const { code, state } = req.query; // state = clientId
-  const clientId = req.query.state;
+  const clientId = state;
   const redirectUri = process.env.FACEBOOK_REDIRECT_URI;
 
   try {
-    // 🔹 Exchange code for user access token
+    // 🔹 Exchange code for USER access token
     const tokenRes = await fetch(
       `https://graph.facebook.com/v20.0/oauth/access_token?client_id=${process.env.FACEBOOK_APP_ID}&redirect_uri=${redirectUri}&client_secret=${process.env.FACEBOOK_APP_SECRET}&code=${code}`
     );
     const tokenData = await tokenRes.json();
 
     if (!tokenData.access_token) {
-      console.error("❌ Failed to get access token:", tokenData);
-      return res.status(400).send("Failed to get access token");
+      console.error("❌ Failed to get user access token:", tokenData);
+      return res.status(400).send("Failed to get user access token");
     }
 
-    console.log("🔹 Facebook user access token received:", tokenData.access_token);
+    const userAccessToken = tokenData.access_token;
+    console.log("🔹 Facebook user access token received:", userAccessToken);
 
-    // 🔹 Get the pages managed by this user
+    // 🔹 Get user’s managed pages
     const userRes = await fetch(
-      `https://graph.facebook.com/me/accounts?access_token=${tokenData.access_token}`
+      `https://graph.facebook.com/me/accounts?access_token=${userAccessToken}`
     );
     const userPages = await userRes.json();
 
@@ -826,58 +826,61 @@ app.get("/auth/facebook/callback", async (req, res) => {
       return res.status(400).send("No managed pages found");
     }
 
-    // 🔹 Pick the first page (or you can let the user select)
+    // 🔹 Pick the first page (later: let user select)
     const page = userPages.data[0];
     const { id: pageId, access_token: pageAccessToken, name: pageName } = page;
     console.log(`🔹 Selected page: ${pageName} (${pageId})`);
-// 🔹 Subscribe the Page to your webhook
-try {
-  const subscribeRes = await fetch(
-    `https://graph.facebook.com/v20.0/${pageId}/subscribed_apps`,
-    {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        subscribed_fields: [
-          "messages",
-          "messaging_postbacks",
-          "messaging_optins"
-        ],
-        access_token: pageAccessToken
-      })
+
+    // 🔹 Subscribe the page to your webhook
+    try {
+      const subscribeRes = await fetch(
+        `https://graph.facebook.com/v20.0/${pageId}/subscribed_apps`,
+        {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            subscribed_fields: [
+              "messages",
+              "messaging_postbacks",
+              "messaging_optins",
+            ],
+            access_token: pageAccessToken,
+          }),
+        }
+      );
+
+      const subscribeData = await subscribeRes.json();
+      console.log("🔹 Subscription response:", subscribeData);
+
+      if (subscribeData.success) {
+        console.log(`✅ Page ${pageId} successfully subscribed to webhook events`);
+      } else {
+        console.warn(`⚠️ Failed to subscribe page ${pageId}:`, subscribeData);
+      }
+    } catch (subErr) {
+      console.error("❌ Error subscribing page:", subErr);
     }
-  );
 
-  const subscribeData = await subscribeRes.json();
-  console.log("🔹 Subscription response:", subscribeData);
-
-  if (subscribeData.success) {
-    console.log(`✅ Page ${pageId} successfully subscribed to webhook events`);
-  } else {
-    console.warn(`⚠️ Failed to subscribe page ${pageId}:`, subscribeData);
-  }
-} catch (subErr) {
-  console.error("❌ Error subscribing page:", subErr);
-}
-
-    // 🔹 Find client or create if missing
-    let client = await Client.findOne({ clientId });
-    if (!client) {
-      console.log("⚠️ Client not found, creating new one");
-      client = await Client.create({
-        clientId,
-        name: pageName, // fallback name if missing
+    // 🔹 Save or update page in Pages collection
+    let pageDoc = await Page.findOne({ pageId });
+    if (!pageDoc) {
+      pageDoc = await Page.create({
         pageId,
+        name: pageName,
+        userAccessToken,
         pageAccessToken,
-        active: true,
+        clientId, // links the page to its dashboard client
+        connectedAt: new Date(),
       });
+      console.log(`✅ Added new page: ${pageName} (${pageId})`);
     } else {
-      // Update existing client
-      client.pageId = pageId;
-      client.pageAccessToken = pageAccessToken;
-      client.name = client.name || pageName; // ensure name exists
-      client.active = true;
-      await client.save();
+      pageDoc.name = pageName;
+      pageDoc.userAccessToken = userAccessToken;
+      pageDoc.pageAccessToken = pageAccessToken;
+      pageDoc.clientId = clientId;
+      pageDoc.connectedAt = new Date();
+      await pageDoc.save();
+      console.log(`🔄 Updated existing page: ${pageName} (${pageId})`);
     }
 
     console.log(`✅ Connected page ${pageId} to client ${clientId}`);
@@ -889,7 +892,6 @@ try {
     res.status(500).send("OAuth callback error");
   }
 });
-
 
 
 
