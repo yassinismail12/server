@@ -1,0 +1,14 @@
+config:
+  target: "https://serverowned.onrender.com"
+  phases:
+    - duration: 10
+      arrivalRate: 10
+scenarios:
+  - name: "Chatbot load test"
+    flow:
+      - post:
+          url: "/api/chat"
+          json:
+            clientId: "realestate"
+            userId: "test-user-{{ $randomNumber(1, 100) }}"
+            message: "Hello bot, this is a load test"

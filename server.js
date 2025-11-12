@@ -604,6 +604,56 @@ app.post("/api/clients", verifyToken, async (req, res) => {
     }
 });
 
+app.post("/api/register", async (req, res) => {
+    try {
+        const { name, email, password } = req.body;
+
+        // Check if user already exists
+        const existing = await User.findOne({ email });
+        if (existing) return res.status(400).json({ error: "Email already registered" });
+
+        // Hash password
+        const hashedPassword = await bcrypt.hash(password, 10);
+
+        // Create user as a client
+        const user = new User({
+            name,
+            email,
+            password: hashedPassword,
+            role: "client",
+            clientId: new mongoose.Types.ObjectId().toString() // unique clientId
+        });
+        await user.save();
+
+        // Also create corresponding Client doc
+        const client = new Client({
+            name,
+            email,
+            clientId: user.clientId,
+            messageLimit: 100,
+            messageCount: 0,
+            files: []
+        });
+        await client.save();
+const token = jwt.sign(
+  { id: user._id, role: user.role, clientId: user.clientId },
+  process.env.JWT_SECRET,
+  { expiresIn: "1h" }
+);
+
+res.cookie("token", token, {
+  httpOnly: true,
+  sameSite: process.env.NODE_ENV === "production" ? "none" : "lax",
+  secure: process.env.NODE_ENV === "production",
+  maxAge: 1000 * 60 * 60,
+});
+
+        res.status(201).json({ message: "✅ Registered successfully", user });
+    } catch (err) {
+        console.error("❌ Register error:", err);
+        res.status(500).json({ error: "Server error" });
+    }
+});
 
 
 
