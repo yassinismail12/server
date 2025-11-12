@@ -227,11 +227,25 @@ if (nameMatch) {
         history.push({ role: "user", content: userMessage, createdAt: new Date() });
 
         // Call OpenAI
-     let assistantMessage;
+  // Call OpenAI or mock (Test Mode)
+let assistantMessage;
+
 try {
-    assistantMessage = await getChatCompletion(history);
+    if (process.env.TEST_MODE === "true") {
+        // 🧪 Simulate OpenAI response without spending tokens
+        const delay = Math.floor(Math.random() * 300) + 100; // 100–400ms delay
+        await new Promise((r) => setTimeout(r, delay));
+
+        assistantMessage = `🧪 Mock reply for ${clientId} — message: "${userMessage.slice(0, 20)}..."`;
+        console.log("✅ Test mode active — skipping OpenAI call");
+    } else {
+        // 🧠 Real OpenAI call
+        assistantMessage = await getChatCompletion(history);
+    }
 } catch (err) {
     console.error("❌ OpenAI error:", err.message);
+
+
 
     // Optional: log error in DB
     const db = await connectDB();
