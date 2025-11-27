@@ -198,12 +198,15 @@ if (clientDoc.active === false) {
         }
 
         // =============== HISTORY SETUP ===============
-        let history = convo?.history || [
-            {
-                role: "system",
-                content: `${finalSystemPrompt}\n\nUse the following client files:\n${filesContent}`
-            }
-        ];
+       let history = convo?.history || [
+    {
+        role: "system",
+        content: [
+            { type: "text", text: `${finalSystemPrompt}\n\nUse the following client files:\n${filesContent}` }
+        ]
+    }
+];
+
 
 
         // 🖼️ ===================== IMAGE HANDLING =====================
