@@ -88,7 +88,6 @@ async function incrementMessageCount(clientId) {
   let client = updated.value;
 
   if (!client) client = await clients.findOne({ clientId });
-
   if (!client) throw new Error(`Failed to create/find client ${clientId}`);
 
   if (client.messageCount > client.messageLimit) {
@@ -106,15 +105,16 @@ async function incrementMessageCount(clientId) {
 
 // ===== Route =====
 router.post("/", async (req, res) => {
-  let { message: userMessage, clientId, userId, isFirstMessage } = req.body;
+  let { message: userMessage, clientId, userId, isFirstMessage, image } = req.body;
 
   if (!userId) userId = crypto.randomUUID();
 
-  console.log("Incoming chat request:", { clientId, userId, userMessage, isFirstMessage });
+  console.log("Incoming chat request:", { clientId, userId, userMessage, isFirstMessage, image });
 
-  if (!userMessage || !clientId) {
+  if (!userMessage && !image) {
     return res.status(400).json({ reply: "⚠️ Missing message or client ID." });
   }
+  if (!clientId) return res.status(400).json({ reply: "⚠️ Missing client ID." });
 
   try {
     const db = await connectDB();
@@ -130,8 +130,8 @@ router.post("/", async (req, res) => {
 
     // Detect name
     let nameMatch = null;
-    const myNameMatch = userMessage.match(/my name is\s+(.+)/i);
-    const bracketNameMatch = userMessage.match(/\[name\]\s*:\s*(.+)/i);
+    const myNameMatch = userMessage?.match(/my name is\s+(.+)/i);
+    const bracketNameMatch = userMessage?.match(/\[name\]\s*:\s*(.+)/i);
     if (myNameMatch) nameMatch = myNameMatch[1].trim();
     if (bracketNameMatch) nameMatch = bracketNameMatch[1].trim();
     if (nameMatch) {
@@ -161,25 +161,28 @@ router.post("/", async (req, res) => {
       if (customer?.name) greeting = `Hi ${customer.name}, welcome back! 👋\n\n`;
     }
 
-    // Prepare history for OpenAI
+    // Prepare history for OpenAI: only strings and input_image if provided
     let history = convo?.history?.map(h => ({
       role: h.role,
-      content: Array.isArray(h.content)
-        ? h.content.map(c => (typeof c === "string" ? { type: "text", text: c } : c))
-        : [{ type: "text", text: h.content }]
+      content: Array.isArray(h.content) ? h.content.map(c => {
+        if (typeof c === "string") return c; // text as string
+        if (c.type === "input_image") return c; // keep images
+        return c.text || "";
+      }) : [h.content]
     })) || [
-      { role: "system", content: [{ type: "text", text: `${finalSystemPrompt}\n\nUse the following client files to answer questions:\n${filesContent}` }] }
+      { role: "system", content: `${finalSystemPrompt}\n\nUse the following client files to answer questions:\n${filesContent}` }
     ];
 
     // Push new user message
-    history.push({ role: "user", content: [{ type: "text", text: userMessage }] });
+    if (userMessage) history.push({ role: "user", content: userMessage });
+    if (image) history.push({ role: "user", content: [{ type: "input_image", image_url: image }] });
 
     let assistantMessage;
     try {
       if (process.env.TEST_MODE === "true") {
         const delay = Math.floor(Math.random() * 300) + 100;
         await new Promise(r => setTimeout(r, delay));
-        assistantMessage = { text: `🧪 Mock reply for ${clientId} — message: "${userMessage.slice(0, 20)}..."` };
+        assistantMessage = { text: `🧪 Mock reply for ${clientId} — message: "${userMessage?.slice(0, 20) || 'image'}..."` };
         console.log("✅ Test mode active — skipping OpenAI call");
       } else {
         assistantMessage = await getChatCompletion(history);
@@ -193,7 +196,11 @@ router.post("/", async (req, res) => {
     }
 
     // Push assistant reply into conversation
-    history.push({ role: "assistant", content: [{ type: "text", text: assistantMessage.text || "" }] });
+    const assistantContent = assistantMessage.images?.length
+      ? assistantMessage.images.map(url => ({ type: "input_image", image_url: url }))
+      : assistantMessage.text || "";
+    history.push({ role: "assistant", content: assistantContent });
+
     await saveConversation(clientId, userId, history);
 
     // Check for TOUR_REQUEST
@@ -210,11 +217,13 @@ router.post("/", async (req, res) => {
       }
     }
 
-    // Format reply with inline images
-    const formattedReply = assistantMessage.text?.replace(
-      /(https?:\/\/\S+\.(?:png|jpe?g|gif|webp))/gi,
-      '<img src="$1" style="max-width:100%; border-radius:8px; margin:4px 0;" />'
-    ) || "";
+    // Format reply for frontend
+    let formattedReply = assistantMessage.text || "";
+    if (assistantMessage.images?.length) {
+      formattedReply += "\n" + assistantMessage.images.map(url =>
+        `<img src="${url}" style="max-width:100%; border-radius:8px; margin:4px 0;" />`
+      ).join("\n");
+    }
 
     res.json({
       reply: greeting + formattedReply,
