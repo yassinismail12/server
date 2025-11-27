@@ -1,3 +1,4 @@
+// web.js
 import express from "express";
 import { getChatCompletion } from "./services/openai.js";
 import { SYSTEM_PROMPT } from "./utils/systemPrompt.js";
@@ -8,7 +9,6 @@ import { MongoClient } from "mongodb";
 import crypto from "crypto";
 
 const router = express.Router();
-
 const mongoClient = new MongoClient(process.env.MONGODB_URI);
 const dbName = "Agent";
 
@@ -85,7 +85,6 @@ async function incrementMessageCount(clientId) {
   );
 
   let client = updated.value;
-
   if (!client) client = await clients.findOne({ clientId });
   if (!client) throw new Error(`Failed to create/find client ${clientId}`);
 
@@ -105,7 +104,6 @@ async function incrementMessageCount(clientId) {
 // ===== Route =====
 router.post("/", async (req, res) => {
   let { message: userMessage, clientId, userId, isFirstMessage, image } = req.body;
-
   if (!userId) userId = crypto.randomUUID();
 
   console.log("Incoming chat request:", { clientId, userId, userMessage, isFirstMessage, image });
@@ -146,7 +144,6 @@ router.post("/", async (req, res) => {
 
     // Load conversation history
     let convo = await getConversation(clientId, userId);
-
     let greeting = "";
     if (isFirstMessage) {
       const customers = db.collection("Customers");
@@ -154,7 +151,7 @@ router.post("/", async (req, res) => {
       if (customer?.name) greeting = `Hi ${customer.name}, welcome back! 👋\n\n`;
     }
 
-    // Prepare history for OpenAI (flat valid input)
+    // ===== Build history for OpenAI =====
     const history = [];
 
     // System prompt
@@ -163,24 +160,19 @@ router.post("/", async (req, res) => {
     // Past conversation
     if (convo?.history?.length) {
       convo.history.forEach(h => {
-        if (h.role === "user") {
-          if (typeof h.content === "string") history.push({ type: "input_text", text: h.content });
-          else if (Array.isArray(h.content)) h.content.forEach(c => {
-            if (typeof c === "string") history.push({ type: "input_text", text: c });
-            else if (c.type === "input_image") history.push(c);
-          });
-        }
-        if (h.role === "assistant") {
-          if (typeof h.content === "string") history.push({ type: "input_text", text: h.content });
-        }
+        const contents = Array.isArray(h.content) ? h.content : [{ type: "input_text", text: h.content }];
+        contents.forEach(c => {
+          if (typeof c === "string") history.push({ type: "input_text", text: c });
+          else if (c.type === "input_text" || c.type === "input_image") history.push(c);
+        });
       });
     }
 
-    // New user message
+    // Current user message
     if (userMessage) history.push({ type: "input_text", text: userMessage });
     if (image) history.push({ type: "input_image", image_url: image });
 
-    // Call OpenAI
+    // ===== Call OpenAI =====
     let assistantMessage;
     try {
       if (process.env.TEST_MODE === "true") {
@@ -198,14 +190,15 @@ router.post("/", async (req, res) => {
       assistantMessage = { text: "⚠️ I'm having trouble right now. Please try again later." };
     }
 
-    // Save assistant reply
-    const assistantContent = assistantMessage.images?.length
-      ? assistantMessage.images.map(url => ({ type: "input_image", image_url: url }))
-      : assistantMessage.text || "";
+    // ===== Save assistant reply =====
+    const assistantContent = [];
+    if (assistantMessage.text) assistantContent.push({ type: "input_text", text: assistantMessage.text });
+    if (assistantMessage.images?.length) assistantMessage.images.forEach(url => assistantContent.push({ type: "input_image", image_url: url }));
+
     convo?.history?.push({ role: "assistant", content: assistantContent });
     await saveConversation(clientId, userId, convo?.history || [{ role: "assistant", content: assistantContent }]);
 
-    // Format reply
+    // ===== Format reply =====
     let formattedReply = assistantMessage.text || "";
     if (assistantMessage.images?.length) {
       formattedReply += "\n" + assistantMessage.images.map(url =>
@@ -213,7 +206,7 @@ router.post("/", async (req, res) => {
       ).join("\n");
     }
 
-    // TOUR_REQUEST handling
+    // ===== TOUR_REQUEST handling =====
     if (assistantMessage.text?.includes("[TOUR_REQUEST]")) {
       const data = extractTourData(assistantMessage.text);
       data.clientId = clientId;
