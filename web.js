@@ -215,7 +215,7 @@ router.post("/", async (req, res) => {
         history.push({ role: "assistant", content: assistantMessage, createdAt: new Date() });
         await saveConversation(clientId, userId, history);
 
-        if (assistantMessage.includes("[TOUR_REQUEST]")) {
+        if (assistantMessage.text.includes("[TOUR_REQUEST]")) {
             const data = extractTourData(assistantMessage);
             data.clientId = clientId;
             console.log("Sending tour email with data:", data);
