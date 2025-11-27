@@ -1,4 +1,3 @@
-// web.js
 import express from "express";
 import { getChatCompletion } from "./services/openai.js";
 import { SYSTEM_PROMPT } from "./utils/systemPrompt.js";
@@ -111,16 +110,13 @@ router.post("/", async (req, res) => {
 
   console.log("Incoming chat request:", { clientId, userId, userMessage, isFirstMessage, image });
 
-  if (!userMessage && !image) {
-    return res.status(400).json({ reply: "⚠️ Missing message or client ID." });
-  }
+  if (!userMessage && !image) return res.status(400).json({ reply: "⚠️ Missing message or image." });
   if (!clientId) return res.status(400).json({ reply: "⚠️ Missing client ID." });
 
   try {
     const db = await connectDB();
     const clientsCollection = db.collection("Clients");
     const clientDoc = await clientsCollection.findOne({ clientId });
-
     if (!clientDoc || clientDoc.active === false) return res.status(204).end();
 
     const usage = await incrementMessageCount(clientId);
@@ -134,10 +130,7 @@ router.post("/", async (req, res) => {
     const bracketNameMatch = userMessage?.match(/\[name\]\s*:\s*(.+)/i);
     if (myNameMatch) nameMatch = myNameMatch[1].trim();
     if (bracketNameMatch) nameMatch = bracketNameMatch[1].trim();
-    if (nameMatch) {
-      await updateCustomerName(userId, clientId, nameMatch);
-      console.log(`📝 Name detected and saved: ${nameMatch}`);
-    }
+    if (nameMatch) await updateCustomerName(userId, clientId, nameMatch);
 
     const finalSystemPrompt = await SYSTEM_PROMPT({ clientId });
 
@@ -161,29 +154,39 @@ router.post("/", async (req, res) => {
       if (customer?.name) greeting = `Hi ${customer.name}, welcome back! 👋\n\n`;
     }
 
-    // Prepare history for OpenAI: only strings and input_image if provided
-    let history = convo?.history?.map(h => ({
-      role: h.role,
-      content: Array.isArray(h.content) ? h.content.map(c => {
-        if (typeof c === "string") return c; // text as string
-        if (c.type === "input_image") return c; // keep images
-        return c.text || "";
-      }) : [h.content]
-    })) || [
-      { role: "system", content: `${finalSystemPrompt}\n\nUse the following client files to answer questions:\n${filesContent}` }
-    ];
+    // Prepare history for OpenAI (flat valid input)
+    const history = [];
 
-    // Push new user message
-    if (userMessage) history.push({ role: "user", content: userMessage });
-    if (image) history.push({ role: "user", content: [{ type: "input_image", image_url: image }] });
+    // System prompt
+    history.push({ type: "input_text", text: `${finalSystemPrompt}\n\nUse the following client files:\n${filesContent}` });
 
+    // Past conversation
+    if (convo?.history?.length) {
+      convo.history.forEach(h => {
+        if (h.role === "user") {
+          if (typeof h.content === "string") history.push({ type: "input_text", text: h.content });
+          else if (Array.isArray(h.content)) h.content.forEach(c => {
+            if (typeof c === "string") history.push({ type: "input_text", text: c });
+            else if (c.type === "input_image") history.push(c);
+          });
+        }
+        if (h.role === "assistant") {
+          if (typeof h.content === "string") history.push({ type: "input_text", text: h.content });
+        }
+      });
+    }
+
+    // New user message
+    if (userMessage) history.push({ type: "input_text", text: userMessage });
+    if (image) history.push({ type: "input_image", image_url: image });
+
+    // Call OpenAI
     let assistantMessage;
     try {
       if (process.env.TEST_MODE === "true") {
         const delay = Math.floor(Math.random() * 300) + 100;
         await new Promise(r => setTimeout(r, delay));
-        assistantMessage = { text: `🧪 Mock reply for ${clientId} — message: "${userMessage?.slice(0, 20) || 'image'}..."` };
-        console.log("✅ Test mode active — skipping OpenAI call");
+        assistantMessage = { text: userMessage ? `🧪 Mock reply: "${userMessage.slice(0,20)}..."` : "🧪 Mock image reply" };
       } else {
         assistantMessage = await getChatCompletion(history);
       }
@@ -195,34 +198,26 @@ router.post("/", async (req, res) => {
       assistantMessage = { text: "⚠️ I'm having trouble right now. Please try again later." };
     }
 
-    // Push assistant reply into conversation
+    // Save assistant reply
     const assistantContent = assistantMessage.images?.length
       ? assistantMessage.images.map(url => ({ type: "input_image", image_url: url }))
       : assistantMessage.text || "";
-    history.push({ role: "assistant", content: assistantContent });
+    convo?.history?.push({ role: "assistant", content: assistantContent });
+    await saveConversation(clientId, userId, convo?.history || [{ role: "assistant", content: assistantContent }]);
 
-    await saveConversation(clientId, userId, history);
-
-    // Check for TOUR_REQUEST
-    if (assistantMessage.text?.includes("[TOUR_REQUEST]")) {
-      const data = extractTourData(assistantMessage.text);
-      data.clientId = clientId;
-      console.log("Sending tour email with data:", data);
-      try { await sendTourEmail(data); } 
-      catch (err) {
-        console.error("❌ Failed to send tour email:", err.message);
-        await db.collection("Logs").insertOne({
-          clientId, userId, level: "error", source: "email", message: err.message, timestamp: new Date()
-        });
-      }
-    }
-
-    // Format reply for frontend
+    // Format reply
     let formattedReply = assistantMessage.text || "";
     if (assistantMessage.images?.length) {
       formattedReply += "\n" + assistantMessage.images.map(url =>
         `<img src="${url}" style="max-width:100%; border-radius:8px; margin:4px 0;" />`
       ).join("\n");
+    }
+
+    // TOUR_REQUEST handling
+    if (assistantMessage.text?.includes("[TOUR_REQUEST]")) {
+      const data = extractTourData(assistantMessage.text);
+      data.clientId = clientId;
+      try { await sendTourEmail(data); } catch (err) { console.error(err); }
     }
 
     res.json({
@@ -233,19 +228,6 @@ router.post("/", async (req, res) => {
 
   } catch (error) {
     console.error("❌ Error:", error.message);
-    try {
-      const db = await connectDB();
-      await db.collection("Logs").insertOne({
-        clientId: req.body.clientId || "unknown",
-        userId: req.body.userId || "unknown",
-        level: "error",
-        source: "web",
-        message: error.message,
-        timestamp: new Date(),
-      });
-    } catch (dbErr) {
-      console.error("❌ Failed to log error in DB:", dbErr.message);
-    }
     res.status(500).json({ reply: "⚠️ Sorry, something went wrong." });
   }
 });

@@ -2,21 +2,43 @@ import OpenAI from "openai";
 
 const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
 
+/**
+ * Converts conversation history into valid OpenAI Responses API input
+ */
 export async function getChatCompletion(history) {
-  // Convert conversation history into a single string prompt
-  const prompt = history
-    .map(h => {
-      const role = h.role;
-      const content = Array.isArray(h.content)
-        ? h.content.map(c => (typeof c === "string" ? c : c.text || "")).join("\n")
-        : h.content;
-      return `${role.toUpperCase()}: ${content}`;
-    })
-    .join("\n\n");
+  const messagesForOpenAI = [];
+
+  history.forEach(h => {
+    if (h.role === "system") {
+      if (typeof h.content === "string") {
+        messagesForOpenAI.push({ type: "input_text", text: h.content });
+      } else if (Array.isArray(h.content)) {
+        h.content.forEach(c => {
+          if (typeof c === "string") messagesForOpenAI.push({ type: "input_text", text: c });
+          else if (c.type === "input_image") messagesForOpenAI.push(c);
+        });
+      }
+    } else if (h.role === "user") {
+      if (typeof h.content === "string") messagesForOpenAI.push({ type: "input_text", text: h.content });
+      else if (Array.isArray(h.content)) {
+        h.content.forEach(c => {
+          if (typeof c === "string") messagesForOpenAI.push({ type: "input_text", text: c });
+          else if (c.type === "input_image") messagesForOpenAI.push(c);
+        });
+      }
+    } else if (h.role === "assistant") {
+      if (typeof h.content === "string") messagesForOpenAI.push({ type: "input_text", text: h.content });
+      else if (Array.isArray(h.content)) {
+        h.content.forEach(c => {
+          if (typeof c === "string") messagesForOpenAI.push({ type: "input_text", text: c });
+        });
+      }
+    }
+  });
 
   const response = await openai.responses.create({
     model: "gpt-4o",
-    input: prompt
+    input: messagesForOpenAI
   });
 
   let text = "";
@@ -25,7 +47,7 @@ export async function getChatCompletion(history) {
   if (response.output) {
     for (const item of response.output) {
       if (item.type === "output_text") text += item.text;
-      if (item.type === "output_image") images.push(item.image_url);
+      else if (item.type === "output_image") images.push(item.image_url);
     }
   }
 
