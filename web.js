@@ -205,16 +205,7 @@ router.post("/", async (req, res) => {
     // Push user message
     history.push({ role: "user", content: contentPayload, createdAt: new Date() });
 
-    // ===== Prepare OpenAI formatted payload =====
-    const formattedHistory = history.map(msg => ({
-      role: msg.role,
-      content: msg.content.map(c => {
-        if (c.type === "text") return { type: "text", text: c.text };
-        if (c.type === "input_image") return { type: "input_image", image_url: c.image_url };
-        return c;
-      })
-    }));
-
+ 
     // ===== OpenAI call =====
     let assistantMessage;
     try {
@@ -222,7 +213,7 @@ router.post("/", async (req, res) => {
         await new Promise(r => setTimeout(r, Math.floor(Math.random() * 300) + 100));
         assistantMessage = "🧪 Mock reply (image supported)";
       } else {
-        assistantMessage = await getChatCompletion(formattedHistory);
+        assistantMessage = await getChatCompletion(history);
       }
     } catch (err) {
       console.error("❌ OpenAI error:", err.message);
