@@ -102,13 +102,20 @@ async function incrementMessageCount(clientId) {
 }
 
 // ===== Image helper =====
+// ===== Image helper =====
 async function formatMessageForGPT(userMessage, image) {
     const contentPayload = [];
     if (userMessage) contentPayload.push({ type: "text", text: userMessage });
 
     if (image && typeof image === "string") {
-        // GPT-4o vision can accept base64 or URL
-        contentPayload.push({ type: "input_image", image_url: image });
+        // Use correct type for GPT-4o vision
+        contentPayload.push({ 
+            type: "image_url", 
+            image_url: {
+                url: image,
+                detail: "auto"
+            }
+        });
     }
 
     return contentPayload;
