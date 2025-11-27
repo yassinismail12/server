@@ -83,10 +83,14 @@ async function incrementMessageCount(clientId) {
                 quotaWarningSent: false
             }
         },
-        { returnDocument: "after", upsert: true }
+        { returnOriginal: false, upsert: true }  // FIX HERE
     );
 
-    const client = updated.value;
+    const client = updated.value || updated;  // Fallback for some drivers
+
+    if (!client || client.messageCount === undefined) {
+        throw new Error("Client document missing after update");
+    }
 
     if (client.messageCount > client.messageLimit) {
         return { allowed: false };
@@ -107,6 +111,7 @@ async function incrementMessageCount(clientId) {
         messageLimit: client.messageLimit
     };
 }
+
 
 // =======================
 //   MAIN CHAT ROUTE
