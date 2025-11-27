@@ -1,14 +1,11 @@
 import OpenAI from "openai";
-
-const openai = new OpenAI({
-    apiKey: process.env.OPENAI_API_KEY,
-});
+const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
 
 export async function getChatCompletion(history) {
-    const completion = await openai.chat.completions.create({
-        model: "gpt-4o",
-        messages: history,
-    });
+  const response = await openai.responses.create({
+    model: "gpt-4o",
+    input: history,
+  });
 
-    return completion.choices[0].message.content;
+  return response;
 }
