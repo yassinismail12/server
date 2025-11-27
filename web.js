@@ -122,7 +122,6 @@ async function incrementMessageCount(clientId) {
   };
 }
 
-
 // ===== Route =====
 router.post("/", async (req, res) => {
     let { message: userMessage, clientId, userId, isFirstMessage } = req.body;
@@ -138,20 +137,19 @@ router.post("/", async (req, res) => {
     }
 
     try {
-const db = await connectDB();
-const clientsCollection = db.collection("Clients");
-const clientDoc = await clientsCollection.findOne({ clientId });
+        const db = await connectDB();
+        const clientsCollection = db.collection("Clients");
+        const clientDoc = await clientsCollection.findOne({ clientId });
 
-if (!clientDoc) {
-    console.log(`❌ Unknown clientId: ${clientId}`);
-    return res.status(204).end();
-}
+        if (!clientDoc) {
+            console.log(`❌ Unknown clientId: ${clientId}`);
+            return res.status(204).end();
+        }
 
-if (clientDoc.active === false) {
-    console.log(`🚫 Inactive client: ${clientId}`);
-    return res.status(204).end();
-}
-
+        if (clientDoc.active === false) {
+            console.log(`🚫 Inactive client: ${clientId}`);
+            return res.status(204).end();
+        }
 
         const usage = await incrementMessageCount(clientId);
         if (!usage.allowed) {
@@ -162,22 +160,22 @@ if (clientDoc.active === false) {
 
         await findOrCreateCustomer(userId, clientId);
 
-let nameMatch = null;
+        let nameMatch = null;
 
-const myNameMatch = userMessage.match(/my name is\s+(.+)/i);
-if (myNameMatch) {
-    nameMatch = myNameMatch[1].trim();
-}
+        const myNameMatch = userMessage.match(/my name is\s+(.+)/i);
+        if (myNameMatch) {
+            nameMatch = myNameMatch[1].trim();
+        }
 
-const bracketNameMatch = userMessage.match(/\[name\]\s*:\s*(.+)/i);
-if (bracketNameMatch) {
-    nameMatch = bracketNameMatch[1].trim();
-}
+        const bracketNameMatch = userMessage.match(/\[name\]\s*:\s*(.+)/i);
+        if (bracketNameMatch) {
+            nameMatch = bracketNameMatch[1].trim();
+        }
 
-if (nameMatch) {
-    await updateCustomerName(userId, clientId, nameMatch);
-    console.log(`📝 Name detected and saved: ${nameMatch}`);
-}
+        if (nameMatch) {
+            await updateCustomerName(userId, clientId, nameMatch);
+            console.log(`📝 Name detected and saved: ${nameMatch}`);
+        }
 
         const finalSystemPrompt = await SYSTEM_PROMPT({ clientId });
 
@@ -190,10 +188,7 @@ if (nameMatch) {
 
         let greeting = "";
         if (isFirstMessage) {
-            const db = await connectDB();
-            const customers = db.collection("Customers");
-            const customer = await customers.findOne({ customerId: userId, clientId });
-
+            const customer = await db.collection("Customers").findOne({ customerId: userId, clientId });
             if (customer?.name) {
                 greeting = `Hi ${customer.name}, welcome back! 👋\n\n`;
             }
@@ -206,121 +201,126 @@ if (nameMatch) {
             }
         ];
 
-if (req.body.image) {
-    history.push({
-        role: "user",
-        content: [
-            { type: "text", text: userMessage || "Analyze this image" },
-            { type: "image_url", image_url: req.body.image }
-        ],
-        createdAt: new Date()
-    });
-} else {
-    history.push({
-        role: "user",
-        content: userMessage,
-        createdAt: new Date()
-    });
-}
-
-let assistantMessage;
-let imageOutputs = [];  // 👈 ADDED FOR IMAGE OUTPUT
-
-try {
-    if (process.env.TEST_MODE === "true") {
-        const delay = Math.floor(Math.random() * 300) + 100;
-        await new Promise((r) => setTimeout(r, delay));
-
-        assistantMessage = `🧪 Mock reply for ${clientId} — message: "${userMessage.slice(0, 20)}..."`;
-        console.log("✅ Test mode active — skipping OpenAI call");
-    } else {
-
-      // 🧠 REAL OPENAI CALL
-      const aiResponse = await getChatCompletion(history);
-
-      // 🆕 Extract text + images
-      let textOutput = "";
-
-      if (aiResponse.output) {
-        for (const part of aiResponse.output) {
-          if (part.type === "output_text") {
-            textOutput += part.text;
-          }
-          if (part.type === "output_image") {
-            imageOutputs.push(part.image_url);  // 👈 ADD IMAGE
-          }
+        if (req.body.image) {
+            history.push({
+                role: "user",
+                content: [
+                    { type: "text", text: userMessage || "Analyze this image" },
+                    { type: "image_url", image_url: req.body.image }
+                ],
+                createdAt: new Date()
+            });
+        } else {
+            history.push({
+                role: "user",
+                content: userMessage,
+                createdAt: new Date()
+            });
         }
-      }
 
-      assistantMessage = textOutput;
-    }
-} catch (err) {
-    console.error("❌ OpenAI error:", err.message);
+        let assistantMessage;
+        let imageOutputs = [];
 
-    const db = await connectDB();
-    await db.collection("Logs").insertOne({
-        clientId,
-        userId,
-        level: "error",
-        source: "openai",
-        message: err.message,
-        timestamp: new Date(),
-    });
+        try {
+            if (process.env.TEST_MODE === "true") {
+                const delay = Math.floor(Math.random() * 300) + 100;
+                await new Promise((r) => setTimeout(r, delay));
 
-    assistantMessage = "⚠️ I'm having trouble right now. Please try again later.";
-}
+                assistantMessage = `🧪 Mock reply for ${clientId} — message: "${userMessage.slice(0, 20)}..."`;
+                console.log("✅ Test mode active — skipping OpenAI call");
+            } else {
+
+                // 🧠 REAL OPENAI CALL
+                const aiResponse = await getChatCompletion(history);
+
+                // Extract text + images
+                let textOutput = "";
+
+                if (aiResponse.choices) {
+                    for (const choice of aiResponse.choices) {
+                        const message = choice.message;
+                        if (typeof message.content === "string") {
+                            textOutput += message.content;
+                        } else if (Array.isArray(message.content)) {
+                            for (const part of message.content) {
+                                if (part.type === "output_text") {
+                                    textOutput += part.text;
+                                }
+                                if (part.type === "output_image") {
+                                    imageOutputs.push(part.image_url);
+                                }
+                            }
+                        }
+                    }
+                }
+
+                assistantMessage = textOutput;
+            }
+        } catch (err) {
+            console.error("❌ OpenAI error:", err.message);
+
+            await db.collection("Logs").insertOne({
+                clientId,
+                userId,
+                level: "error",
+                source: "openai",
+                message: err.message,
+                timestamp: new Date(),
+            });
+
+            assistantMessage = "⚠️ I'm having trouble right now. Please try again later.";
+        }
 
         history.push({ role: "assistant", content: assistantMessage, createdAt: new Date() });
 
         await saveConversation(clientId, userId, history);
 
-     if (assistantMessage.includes("[TOUR_REQUEST]")) {
-    const data = extractTourData(assistantMessage);
-    data.clientId = clientId;
+        if (assistantMessage.includes("[TOUR_REQUEST]")) {
+            const data = extractTourData(assistantMessage);
+            data.clientId = clientId;
 
-    console.log("Sending tour email with data:", data);
-    try {
-        await sendTourEmail(data);
-    } catch (err) {
-        console.error("❌ Failed to send tour email:", err.message);
-        const db = await connectDB();
-        await db.collection("Logs").insertOne({
-            clientId,
-            userId,
-            level: "error",
-            source: "email",
-            message: err.message,
-            timestamp: new Date(),
-        });
-    }
-}
+            console.log("Sending tour email with data:", data);
+            try {
+                await sendTourEmail(data);
+            } catch (err) {
+                console.error("❌ Failed to send tour email:", err.message);
+                await db.collection("Logs").insertOne({
+                    clientId,
+                    userId,
+                    level: "error",
+                    source: "email",
+                    message: err.message,
+                    timestamp: new Date(),
+                });
+            }
+        }
 
         res.json({
             reply: greeting + assistantMessage,
-            images: imageOutputs,   // 👈 ADDED THIS
+            images: imageOutputs,
             userId,
             usage: { count: usage.messageCount, limit: usage.messageLimit }
         });
 
    } catch (error) {
-    console.error("❌ Error:", error.message);
+        console.error("❌ Error:", error.message);
 
-    try {
-        const db = await connectDB();
-        await db.collection("Logs").insertOne({
-            clientId,
-            userId,
-            level: "error",
-            source: "web",
-            message: error.message,
-            timestamp: new Date(),
-        });
-    } catch (dbErr) {
-        console.error("❌ Failed to log error in DB:", dbErr.message);
+        try {
+            const db = await connectDB();
+            await db.collection("Logs").insertOne({
+                clientId,
+                userId,
+                level: "error",
+                source: "web",
+                message: error.message,
+                timestamp: new Date(),
+            });
+        } catch (dbErr) {
+            console.error("❌ Failed to log error in DB:", dbErr.message);
+        }
+
+        res.status(500).json({ reply: "⚠️ Sorry, something went wrong." });
     }
-
-    res.status(500).json({ reply: "⚠️ Sorry, something went wrong." });
-}
 });
 
 export default router;
