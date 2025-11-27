@@ -1,34 +1,33 @@
 import OpenAI from "openai";
 
 const openai = new OpenAI({
-    apiKey: process.env.OPENAI_API_KEY,
+  apiKey: process.env.OPENAI_API_KEY,
 });
 
+// Convert your internal content array into plain text for OpenAI
+function flattenMessage(msg) {
+  if (!Array.isArray(msg.content)) return String(msg.content);
+
+  // Combine all text content into a single string
+  return msg.content
+    .map(c => {
+      if (c.type === "text") return c.text;
+      if (c.type === "input_image") return `[Image: ${c.image_url}]`; // placeholder text
+      return String(c);
+    })
+    .join("\n");
+}
+
 export async function getChatCompletion(history) {
-    // Ensure all messages have content as array of objects
-    const formattedMessages = history.map(msg => ({
-        role: msg.role,
-        content: Array.isArray(msg.content)
-            ? msg.content
-            : [{ type: "text", text: String(msg.content) }],
-    }));
+  const formattedMessages = history.map(msg => ({
+    role: msg.role,
+    content: flattenMessage(msg),
+  }));
 
-    // Trim large messages or images
-    formattedMessages.forEach(m => {
-        m.content = m.content.map(c => {
-            if (c.type === "text" && c.text.length > 2000) {
-                // truncate very long text
-                c.text = c.text.slice(-2000);
-            }
-            return c;
-        });
-    });
+  const response = await openai.chat.completions.create({
+    model: "gpt-4o",
+    messages: formattedMessages,
+  });
 
-    const response = await openai.chat.completions.create({
-        model: "gpt-4o",
-        messages: formattedMessages
-    });
-
-    // This is already a string - no need to loop!
-    return response.choices[0].message.content;
+  return response.choices[0].message.content;
 }
