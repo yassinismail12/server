@@ -29,14 +29,6 @@ export async function getChatCompletion(history) {
         messages: formattedMessages
     });
 
-    const assistantContent = response.choices[0].message.content;
-
-    // Convert to single string
-    let replyText = "";
-    for (const block of assistantContent) {
-        if (block.type === "text") replyText += block.text;
-        else if (block.type === "input_image") replyText += "\n[Image]";
-    }
-
-    return replyText;
+    // This is already a string - no need to loop!
+    return response.choices[0].message.content;
 }
