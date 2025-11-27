@@ -1,25 +1,34 @@
-import OpenAI from "openai";
-
-const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
-
 export async function getChatCompletion(history) {
   if (!history || !history.length) {
     throw new Error("History is empty.");
   }
 
-  // Build input array
   const input = [];
 
   history.forEach(h => {
     if (!h.content) return;
 
+    // If content is string, push as text
     if (typeof h.content === "string") {
       input.push({ type: "input_text", text: h.content });
-    } else if (Array.isArray(h.content)) {
+    }
+    // If content is array
+    else if (Array.isArray(h.content)) {
       h.content.forEach(c => {
-        if (typeof c === "string") input.push({ type: "input_text", text: c });
-        else if (c.type === "input_image" && c.image_url) input.push({ type: "input_image", image_url: c.image_url });
+        if (typeof c === "string") {
+          input.push({ type: "input_text", text: c });
+        } else if (c.type === "input_text" && c.text) {
+          input.push({ type: "input_text", text: c.text });
+        } else if (c.type === "input_image" && c.image_url) {
+          input.push({ type: "input_image", image_url: c.image_url });
+        }
       });
+    }
+    // If content is already a single object with type
+    else if (h.content.type === "input_text" && h.content.text) {
+      input.push({ type: "input_text", text: h.content.text });
+    } else if (h.content.type === "input_image" && h.content.image_url) {
+      input.push({ type: "input_image", image_url: h.content.image_url });
     }
   });
 
@@ -27,7 +36,6 @@ export async function getChatCompletion(history) {
     throw new Error("No valid input to send to OpenAI.");
   }
 
-  // Call OpenAI Responses API
   const response = await openai.responses.create({
     model: "gpt-4o",
     input
