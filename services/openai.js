@@ -16,8 +16,13 @@ export async function getChatCompletion(history) {
         messages: formattedMessages
     });
 
-    // Combine text content from assistant message
     const assistant = response.choices[0].message;
     if (!assistant?.content) return "";
-    return assistant.content.map(c => c.text || "").join("\n");
+
+    // Combine text and image responses
+    return assistant.content.map(c => {
+        if (c.type === "text") return c.text;
+        if (c.type === "output_image") return c.image_url; // GPT returned an image
+        return "";
+    }).join("\n");
 }
