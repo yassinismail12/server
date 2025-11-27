@@ -102,20 +102,55 @@ async function incrementMessageCount(clientId) {
 }
 
 // ===== Image helper =====
-// ===== Image helper =====
+// Formats user message and image for OpenAI Vision API
+// Handles base64 images from frontend and converts them to proper format
 async function formatMessageForGPT(userMessage, image) {
     const contentPayload = [];
-    if (userMessage) contentPayload.push({ type: "text", text: userMessage });
+    
+    // Add text message if provided
+    if (userMessage && typeof userMessage === "string" && userMessage.trim()) {
+        contentPayload.push({ type: "text", text: userMessage });
+    }
 
-    if (image && typeof image === "string") {
-        // Use correct type for GPT-4o vision
-        contentPayload.push({ 
-            type: "image_url", 
-            image_url: {
-                url: image,
-                detail: "auto"
+    // Handle image: convert base64 to OpenAI-compatible format
+    if (image && typeof image === "string" && image.trim()) {
+        try {
+            let imageUrl = image;
+            
+            // If image is base64 without data URL prefix, add it
+            // OpenAI expects: data:image/<format>;base64,<base64_string>
+            if (!image.startsWith("data:")) {
+                // Try to detect image format from base64 or default to jpeg
+                // Most common formats: jpeg, png, gif, webp
+                let mimeType = "image/jpeg"; // default
+                
+                // Check if it's a valid base64 string
+                const base64Pattern = /^[A-Za-z0-9+/=]+$/;
+                if (base64Pattern.test(image.replace(/\s/g, ""))) {
+                    imageUrl = `data:${mimeType};base64,${image}`;
+                } else {
+                    // If already a data URL, use as is
+                    imageUrl = image;
+                }
             }
-        });
+            
+            // Add image to content payload for OpenAI Vision API
+            contentPayload.push({ 
+                type: "image_url", 
+                image_url: {
+                    url: imageUrl,
+                    detail: "auto" // "auto" balances speed and accuracy
+                }
+            });
+        } catch (err) {
+            console.error("❌ Error formatting image:", err.message);
+            // Continue without image if formatting fails
+        }
+    }
+
+    // Ensure at least one content item (text or image)
+    if (contentPayload.length === 0) {
+        contentPayload.push({ type: "text", text: "" });
     }
 
     return contentPayload;
@@ -126,9 +161,19 @@ router.post("/", async (req, res) => {
     let { message: userMessage, clientId, userId, isFirstMessage, image } = req.body;
     if (!userId) userId = crypto.randomUUID();
 
-    console.log("Incoming chat request:", { clientId, userId, userMessage, isFirstMessage, image });
+    console.log("Incoming chat request:", { 
+        clientId, 
+        userId, 
+        userMessage: userMessage ? `${userMessage.substring(0, 50)}...` : null, 
+        isFirstMessage, 
+        hasImage: !!image,
+        imageLength: image ? image.length : 0
+    });
 
-    if (!userMessage && !image) return res.status(400).json({ reply: "⚠️ Missing message or image." });
+    // Accept requests with text, image, or both - at least one must be present
+    if ((!userMessage || !userMessage.trim()) && (!image || !image.trim())) {
+        return res.status(400).json({ reply: "⚠️ Please provide a message or image." });
+    }
     if (!clientId) return res.status(400).json({ reply: "⚠️ Missing client ID." });
 
     try {
@@ -172,29 +217,63 @@ router.post("/", async (req, res) => {
             }
         ];
 
-        // Add user message
-        const userContent = await formatMessageForGPT(userMessage, image);
+        // Add user message with optional image
+        // formatMessageForGPT handles base64 images and converts them to OpenAI format
+        let userContent;
+        try {
+            userContent = await formatMessageForGPT(userMessage, image);
+        } catch (err) {
+            console.error("❌ Error formatting message/image:", err.message);
+            return res.status(400).json({ reply: "⚠️ Error processing your message or image. Please try again." });
+        }
+        
+        // Validate that we have at least text or image content
+        if (!userContent || userContent.length === 0) {
+            return res.status(400).json({ reply: "⚠️ Please provide a valid message or image." });
+        }
+        
         history.push({ role: "user", content: userContent, createdAt: new Date() });
 
-        // Call OpenAI
-        let assistantMessage;
+        // Call OpenAI with image support
+        let assistantResponse;
         try {
             if (process.env.TEST_MODE === "true") {
                 await new Promise(r => setTimeout(r, Math.floor(Math.random() * 300) + 100));
-                assistantMessage = "🧪 Mock reply (image supported)";
+                assistantResponse = { text: "🧪 Mock reply (image supported)", imageUrls: [] };
             } else {
-                assistantMessage = await getChatCompletion(history);
+                assistantResponse = await getChatCompletion(history);
             }
         } catch (err) {
             console.error("❌ OpenAI error:", err.message);
             await db.collection("Logs").insertOne({
                 clientId, userId, level: "error", source: "openai", message: err.message, timestamp: new Date(),
             });
-            assistantMessage = "⚠️ I'm having trouble right now.";
+            assistantResponse = { text: "⚠️ I'm having trouble right now.", imageUrls: [] };
         }
 
-        // Save assistant reply
-        history.push({ role: "assistant", content: [{ type: "text", text: assistantMessage }], createdAt: new Date() });
+        // Extract text and image URLs from response
+        // Handle both new format (object with text/imageUrls) and legacy format (string)
+        let assistantMessage = "";
+        let imageUrls = [];
+        if (typeof assistantResponse === "string") {
+            // Legacy format: just text
+            assistantMessage = assistantResponse;
+        } else if (assistantResponse && typeof assistantResponse === "object") {
+            // New format: object with text and imageUrls
+            assistantMessage = assistantResponse.text || "";
+            imageUrls = assistantResponse.imageUrls || [];
+        }
+
+        // Save assistant reply (store text and image URLs separately for history)
+        const assistantContent = [{ type: "text", text: assistantMessage }];
+        if (imageUrls.length > 0) {
+            // Store image URLs as text references in history
+            assistantContent.push({ 
+                type: "text", 
+                text: `\n[Images: ${imageUrls.join(", ")}]`
+            });
+        }
+        history.push({ role: "assistant", content: assistantContent, createdAt: new Date() });
         await saveConversation(clientId, userId, history);
 
         // Handle tour booking
@@ -209,7 +288,13 @@ router.post("/", async (req, res) => {
             }
         }
 
-        res.json({ reply: greeting + assistantMessage, userId, usage: { count: usage.messageCount, limit: usage.messageLimit } });
+        // Return response with text, image URLs (if any), and metadata
+        res.json({ 
+            reply: greeting + assistantMessage, 
+            imageUrls: imageUrls, // Include image URLs from OpenAI response
+            userId, 
+            usage: { count: usage.messageCount, limit: usage.messageLimit } 
+        });
 
     } catch (error) {
         console.error("❌ Error:", error.message);
