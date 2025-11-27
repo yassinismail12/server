@@ -72,6 +72,7 @@ async function incrementMessageCount(clientId) {
     const db = await connectDB();
     const clients = db.collection("Clients");
 
+    // Increment messageCount, create doc if it doesn't exist
     const updated = await clients.findOneAndUpdate(
         { clientId },
         {
@@ -79,8 +80,7 @@ async function incrementMessageCount(clientId) {
             $setOnInsert: {
                 messageLimit: 1000,
                 active: true,
-                quotaWarningSent: false,
-                messageCount: 1 // ensure first count is set
+                quotaWarningSent: false
             }
         },
         { upsert: true, returnDocument: "after" } // "after" returns updated doc
@@ -88,7 +88,7 @@ async function incrementMessageCount(clientId) {
 
     let client = updated.value;
 
-    // Fallback: if driver returns differently
+    // fallback if value is null
     if (!client) {
         client = await clients.findOne({ clientId });
     }
@@ -113,6 +113,7 @@ async function incrementMessageCount(clientId) {
         messageLimit: client.messageLimit
     };
 }
+
 
 
 // ===== Image Resizing =====
