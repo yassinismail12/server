@@ -235,22 +235,16 @@ router.post("/", async (req, res) => {
 
                 // Extract text + images
                 let textOutput = "";
-
-                if (aiResponse.choices) {
-                    for (const choice of aiResponse.choices) {
-                        const message = choice.message;
-                        if (typeof message.content === "string") {
-                            textOutput += message.content;
-                        } else if (Array.isArray(message.content)) {
-                            for (const part of message.content) {
-                                if (part.type === "output_text") {
-                                    textOutput += part.text;
-                                }
-                                if (part.type === "output_image") {
-                                    imageOutputs.push(part.image_url);
-                                }
-                            }
-                        }
+// Responses API returns output array
+if (aiResponse.output && Array.isArray(aiResponse.output)) {
+    for (const part of aiResponse.output) {
+        if (part.type === "output_text" && part.text) {
+            textOutput += part.text;
+        }
+        if (part.type === "output_image" && part.image_url) {
+            imageOutputs.push(part.image_url);
+        }
+    
                     }
                 }
 
