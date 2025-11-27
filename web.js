@@ -79,13 +79,20 @@ async function incrementMessageCount(clientId) {
             $setOnInsert: {
                 messageLimit: 1000,
                 active: true,
-                quotaWarningSent: false
+                quotaWarningSent: false,
+                messageCount: 1 // ensure first count is set
             }
         },
-        { returnDocument: "after", upsert: true }
+        { upsert: true, returnDocument: "after" } // "after" returns updated doc
     );
 
-    const client = updated.value;
+    let client = updated.value;
+
+    // Fallback: if driver returns differently
+    if (!client) {
+        client = await clients.findOne({ clientId });
+    }
+
     if (!client || client.messageCount === undefined) {
         throw new Error("Client document missing after update");
     }
@@ -106,6 +113,7 @@ async function incrementMessageCount(clientId) {
         messageLimit: client.messageLimit
     };
 }
+
 
 // ===== Image Resizing =====
 async function resizeBase64Image(base64) {
