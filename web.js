@@ -218,12 +218,17 @@ if (clientDoc.active === false) {
         }
 
         // CASE 1: base64 image passed in req.body.image
-        if (image && typeof image === "string" && image.startsWith("data:image")) {
-            contentPayload.push({
-                type: "input_image",
-                image_url: image
-            });
-        }
+     // CASE 1: base64 image
+if (image && typeof image === "string" && image.startsWith("data:image")) {
+    // Reduce image size before sending OR save to server / cloud
+    // For now just note that we can't send large base64 directly
+    console.warn("🚨 Large base64 image detected, skipping OpenAI API send");
+    // Optionally push placeholder
+    contentPayload.push({
+        type: "input_image",
+        image_url: "https://your-server.com/placeholder.png"
+    });
+}
 
         // CASE 2: multipart file upload (mobile apps/WebView)
         if (req.files?.length) {

@@ -10,18 +10,28 @@ export async function getChatCompletion(history) {
         role: msg.role,
         content: Array.isArray(msg.content)
             ? msg.content
-            : [{ type: "text", text: msg.content }],
+            : [{ type: "text", text: String(msg.content) }],
     }));
+
+    // Trim large messages or images
+    formattedMessages.forEach(m => {
+        m.content = m.content.map(c => {
+            if (c.type === "text" && c.text.length > 2000) {
+                // truncate very long text
+                c.text = c.text.slice(-2000);
+            }
+            return c;
+        });
+    });
 
     const response = await openai.chat.completions.create({
         model: "gpt-4o",
         messages: formattedMessages
     });
 
-    // Extract assistant text reply as a string
     const assistantContent = response.choices[0].message.content;
 
-    // Join all text segments
+    // Convert to single string
     let replyText = "";
     for (const block of assistantContent) {
         if (block.type === "text") replyText += block.text;
