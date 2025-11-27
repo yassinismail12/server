@@ -273,19 +273,18 @@ router.post("/", async (req, res) => {
             imageUrls = assistantResponse.imageUrls || [];
         }
 
-        const assistantContent = [{ type: "text", text: assistantMessage }];
-        if (imageUrls.length > 0) {
-            assistantContent.push({ type: "text", text: `\n[Images: ${imageUrls.join(", ")}]` });
-        }
-        history.push({ role: "assistant", content: assistantContent, createdAt: new Date() });
-        await saveConversation(clientId, userId, history);
+     // Only push the assistant text to history
+const assistantContent = [{ role: "assistant", content: [{ type: "text", text: assistantMessage }], createdAt: new Date() }];
+history.push(assistantContent[0]); // push object directly
 
-        res.json({ 
-            reply: greeting + assistantMessage, 
-            imageUrls: imageUrls,
-            userId, 
-            usage: { count: usage.messageCount, limit: usage.messageLimit } 
-        });
+// Send JSON with clean imageUrls array
+res.json({ 
+    reply: greeting + assistantMessage, 
+    imageUrls: imageUrls, // <-- send array directly
+    userId, 
+    usage: { count: usage.messageCount, limit: usage.messageLimit } 
+});
+
 
     } catch (error) {
         console.error("❌ Error:", error.message);
