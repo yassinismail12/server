@@ -3,21 +3,20 @@ import OpenAI from "openai";
 const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
 
 export async function getChatCompletion(history) {
-  // Map history to valid OpenAI input format
-  const messagesForOpenAI = history.map(h => ({
-    role: h.role,
-    content: Array.isArray(h.content)
-      ? h.content.map(c => {
-          if (typeof c === "string") return { type: "input_text", text: c };
-          if (c.type === "input_image") return { type: "input_image", image_url: c.image_url };
-          return { type: "input_text", text: c.text || "" };
-        })
-      : [{ type: "input_text", text: h.content }]
-  }));
+  // Convert conversation history into a single string prompt
+  const prompt = history
+    .map(h => {
+      const role = h.role;
+      const content = Array.isArray(h.content)
+        ? h.content.map(c => (typeof c === "string" ? c : c.text || "")).join("\n")
+        : h.content;
+      return `${role.toUpperCase()}: ${content}`;
+    })
+    .join("\n\n");
 
   const response = await openai.responses.create({
     model: "gpt-4o",
-    input: messagesForOpenAI
+    input: prompt
   });
 
   let text = "";
