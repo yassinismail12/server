@@ -110,6 +110,7 @@ async function incrementMessageCount(clientId) {
 }
 
 // ===== Image helper with Cloudinary =====
+// Handles base64 images from frontend, uploads to Cloudinary, and formats for OpenAI Vision API
 async function formatMessageForGPT(userMessage, image) {
     const contentPayload = [];
 
@@ -118,32 +119,66 @@ async function formatMessageForGPT(userMessage, image) {
         contentPayload.push({ type: "text", text: userMessage });
     }
 
-    // Handle image: upload to Cloudinary and send URL to OpenAI
+    // Handle image: detect base64 format, upload to Cloudinary, then send URL to OpenAI
     if (image && typeof image === "string" && image.trim()) {
         try {
-            let uploadedUrl = image;
+            let imageDataUrl = image;
+            let uploadedUrl = null;
 
-            // If image is base64, upload to Cloudinary
-            if (image.startsWith("data:image/")) {
-                const uploadResponse = await cloudinary.uploader.upload(image, {
-                    folder: "user_uploads",
-                });
-                uploadedUrl = uploadResponse.secure_url;
+            // Check if image is base64 (with or without data URL prefix)
+            const isDataUrl = image.startsWith("data:image/");
+            const isBase64String = /^[A-Za-z0-9+/=\s]+$/.test(image.replace(/\s/g, "")) && image.length > 100;
+            
+            if (isDataUrl) {
+                // Already in data URL format (data:image/jpeg;base64,...)
+                imageDataUrl = image;
+            } else if (isBase64String) {
+                // Base64 string without prefix - add data URL prefix (default to jpeg)
+                // Most common format from file uploads
+                imageDataUrl = `data:image/jpeg;base64,${image.trim()}`;
+            } else if (image.startsWith("http://") || image.startsWith("https://")) {
+                // Already a URL - use directly (no Cloudinary upload needed)
+                uploadedUrl = image;
+            } else {
+                // Unknown format - try to use as-is
+                console.warn("⚠️ Unknown image format, attempting to use as-is");
+                uploadedUrl = image;
             }
 
-            // Add uploaded image URL to content for OpenAI
-            contentPayload.push({
-                type: "image_url",
-                image_url: {
-                    url: uploadedUrl,
-                    detail: "auto"
+            // Upload to Cloudinary if we have a data URL or base64 string
+            if (!uploadedUrl && imageDataUrl) {
+                try {
+                    const uploadResponse = await cloudinary.uploader.upload(imageDataUrl, {
+                        folder: "user_uploads",
+                        resource_type: "image"
+                    });
+                    uploadedUrl = uploadResponse.secure_url;
+                    console.log("✅ Image uploaded to Cloudinary:", uploadedUrl.substring(0, 50) + "...");
+                } catch (uploadErr) {
+                    console.error("❌ Error uploading image to Cloudinary:", uploadErr.message);
+                    // Fallback: try using data URL directly with OpenAI (works for small images)
+                    uploadedUrl = imageDataUrl;
                 }
-            });
+            }
+
+            // Add image URL to content for OpenAI Vision API
+            if (uploadedUrl) {
+                contentPayload.push({
+                    type: "image_url",
+                    image_url: {
+                        url: uploadedUrl,
+                        detail: "auto" // "auto" balances speed and accuracy
+                    }
+                });
+                console.log("✅ Image added to OpenAI request");
+            }
         } catch (err) {
-            console.error("❌ Error uploading image to Cloudinary:", err.message);
+            console.error("❌ Error processing image:", err.message);
+            // Continue without image if processing fails
         }
     }
 
+    // Ensure at least one content item (text or image)
     if (contentPayload.length === 0) {
         contentPayload.push({ type: "text", text: "" });
     }
