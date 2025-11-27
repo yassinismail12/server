@@ -111,38 +111,65 @@ async function incrementMessageCount(clientId) {
 // =======================
 //   MAIN CHAT ROUTE
 // =======================
+// ===== Route =====
 router.post("/", async (req, res) => {
     let { message: userMessage, clientId, userId, isFirstMessage, image } = req.body;
-    if (!userId) userId = crypto.randomUUID();
+
+    // Auto-generate userId if missing
+    if (!userId) {
+        userId = crypto.randomUUID();
+    }
+
+    console.log("Incoming chat request:", { clientId, userId, userMessage, isFirstMessage });
+
+    if (!userMessage && !image) {
+        return res.status(400).json({ reply: "⚠️ Missing message or image." });
+    }
 
     if (!clientId) {
-        return res.status(400).json({ reply: "Missing client ID." });
+        return res.status(400).json({ reply: "⚠️ Missing client ID." });
     }
 
     try {
+        // =============== CLIENT LOOKUP ===============
         const db = await connectDB();
-        const clientDoc = await db.collection("Clients").findOne({ clientId });
+        const clientsCollection = db.collection("Clients");
+        const clientDoc = await clientsCollection.findOne({ clientId });
 
-        if (!clientDoc || clientDoc.active === false) {
+        if (!clientDoc) {
+            console.log(`❌ Unknown clientId: ${clientId}`);
             return res.status(204).end();
         }
 
-        const usage = await incrementMessageCount(clientId);
-        if (!usage.allowed) return res.json({ reply: "" });
+        if (clientDoc.active === false) {
+            console.log(`🚫 Inactive client: ${clientId}`);
+            return res.status(204).end();
+        }
 
+        // =============== LIMIT CHECK ===============
+        const usage = await incrementMessageCount(clientId);
+        if (!usage.allowed) {
+            return res.json({ reply: "" });
+        }
+
+        // Ensure customer exists
         await findOrCreateCustomer(userId, clientId);
 
-        // detect name
+
+        // =============== NAME DETECTION ===============
         let nameMatch = null;
         const myNameMatch = userMessage?.match(/my name is\s+(.+)/i);
-        const bracketNameMatch = userMessage?.match(/\[name\]\s*:\s*(.+)/i);
         if (myNameMatch) nameMatch = myNameMatch[1].trim();
+
+        const bracketNameMatch = userMessage?.match(/\[name\]\s*:\s*(.+)/i);
         if (bracketNameMatch) nameMatch = bracketNameMatch[1].trim();
 
         if (nameMatch) {
             await updateCustomerName(userId, clientId, nameMatch);
+            console.log(`📝 Name detected and saved: ${nameMatch}`);
         }
 
+        // Load client files
         const finalSystemPrompt = await SYSTEM_PROMPT({ clientId });
 
         let filesContent = "";
@@ -152,65 +179,140 @@ router.post("/", async (req, res) => {
                 .join("\n\n");
         }
 
+        // Load conversation
         let convo = await getConversation(clientId, userId);
 
+        let greeting = "";
+        if (isFirstMessage) {
+            const customers = db.collection("Customers");
+            const customer = await customers.findOne({ customerId: userId, clientId });
+
+            if (customer?.name) {
+                greeting = `Hi ${customer.name}, welcome back! 👋\n\n`;
+            }
+        }
+
+        // =============== HISTORY SETUP ===============
         let history = convo?.history || [
             {
                 role: "system",
-                content: `${finalSystemPrompt}\n\nClient files:\n${filesContent}`
+                content: `${finalSystemPrompt}\n\nUse the following client files:\n${filesContent}`
             }
         ];
 
-        // Build multimodal message
-        let contentArray = [];
 
+        // 🖼️ ===================== IMAGE HANDLING =====================
+        let contentPayload = [];
+
+        // Always include user's text message (if any)
         if (userMessage) {
-            contentArray.push({
-                type: "input_text",
-                text: userMessage
+            contentPayload.push({ type: "text", text: userMessage });
+        }
+
+        // CASE 1: base64 image passed in req.body.image
+        if (image && typeof image === "string" && image.startsWith("data:image")) {
+            contentPayload.push({
+                type: "input_image",
+                image_url: image
             });
         }
 
-        if (image && image.data) {
-            contentArray.push({
-                type: "input_image",
-                image_url: `data:${image.type};base64,${image.data}`
-            });
+        // CASE 2: multipart file upload (mobile apps/WebView)
+        if (req.files?.length) {
+            for (let file of req.files) {
+                const base64 = file.buffer.toString("base64");
+                contentPayload.push({
+                    type: "input_image",
+                    image_url: `data:${file.mimetype};base64,${base64}`
+                });
+            }
         }
+        // ===================== END IMAGE HANDLING =====================
 
         history.push({
             role: "user",
-            content: contentArray,
+            content: contentPayload,
             createdAt: new Date()
         });
 
-        // OpenAI multimodal processing
-        const assistantMessage = await getChatCompletion(history);
+        // =============== OPENAI CALL ===============
+        let assistantMessage;
 
-        history.push({
-            role: "assistant",
-            content: assistantMessage,
-            createdAt: new Date()
-        });
+        try {
+            if (process.env.TEST_MODE === "true") {
+                const delay = Math.floor(Math.random() * 300) + 100;
+                await new Promise(r => setTimeout(r, delay));
+
+                assistantMessage = `🧪 Mock reply (image supported)`;
+                console.log("Test mode active");
+            } else {
+                assistantMessage = await getChatCompletion(history);
+            }
+        } catch (err) {
+            console.error("❌ OpenAI error:", err.message);
+
+            await db.collection("Logs").insertOne({
+                clientId,
+                userId,
+                level: "error",
+                source: "openai",
+                message: err.message,
+                timestamp: new Date(),
+            });
+
+            assistantMessage = "⚠️ I'm having trouble right now.";
+        }
+
+        // Save assistant reply
+        history.push({ role: "assistant", content: assistantMessage, createdAt: new Date() });
 
         await saveConversation(clientId, userId, history);
 
-        if (assistantMessage.includes("[TOUR_REQUEST]")) {
+        // Handle tour booking
+        if (assistantMessage?.includes("[TOUR_REQUEST]")) {
             const data = extractTourData(assistantMessage);
             data.clientId = clientId;
+
             try {
                 await sendTourEmail(data);
-            } catch (_) {}
+            } catch (err) {
+                console.error("❌ Failed to send tour email:", err.message);
+
+                await db.collection("Logs").insertOne({
+                    clientId,
+                    userId,
+                    level: "error",
+                    source: "email",
+                    message: err.message,
+                    timestamp: new Date(),
+                });
+            }
         }
 
-        res.json({
-            reply: assistantMessage,
+        return res.json({
+            reply: greeting + assistantMessage,
             userId,
-            usage
+            usage: { count: usage.messageCount, limit: usage.messageLimit }
         });
 
-    } catch (err) {
-        res.status(500).json({ reply: "Error occurred." });
+    } catch (error) {
+        console.error("❌ Error:", error.message);
+
+        try {
+            const db = await connectDB();
+            await db.collection("Logs").insertOne({
+                clientId,
+                userId,
+                level: "error",
+                source: "web",
+                message: error.message,
+                timestamp: new Date(),
+            });
+        } catch (dbErr) {
+            console.error("❌ DB log failed:", dbErr.message);
+        }
+
+        res.status(500).json({ reply: "⚠️ Sorry, something went wrong." });
     }
 });
 
