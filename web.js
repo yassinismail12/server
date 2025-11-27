@@ -272,7 +272,12 @@ if (clientDoc.active === false) {
         }
 
         // Save assistant reply
-        history.push({ role: "assistant", content: assistantMessage, createdAt: new Date() });
+       history.push({
+  role: "assistant",
+  content: [{ type: "text", text: assistantMessage }],
+  createdAt: new Date()
+});
+
 
         await saveConversation(clientId, userId, history);
 
