@@ -1,13 +1,14 @@
-// openai.js
 import OpenAI from "openai";
 
 const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
 
 export async function getChatCompletion(history) {
-    // Use gpt-4o-mini or gpt-4o with structured output if you want images
+    // Strip extra fields: only send role + content
+    const messagesForOpenAI = history.map(h => ({ role: h.role, content: h.content }));
+
     const response = await openai.responses.create({
         model: "gpt-4o",
-        input: history
+        input: messagesForOpenAI
     });
 
     let text = "";
