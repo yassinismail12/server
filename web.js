@@ -7,6 +7,7 @@ import { sendTourEmail } from "./sendEmail.js";
 import { extractTourData } from "./extractTourData.js";
 import { MongoClient } from "mongodb";
 import crypto from "crypto";
+import sharp from "sharp";
 
 const router = express.Router();
 const mongoClient = new MongoClient(process.env.MONGODB_URI);
@@ -24,8 +25,7 @@ async function connectDB() {
 async function findOrCreateCustomer(customerId, clientId) {
   const db = await connectDB();
   const customers = db.collection("Customers");
-
-  let customer = await customers.findOne({ customerId, clientId });
+  const customer = await customers.findOne({ customerId, clientId });
   if (!customer) {
     await customers.insertOne({
       customerId,
@@ -45,9 +45,7 @@ async function findOrCreateCustomer(customerId, clientId) {
 
 async function updateCustomerName(customerId, clientId, name) {
   const db = await connectDB();
-  const customers = db.collection("Customers");
-
-  await customers.updateOne(
+  await db.collection("Customers").updateOne(
     { customerId, clientId },
     { $set: { name, lastInteraction: new Date() } }
   );
@@ -77,39 +75,39 @@ async function incrementMessageCount(clientId) {
     { clientId },
     {
       $inc: { messageCount: 1 },
-      $setOnInsert: {
-        messageLimit: 1000,
-        active: true,
-        quotaWarningSent: false,
-      },
+      $setOnInsert: { messageLimit: 1000, active: true, quotaWarningSent: false },
     },
     { returnDocument: "after", upsert: true }
   );
 
   const client = updated.value;
-
-  if (!client || client.messageCount === undefined) {
+  if (!client || client.messageCount === undefined)
     throw new Error("Client document missing after update");
-  }
 
-  if (client.messageCount > client.messageLimit) {
-    return { allowed: false };
-  }
+  if (client.messageCount > client.messageLimit) return { allowed: false };
 
   const remaining = client.messageLimit - client.messageCount;
   if (remaining === 100 && !client.quotaWarningSent) {
     await sendQuotaWarning(clientId);
-    await clients.updateOne(
-      { clientId },
-      { $set: { quotaWarningSent: true } }
-    );
+    await clients.updateOne({ clientId }, { $set: { quotaWarningSent: true } });
   }
 
-  return {
-    allowed: true,
-    messageCount: client.messageCount,
-    messageLimit: client.messageLimit,
-  };
+  return { allowed: true, messageCount: client.messageCount, messageLimit: client.messageLimit };
+}
+
+// ===== Image Resizing =====
+async function resizeBase64Image(base64) {
+  const matches = base64.match(/^data:(image\/\w+);base64,(.+)$/);
+  if (!matches) return null;
+
+  const data = Buffer.from(matches[2], "base64");
+
+  const resizedBuffer = await sharp(data)
+    .resize({ width: 512, withoutEnlargement: true })
+    .toFormat("png")
+    .toBuffer();
+
+  return `data:image/png;base64,${resizedBuffer.toString("base64")}`;
 }
 
 // =======================
@@ -117,24 +115,16 @@ async function incrementMessageCount(clientId) {
 // =======================
 router.post("/", async (req, res) => {
   let { message: userMessage, clientId, userId, isFirstMessage, image } = req.body;
-
   if (!userId) userId = crypto.randomUUID();
 
   console.log("Incoming chat request:", { clientId, userId, userMessage, isFirstMessage });
 
-  if (!userMessage && !image) {
-    return res.status(400).json({ reply: "⚠️ Missing message or image." });
-  }
-
-  if (!clientId) {
-    return res.status(400).json({ reply: "⚠️ Missing client ID." });
-  }
+  if (!userMessage && !image) return res.status(400).json({ reply: "⚠️ Missing message or image." });
+  if (!clientId) return res.status(400).json({ reply: "⚠️ Missing client ID." });
 
   try {
     const db = await connectDB();
-    const clientsCollection = db.collection("Clients");
-    const clientDoc = await clientsCollection.findOne({ clientId });
-
+    const clientDoc = await db.collection("Clients").findOne({ clientId });
     if (!clientDoc) return res.status(403).json({ error: "Invalid clientId" });
     if (!clientDoc.active) return res.status(403).json({ error: "Client is inactive" });
 
@@ -144,23 +134,17 @@ router.post("/", async (req, res) => {
     await findOrCreateCustomer(userId, clientId);
 
     // ===== Name detection =====
-    let nameMatch = null;
-    const myNameMatch = userMessage?.match(/my name is\s+(.+)/i);
-    if (myNameMatch) nameMatch = myNameMatch[1].trim();
-
-    const bracketNameMatch = userMessage?.match(/\[name\]\s*:\s*(.+)/i);
-    if (bracketNameMatch) nameMatch = bracketNameMatch[1].trim();
+    let nameMatch =
+      userMessage?.match(/my name is\s+(.+)/i)?.[1]?.trim() ||
+      userMessage?.match(/\[name\]\s*:\s*(.+)/i)?.[1]?.trim();
 
     if (nameMatch) await updateCustomerName(userId, clientId, nameMatch);
 
     // ===== System prompt + client files =====
     const finalSystemPrompt = await SYSTEM_PROMPT({ clientId });
-    let filesContent = "";
-    if (clientDoc?.files?.length) {
-      filesContent = clientDoc.files
-        .map(f => `File: ${f.name}\nContent:\n${f.content}`)
-        .join("\n\n");
-    }
+    let filesContent = clientDoc?.files?.length
+      ? clientDoc.files.map(f => `File: ${f.name}\nContent:\n${f.content}`).join("\n\n")
+      : "";
 
     // ===== Load conversation =====
     const convo = await getConversation(clientId, userId);
@@ -173,9 +157,7 @@ router.post("/", async (req, res) => {
     let history = convo?.history || [
       {
         role: "system",
-        content: [
-          { type: "text", text: `${finalSystemPrompt}\n\nUse the following client files:\n${filesContent}` }
-        ]
+        content: [{ type: "text", text: `${finalSystemPrompt}\n\nUse the following client files:\n${filesContent}` }]
       }
     ];
 
@@ -185,21 +167,19 @@ router.post("/", async (req, res) => {
 
     // ===== Handle image input =====
     if (image && typeof image === "string" && image.startsWith("data:image")) {
-      console.warn("🚨 Large base64 image detected, skipping raw send");
-      // Placeholder for API if you don't want to send huge base64
-      contentPayload.push({
-        type: "input_image",
-        image_url: "https://your-server.com/placeholder.png"
-      });
+      try {
+        const resized = await resizeBase64Image(image);
+        if (resized) contentPayload.push({ type: "input_image", image_url: resized });
+      } catch (err) {
+        console.warn("🚨 Failed to resize image, using placeholder:", err.message);
+        contentPayload.push({ type: "input_image", image_url: "https://your-server.com/placeholder.png" });
+      }
     }
 
     if (req.files?.length) {
       for (const file of req.files) {
         const base64 = file.buffer.toString("base64");
-        contentPayload.push({
-          type: "input_image",
-          image_url: `data:${file.mimetype};base64,${base64}`
-        });
+        contentPayload.push({ type: "input_image", image_url: `data:${file.mimetype};base64,${base64}` });
       }
     }
 
@@ -261,6 +241,7 @@ router.post("/", async (req, res) => {
       userId,
       usage: { count: usage.messageCount, limit: usage.messageLimit }
     });
+
   } catch (error) {
     console.error("❌ Error:", error.message);
     try {
