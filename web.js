@@ -83,13 +83,14 @@ async function incrementMessageCount(clientId) {
       $setOnInsert: { messageLimit: 1000, active: true, quotaWarningSent: false }
     },
     {
-      returnDocument: "after",
+      returnDocument: "after", // ensures you get the doc after update
       upsert: true
     }
   );
 
   let client = updated.value;
 
+  // if still null (driver quirk), fetch manually
   if (!client) {
     client = await clients.findOne({ clientId });
   }
@@ -98,6 +99,7 @@ async function incrementMessageCount(clientId) {
     throw new Error(`Failed to create/find client ${clientId}`);
   }
 
+  // block if over limit
   if (client.messageCount > client.messageLimit) {
     return {
       allowed: false,
@@ -106,6 +108,7 @@ async function incrementMessageCount(clientId) {
     };
   }
 
+  // warning if close to limit
   const remaining = client.messageLimit - client.messageCount;
   if (remaining === 100 && !client.quotaWarningSent) {
     await sendQuotaWarning(clientId);
@@ -122,10 +125,12 @@ async function incrementMessageCount(clientId) {
   };
 }
 
+
 // ===== Route =====
 router.post("/", async (req, res) => {
     let { message: userMessage, clientId, userId, isFirstMessage } = req.body;
 
+    // Auto-generate userId if missing
     if (!userId) {
         userId = crypto.randomUUID();
     }
@@ -137,63 +142,81 @@ router.post("/", async (req, res) => {
     }
 
     try {
-        const db = await connectDB();
-        const clientsCollection = db.collection("Clients");
-        const clientDoc = await clientsCollection.findOne({ clientId });
+        // ✅ Connect to DB and fetch client doc
+      // ✅ Connect to DB and fetch client doc
+const db = await connectDB();
+const clientsCollection = db.collection("Clients");
+const clientDoc = await clientsCollection.findOne({ clientId });
 
-        if (!clientDoc) {
-            console.log(`❌ Unknown clientId: ${clientId}`);
-            return res.status(204).end();
-        }
+// ❌ If client not found, ignore request
+if (!clientDoc) {
+    console.log(`❌ Unknown clientId: ${clientId}`);
+    return res.status(204).end(); // No Content = bot stays silent
+}
 
-        if (clientDoc.active === false) {
-            console.log(`🚫 Inactive client: ${clientId}`);
-            return res.status(204).end();
-        }
+// ❌ If client is inactive, ignore too
+if (clientDoc.active === false) {
+    console.log(`🚫 Inactive client: ${clientId}`);
+    return res.status(204).end();
+}
 
+
+        // ✅ Then check message limit
         const usage = await incrementMessageCount(clientId);
         if (!usage.allowed) {
             return res.json({
-                reply: ""
+                reply: "" // or "⚠️ Message limit reached"
             });
         }
 
+        // Ensure customer exists
         await findOrCreateCustomer(userId, clientId);
 
-        let nameMatch = null;
+       // Detect if user provided their name
+let nameMatch = null;
 
-        const myNameMatch = userMessage.match(/my name is\s+(.+)/i);
-        if (myNameMatch) {
-            nameMatch = myNameMatch[1].trim();
-        }
+// Case 1: "my name is ..."
+const myNameMatch = userMessage.match(/my name is\s+(.+)/i);
+if (myNameMatch) {
+    nameMatch = myNameMatch[1].trim();
+}
 
-        const bracketNameMatch = userMessage.match(/\[name\]\s*:\s*(.+)/i);
-        if (bracketNameMatch) {
-            nameMatch = bracketNameMatch[1].trim();
-        }
+// Case 2: "[Name]: ..." with optional spaces
+const bracketNameMatch = userMessage.match(/\[name\]\s*:\s*(.+)/i);
+if (bracketNameMatch) {
+    nameMatch = bracketNameMatch[1].trim();
+}
 
-        if (nameMatch) {
-            await updateCustomerName(userId, clientId, nameMatch);
-            console.log(`📝 Name detected and saved: ${nameMatch}`);
-        }
+if (nameMatch) {
+    await updateCustomerName(userId, clientId, nameMatch);
+    console.log(`📝 Name detected and saved: ${nameMatch}`);
+}
 
+        // Get system prompt
         const finalSystemPrompt = await SYSTEM_PROMPT({ clientId });
+        // ===== Load client files =====
 
         let filesContent = "";
         if (clientDoc?.files?.length) {
             filesContent = clientDoc.files.map(f => `File: ${f.name}\nContent:\n${f.content}`).join("\n\n");
         }
 
+        // Load conversation
         let convo = await getConversation(clientId, userId);
 
+        // Greeting if first message
         let greeting = "";
         if (isFirstMessage) {
-            const customer = await db.collection("Customers").findOne({ customerId: userId, clientId });
+            const db = await connectDB();
+            const customers = db.collection("Customers");
+            const customer = await customers.findOne({ customerId: userId, clientId });
+
             if (customer?.name) {
                 greeting = `Hi ${customer.name}, welcome back! 👋\n\n`;
             }
         }
 
+        // Build conversation history
         let history = convo?.history || [
             {
                 role: "system",
@@ -201,120 +224,98 @@ router.post("/", async (req, res) => {
             }
         ];
 
-        if (req.body.image) {
-            history.push({
-                role: "user",
-                content: [
-                    { type: "text", text: userMessage || "Analyze this image" },
-                    { type: "image_url", image_url: req.body.image }
-                ],
-                createdAt: new Date()
-            });
-        } else {
-            history.push({
-                role: "user",
-                content: userMessage,
-                createdAt: new Date()
-            });
-        }
+        history.push({ role: "user", content: userMessage, createdAt: new Date() });
 
-        let assistantMessage;
-        let imageOutputs = [];
+        // Call OpenAI
+  // Call OpenAI or mock (Test Mode)
+let assistantMessage;
 
-        try {
-            if (process.env.TEST_MODE === "true") {
-                const delay = Math.floor(Math.random() * 300) + 100;
-                await new Promise((r) => setTimeout(r, delay));
+try {
+    if (process.env.TEST_MODE === "true") {
+        // 🧪 Simulate OpenAI response without spending tokens
+        const delay = Math.floor(Math.random() * 300) + 100; // 100–400ms delay
+        await new Promise((r) => setTimeout(r, delay));
 
-                assistantMessage = `🧪 Mock reply for ${clientId} — message: "${userMessage.slice(0, 20)}..."`;
-                console.log("✅ Test mode active — skipping OpenAI call");
-            } else {
+        assistantMessage = `🧪 Mock reply for ${clientId} — message: "${userMessage.slice(0, 20)}..."`;
+        console.log("✅ Test mode active — skipping OpenAI call");
+    } else {
+        // 🧠 Real OpenAI call
+        assistantMessage = await getChatCompletion(history);
+    }
+} catch (err) {
+    console.error("❌ OpenAI error:", err.message);
 
-                // 🧠 REAL OPENAI CALL
-                const aiResponse = await getChatCompletion(history);
 
-                // Extract text + images
-                let textOutput = "";
-// Responses API returns output array
-if (aiResponse.output && Array.isArray(aiResponse.output)) {
-    for (const part of aiResponse.output) {
-        if (part.type === "output_text" && part.text) {
-            textOutput += part.text;
-        }
-        if (part.type === "output_image" && part.image_url) {
-            imageOutputs.push(part.image_url);
-        }
-    
-                    }
-                }
 
-                assistantMessage = textOutput;
-            }
-        } catch (err) {
-            console.error("❌ OpenAI error:", err.message);
+    // Optional: log error in DB
+    const db = await connectDB();
+    await db.collection("Logs").insertOne({
+        clientId,
+        userId,
+        level: "error",
+        source: "openai",
+        message: err.message,
+        timestamp: new Date(),
+    });
 
-            await db.collection("Logs").insertOne({
-                clientId,
-                userId,
-                level: "error",
-                source: "openai",
-                message: err.message,
-                timestamp: new Date(),
-            });
+    assistantMessage = "⚠️ I'm having trouble right now. Please try again later.";
+}
 
-            assistantMessage = "⚠️ I'm having trouble right now. Please try again later.";
-        }
 
+        // Append assistant reply
         history.push({ role: "assistant", content: assistantMessage, createdAt: new Date() });
 
+        // Save conversation
         await saveConversation(clientId, userId, history);
 
-        if (assistantMessage.includes("[TOUR_REQUEST]")) {
-            const data = extractTourData(assistantMessage);
-            data.clientId = clientId;
+        // Handle tour booking
+     if (assistantMessage.includes("[TOUR_REQUEST]")) {
+    const data = extractTourData(assistantMessage);
+    data.clientId = clientId;
 
-            console.log("Sending tour email with data:", data);
-            try {
-                await sendTourEmail(data);
-            } catch (err) {
-                console.error("❌ Failed to send tour email:", err.message);
-                await db.collection("Logs").insertOne({
-                    clientId,
-                    userId,
-                    level: "error",
-                    source: "email",
-                    message: err.message,
-                    timestamp: new Date(),
-                });
-            }
-        }
+    console.log("Sending tour email with data:", data);
+    try {
+        await sendTourEmail(data);
+    } catch (err) {
+        console.error("❌ Failed to send tour email:", err.message);
+        const db = await connectDB();
+        await db.collection("Logs").insertOne({
+            clientId,
+            userId,
+            level: "error",
+            source: "email",
+            message: err.message,
+            timestamp: new Date(),
+        });
+    }
+}
 
+
+        // Return reply
         res.json({
             reply: greeting + assistantMessage,
-            images: imageOutputs,
             userId,
             usage: { count: usage.messageCount, limit: usage.messageLimit }
         });
-
    } catch (error) {
-        console.error("❌ Error:", error.message);
+    console.error("❌ Error:", error.message);
 
-        try {
-            const db = await connectDB();
-            await db.collection("Logs").insertOne({
-                clientId,
-                userId,
-                level: "error",
-                source: "web",
-                message: error.message,
-                timestamp: new Date(),
-            });
-        } catch (dbErr) {
-            console.error("❌ Failed to log error in DB:", dbErr.message);
-        }
-
-        res.status(500).json({ reply: "⚠️ Sorry, something went wrong." });
+    try {
+        const db = await connectDB();
+        await db.collection("Logs").insertOne({
+            clientId,
+            userId,
+            level: "error",
+            source: "web",
+            message: error.message,
+            timestamp: new Date(),
+        });
+    } catch (dbErr) {
+        console.error("❌ Failed to log error in DB:", dbErr.message);
     }
+
+    res.status(500).json({ reply: "⚠️ Sorry, something went wrong." });
+}
 });
 
 export default router;
