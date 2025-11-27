@@ -136,15 +136,15 @@ router.post("/", async (req, res) => {
         const clientsCollection = db.collection("Clients");
         const clientDoc = await clientsCollection.findOne({ clientId });
 
-        if (!clientDoc) {
-            console.log(`❌ Unknown clientId: ${clientId}`);
-            return res.status(204).end();
-        }
+     if (!clientDoc) {
+    console.log(`❌ Unknown clientId: ${clientId}`);
+    return res.status(403).json({ error: "Invalid clientId" });
+}
 
-        if (clientDoc.active === false) {
-            console.log(`🚫 Inactive client: ${clientId}`);
-            return res.status(204).end();
-        }
+if (clientDoc.active === false) {
+    console.log(`🚫 Inactive client: ${clientId}`);
+    return res.status(403).json({ error: "Client is inactive" });
+}
 
         // =============== LIMIT CHECK ===============
         const usage = await incrementMessageCount(clientId);
