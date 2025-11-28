@@ -29,7 +29,9 @@ app.use(cors({
 
 app.use(cookieParser());
 
-app.use(express.json());
+app.use(express.json({ limit: "10mb" })); // allow JSON up to 10 MB
+app.use(express.urlencoded({ limit: "10mb", extended: true })); // for form data
+
 
 // ✅ Ensure uploads folder exists
 const uploadDir = path.join(process.cwd(), "uploads");
