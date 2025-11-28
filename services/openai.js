@@ -1,3 +1,7 @@
+import OpenAI from "openai";
+
+const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
+
 export async function getChatCompletion(history) {
     // Format messages for OpenAI API
     const formattedMessages = history.map(msg => {
