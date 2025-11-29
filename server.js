@@ -163,6 +163,50 @@ app.get("/api/clients/:id", verifyToken, requireClientOwnership, async (req, res
         res.status(500).json({ error: "Server error" });
     }
 });
+// POST /admin/renew/:clientId
+
+app.post("/admin/renew/:clientId", async (req, res) => {
+  const clientId = req.params.clientId;
+  const now = new Date();
+  const nextMonth = new Date();
+  nextMonth.setMonth(now.getMonth() + 1);
+
+  await clientsCollection.updateOne(
+    { clientId },
+    {
+      $set: {
+        messagesCount: 0,
+        quotaWarningSent: false,
+        currentPeriodStart: now,
+        currentPeriodEnd: nextMonth,
+      },
+    }
+  );
+
+  res.json({ success: true, message: "Client renewed successfully" });
+});
+// POST /admin/renew-all
+
+app.post("/admin/renew-all", async (req, res) => {
+  const now = new Date();
+  const nextMonth = new Date();
+  nextMonth.setMonth(now.getMonth() + 1);
+
+  await clientsCollection.updateMany(
+    {}, // all clients
+    {
+      $set: {
+        messagesCount: 0,
+        quotaWarningSent: false,
+        currentPeriodStart: now,
+        currentPeriodEnd: nextMonth,
+      },
+    }
+  );
+
+  res.json({ success: true, message: "All clients renewed successfully" });
+});
+
 
 
 app.post("/api/create-admin", async (req, res) => {
