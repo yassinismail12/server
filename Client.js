@@ -9,13 +9,13 @@ const clientSchema = new mongoose.Schema({
     paymentPlans: { type: String },                // payment plans markdown
     systemPrompt: { type: String },                // system prompt for the bot
     clientId: { type: String, required: true },    // client identifier
-    igId: { type: String , default:""},                         // Instagram ID
+    igId: { type: String , default:""},            // Instagram ID
     pageId: { type: String },                      // page ID for Messenger
     messageCount: { type: Number, default: 0 },    // messages used
     messageLimit: { type: Number, default: 1000 }, // quota
+    quotaWarningSent: { type: Boolean, default: false }, // ✅ add this field
     createdAt: { type: Date, default: Date.now },  // when the client was added
-igAccessToken: { type: String, default: "" }, // Instagram Page Access Token
-
+    igAccessToken: { type: String, default: "" },  // Instagram Page Access Token
     PAGE_ACCESS_TOKEN: { type: String, default: "" },
     VERIFY_TOKEN: { type: String, default: "" },
 
@@ -34,6 +34,3 @@ igAccessToken: { type: String, default: "" }, // Instagram Page Access Token
 const Client = mongoose.model("Client", clientSchema, "Clients");
 
 export default Client;
-
-
-
