@@ -166,45 +166,64 @@ app.get("/api/clients/:id", verifyToken, requireClientOwnership, async (req, res
 // POST /admin/renew/:clientId
 
 app.post("/admin/renew/:clientId", async (req, res) => {
-  const clientId = req.params.clientId;
-  const now = new Date();
-  const nextMonth = new Date();
-  nextMonth.setMonth(now.getMonth() + 1);
+  try {
+    const { clientId } = req.params;
 
-  await clientsCollection.updateOne(
-    { clientId },
-    {
-      $set: {
-        messagesCount: 0,
-        quotaWarningSent: false,
-        currentPeriodStart: now,
-        currentPeriodEnd: nextMonth,
-      },
+    const client = await Client.findOne({ clientId });
+    if (!client) {
+      return res.status(404).json({ error: "❌ Client not found" });
     }
-  );
 
-  res.json({ success: true, message: "Client renewed successfully" });
+    const now = new Date();
+    const nextMonth = new Date();
+    nextMonth.setMonth(now.getMonth() + 1);
+
+    await Client.updateOne(
+      { clientId },
+      {
+        $set: {
+          messageCount: 0,           // ✔ correct field
+          quotaWarningSent: false,
+          currentPeriodStart: now,
+          currentPeriodEnd: nextMonth,
+        },
+      }
+    );
+
+    res.json({ success: true, message: "Client renewed successfully" });
+
+  } catch (err) {
+    console.error("❌ Renew error:", err);
+    res.status(500).json({ error: "Server error during renew" });
+  }
 });
+
 // POST /admin/renew-all
 
 app.post("/admin/renew-all", async (req, res) => {
-  const now = new Date();
-  const nextMonth = new Date();
-  nextMonth.setMonth(now.getMonth() + 1);
+  try {
+    const now = new Date();
+    const nextMonth = new Date();
+    nextMonth.setMonth(now.getMonth() + 1);
 
-  await clientsCollection.updateMany(
-    {}, // all clients
-    {
-      $set: {
-        messagesCount: 0,
-        quotaWarningSent: false,
-        currentPeriodStart: now,
-        currentPeriodEnd: nextMonth,
-      },
-    }
-  );
+    await Client.updateMany(
+      {}, 
+      {
+        $set: {
+          messageCount: 0,          // ✔ correct field
+          quotaWarningSent: false,  // ✔ correct field
+          currentPeriodStart: now,
+          currentPeriodEnd: nextMonth,
+        },
+      }
+    );
 
-  res.json({ success: true, message: "All clients renewed successfully" });
+    res.json({ success: true, message: "All clients renewed successfully" });
+
+  } catch (err) {
+    console.error("❌ Renew-all error:", err);
+    res.status(500).json({ error: "Server error during renew-all" });
+  }
 });
 
 
