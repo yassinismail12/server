@@ -112,26 +112,3 @@ export async function setupIceBreakers(pageId) {
     console.error("❌ Error setting up ice breakers:", error.message);
   }
 }
-export async function sendMessengerImage(psid, imageUrl, pageId) {
-    const pageAccessToken = process.env[`PAGE_TOKEN_${pageId}`];
-
-    return fetch(
-        `https://graph.facebook.com/v18.0/me/messages?access_token=${pageAccessToken}`,
-        {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({
-                recipient: { id: psid },
-                message: {
-                    attachment: {
-                        type: "image",
-                        payload: {
-                            url: imageUrl,
-                            is_reusable: true
-                        }
-                    }
-                }
-            })
-        }
-    );
-}
