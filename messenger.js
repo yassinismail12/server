@@ -3,7 +3,7 @@ import express from "express";
 import fetch from "node-fetch";
 import { getChatCompletion } from "./services/openai.js";
 import { SYSTEM_PROMPT } from "./utils/systemPrompt.js";
-import { sendMessengerReply,sendMarkAsRead,sendMessengerImage } from "./services/messenger.js";
+import { sendMessengerReply,sendMarkAsRead } from "./services/messenger.js";
 import { sendQuotaWarning } from "./sendQuotaWarning.js";
 import { sendTourEmail } from "./sendEmail.js";
 import { extractTourData } from "./extractTourData.js";
@@ -245,150 +245,124 @@ router.post("/", async (req, res) => {
                 continue;
             }
 
-// ===== IMAGE MESSAGE HANDLING =====
-if (
-    webhook_event.message?.attachments &&
-    webhook_event.message.attachments[0]?.type === "image"
-) {
-    const imageUrl = webhook_event.message.attachments[0].payload.url;
-    console.log("🖼️ Received image:", imageUrl);
-
-    const clientDoc = await getClientDoc(pageId);
-    const finalSystemPrompt = await SYSTEM_PROMPT({ pageId });
-
-    let convo = await getConversation(pageId, sender_psid);
-    let history = convo?.history || [
-        { role: "system", content: finalSystemPrompt }
-    ];
-
-    // Add image to conversation
-    history.push({
-        role: "user",
-        content: [
-            { type: "text", text: "Analyze this image" },
-            { type: "image_url", image_url: imageUrl }
-        ],
-        createdAt: new Date()
-    });
-
-    // Call OpenAI
-   const ai = await getChatCompletion(history);
-
-// Save to conversation
-history.push({
-  role: "assistant",
-  content: ai,
-  createdAt: new Date()
-});
-await saveConversation(pageId, sender_psid, history, new Date());
-
-// Handle output blocks
-for (const block of ai.output) {
-  if (block.type === "image") {
-    await sendMessengerImage(sender_psid, block.image_url, pageId);
-  }
-
-  if (block.type === "output_text") {
-    await sendMessengerReply(sender_psid, block.text, pageId);
-  }
-}
-
-
-continue;
-
-}
-
-
-
 if (webhook_event.message?.text) {
     const userMessage = webhook_event.message.text;
     console.log("📝 Received user message:", userMessage);
 
+    // ===== Robust Typing Handler =====
     async function processMessageWithTyping() {
+        let convo, history, greeting, firstName;
 
+        // ===== AI + DB work =====
         const finalSystemPrompt = await SYSTEM_PROMPT({ pageId });
-        let convo = await getConversation(pageId, sender_psid);
+        convo = await getConversation(pageId, sender_psid);
+        history = convo?.history || [{ role: "system", content: finalSystemPrompt }];
 
-        let history = convo?.history || [
-            { role: "system", content: finalSystemPrompt }
-        ];
+        firstName = "there";
+        greeting = "";
 
-        let greeting = "";
-
-        // New day → send greeting
         if (!convo || isNewDay(convo.lastInteraction)) {
             const userProfile = await getUserProfile(sender_psid, clientDoc.PAGE_ACCESS_TOKEN);
+            firstName = userProfile.first_name || "there";
             await saveCustomer(pageId, sender_psid, userProfile);
 
-            greeting = `Hi ${userProfile.first_name || "there"}, good to see you today 👋`;
-            history.push({
-                role: "assistant",
-                content: greeting,
-                createdAt: new Date(),
-            });
-        }
+            greeting = `Hi ${firstName}, good to see you today 👋`;
+            history.push({ role: "assistant", content: greeting, createdAt: new Date() });
+        }// Support image input from the widget
+if (req.body.image) {
+    history.push({
+        role: "user",
+        content: [
+            { type: "text", text: userMessage || "Analyze this image" },
+            { type: "image_url", image_url: req.body.image }
+        ],
+        createdAt: new Date()
+    });
+} else {
+    history.push({
+        role: "user",
+        content: userMessage,
+        createdAt: new Date()
+    });
+}
 
-        // Add user message
-        history.push({
-            role: "user",
-            content: userMessage,
-            createdAt: new Date()
-        });
 
-        // Call OpenAI ONCE
-        const ai = await getChatCompletion(history);
+        // Generate AI reply
+       let assistantMessage;
+try {
+    assistantMessage = await getChatCompletion(history);
+} catch (err) {
+    console.error("❌ OpenAI error:", err.message);
 
-        // Save AI message
-        history.push({
-            role: "assistant",
-            content: ai,
-            createdAt: new Date()
-        });
-
-        await saveConversation(pageId, sender_psid, history, new Date());
-
-        // Send greeting (if any)
-        if (greeting) {
-            await sendMessengerReply(sender_psid, greeting, pageId);
-        }
-
-        // Send each output block
-        for (const block of ai.output) {
-            if (block.type === "output_text") {
-                await sendMessengerReply(sender_psid, block.text, pageId);
-            }
-
-            if (block.type === "image") {
-                await sendMessengerImage(sender_psid, block.image_url, pageId);
-            }
-        }
-
-        // Detect TOUR REQUEST
-        const textBlocks = ai.output
-            .filter(b => b.type === "output_text")
-            .map(b => b.text)
-            .join("\n");
-
-        if (textBlocks.includes("[TOUR_REQUEST]")) {
-            const data = extractTourData(textBlocks);
-            data.pageId = pageId;
-
-            try {
-                await sendTourEmail(data);
-            } catch (err) {
-                console.error("❌ Failed to send tour email:", err.message);
-            }
-        }
-    }
-
-    await sendMarkAsRead(sender_psid, pageId);
-    await new Promise(res => setTimeout(res, 1000));
-
-    await processMessageWithTyping().catch(async err => {
-        console.error("❌ Processing error:", err.message);
-        await sendMessengerReply(sender_psid, "⚠️ حصلت مشكلة. جرب تاني بعد شوية.", pageId);
+    // Save error log in MongoDB
+    const db = await connectDB();
+    await db.collection("Logs").insertOne({
+        pageId,
+        psid: sender_psid,
+        level: "error",
+        source: "openai",
+        message: err.message,
+        timestamp: new Date(),
     });
 
+    assistantMessage = "⚠️ I'm having trouble right now. Please try again shortly.";
+}
+
+
+        history.push({ role: "assistant", content: assistantMessage, createdAt: new Date() });
+        await saveConversation(pageId, sender_psid, history, new Date());
+
+        let combinedMessage = assistantMessage;
+        if (greeting) combinedMessage = `${greeting}\n\n${assistantMessage}`;
+
+   if (assistantMessage.includes("[TOUR_REQUEST]")) {
+    const data = extractTourData(assistantMessage);
+    data.pageId = pageId;
+    console.log("✈️ Tour request detected, sending email", data);
+
+    try {
+        await sendTourEmail(data);
+    } catch (err) {
+        console.error("❌ Failed to send tour email:", err.message);
+        const db = await connectDB();
+        await db.collection("Logs").insertOne({
+            pageId,
+            psid: sender_psid,
+            level: "error",
+            source: "email",
+            message: err.message,
+            timestamp: new Date(),
+        });
+    }
+}
+
+
+        await sendMessengerReply(sender_psid, combinedMessage, pageId);
+    }
+
+    // ===== Show typing while processing =====
+  // ===== Show mark_seen while processing =====
+await sendMarkAsRead(sender_psid, pageId); // Let user know message is seen
+await new Promise((resolve) => setTimeout(resolve, 1200)); // Small natural pause
+await processMessageWithTyping().catch(async (err) => {
+  console.error("❌ Processing error:", err.message);
+
+  const db = await connectDB();
+  await db.collection("Logs").insertOne({
+    pageId,
+    psid: sender_psid,
+    level: "error",
+    source: "messenger",
+    message: err.message,
+    timestamp: new Date(),
+  });
+
+  await sendMessengerReply(
+    sender_psid,
+    "⚠️ حصلت مشكلة. جرب تاني بعد شوية.",
+    pageId
+  );
+});
 
 
 
