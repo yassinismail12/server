@@ -268,24 +268,9 @@ if (webhook_event.message?.text) {
 
             greeting = `Hi ${firstName}, good to see you today 👋`;
             history.push({ role: "assistant", content: greeting, createdAt: new Date() });
-        }// Support image input from the widget
-if (req.body.image) {
-    history.push({
-        role: "user",
-        content: [
-            { type: "text", text: userMessage || "Analyze this image" },
-            { type: "image_url", image_url: req.body.image }
-        ],
-        createdAt: new Date()
-    });
-} else {
-    history.push({
-        role: "user",
-        content: userMessage,
-        createdAt: new Date()
-    });
-}
+        }
 
+        history.push({ role: "user", content: userMessage, createdAt: new Date() });
 
         // Generate AI reply
        let assistantMessage;
