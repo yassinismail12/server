@@ -6,19 +6,11 @@ import { sendTourEmail } from "./sendEmail.js";
 import { extractTourData } from "./extractTourData.js";
 import { MongoClient } from "mongodb";
 import crypto from "crypto";
-import { v2 as cloudinary } from "cloudinary";
 
 const router = express.Router();
 
 const mongoClient = new MongoClient(process.env.MONGODB_URI);
 const dbName = "Agent";
-
-// ===== Cloudinary Configuration =====
-cloudinary.config({
-    cloud_name: process.env.CLOUDINARY_CLOUD_NAME,
-    api_key: process.env.CLOUDINARY_API_KEY,
-    api_secret: process.env.CLOUDINARY_API_SECRET,
-});
 
 // ===== DB Connection =====
 async function connectDB() {
@@ -89,207 +81,240 @@ async function incrementMessageCount(clientId) {
       $inc: { messageCount: 1 },
       $setOnInsert: { messageLimit: 1000, active: true, quotaWarningSent: false }
     },
-    { returnDocument: "after", upsert: true }
+    {
+      returnDocument: "after", // ensures you get the doc after update
+      upsert: true
+    }
   );
 
   let client = updated.value;
-  if (!client) client = await clients.findOne({ clientId });
-  if (!client) throw new Error(`Failed to create/find client ${clientId}`);
 
-  if (client.messageCount > client.messageLimit) {
-    return { allowed: false, messageCount: client.messageCount, messageLimit: client.messageLimit };
+  // if still null (driver quirk), fetch manually
+  if (!client) {
+    client = await clients.findOne({ clientId });
   }
 
+  if (!client) {
+    throw new Error(`Failed to create/find client ${clientId}`);
+  }
+
+  // block if over limit
+  if (client.messageCount > client.messageLimit) {
+    return {
+      allowed: false,
+      messageCount: client.messageCount,
+      messageLimit: client.messageLimit
+    };
+  }
+
+  // warning if close to limit
   const remaining = client.messageLimit - client.messageCount;
   if (remaining === 100 && !client.quotaWarningSent) {
     await sendQuotaWarning(clientId);
-    await clients.updateOne({ clientId }, { $set: { quotaWarningSent: true } });
+    await clients.updateOne(
+      { clientId },
+      { $set: { quotaWarningSent: true } }
+    );
   }
 
-  return { allowed: true, messageCount: client.messageCount, messageLimit: client.messageLimit };
+  return {
+    allowed: true,
+    messageCount: client.messageCount,
+    messageLimit: client.messageLimit
+  };
 }
 
-// ===== Image helper with Cloudinary =====
-// Handles base64 images from frontend, uploads to Cloudinary, and formats for OpenAI Vision API
-async function formatMessageForGPT(userMessage, image) {
-    const contentPayload = [];
-
-    // Add text message if provided
-    if (userMessage && typeof userMessage === "string" && userMessage.trim()) {
-        contentPayload.push({ type: "text", text: userMessage });
-    }
-
-    // Handle image: detect base64 format, upload to Cloudinary, then send URL to OpenAI
-    if (image && typeof image === "string" && image.trim()) {
-        try {
-            let imageDataUrl = image;
-            let uploadedUrl = null;
-
-            // Check if image is base64 (with or without data URL prefix)
-            const isDataUrl = image.startsWith("data:image/");
-            const isBase64String = /^[A-Za-z0-9+/=\s]+$/.test(image.replace(/\s/g, "")) && image.length > 100;
-            
-            if (isDataUrl) {
-                // Already in data URL format (data:image/jpeg;base64,...)
-                imageDataUrl = image;
-            } else if (isBase64String) {
-                // Base64 string without prefix - add data URL prefix (default to jpeg)
-                // Most common format from file uploads
-                imageDataUrl = `data:image/jpeg;base64,${image.trim()}`;
-            } else if (image.startsWith("http://") || image.startsWith("https://")) {
-                // Already a URL - use directly (no Cloudinary upload needed)
-                uploadedUrl = image;
-            } else {
-                // Unknown format - try to use as-is
-                console.warn("⚠️ Unknown image format, attempting to use as-is");
-                uploadedUrl = image;
-            }
-
-            // Upload to Cloudinary if we have a data URL or base64 string
-            if (!uploadedUrl && imageDataUrl) {
-                try {
-                    const uploadResponse = await cloudinary.uploader.upload(imageDataUrl, {
-                        folder: "user_uploads",
-                        resource_type: "image"
-                    });
-                    uploadedUrl = uploadResponse.secure_url;
-                    console.log("✅ Image uploaded to Cloudinary:", uploadedUrl.substring(0, 50) + "...");
-                } catch (uploadErr) {
-                    console.error("❌ Error uploading image to Cloudinary:", uploadErr.message);
-                    // Fallback: try using data URL directly with OpenAI (works for small images)
-                    uploadedUrl = imageDataUrl;
-                }
-            }
-
-            // Add image URL to content for OpenAI Vision API
-            if (uploadedUrl) {
-                contentPayload.push({
-                    type: "image_url",
-                    image_url: {
-                        url: uploadedUrl,
-                        detail: "auto" // "auto" balances speed and accuracy
-                    }
-                });
-                console.log("✅ Image added to OpenAI request");
-            }
-        } catch (err) {
-            console.error("❌ Error processing image:", err.message);
-            // Continue without image if processing fails
-        }
-    }
-
-    // Ensure at least one content item (text or image)
-    if (contentPayload.length === 0) {
-        contentPayload.push({ type: "text", text: "" });
-    }
-
-    return contentPayload;
-}
 
 // ===== Route =====
 router.post("/", async (req, res) => {
-    let { message: userMessage, clientId, userId, isFirstMessage, image } = req.body;
-    if (!userId) userId = crypto.randomUUID();
+    let { message: userMessage, clientId, userId, isFirstMessage } = req.body;
 
-    console.log("Incoming chat request:", { 
-        clientId, 
-        userId, 
-        userMessage: userMessage ? `${userMessage.substring(0, 50)}...` : null, 
-        isFirstMessage, 
-        hasImage: !!image,
-        imageLength: image ? image.length : 0
-    });
-
-    if ((!userMessage || !userMessage.trim()) && (!image || !image.trim())) {
-        return res.status(400).json({ reply: "⚠️ Please provide a message or image." });
+    // Auto-generate userId if missing
+    if (!userId) {
+        userId = crypto.randomUUID();
     }
-    if (!clientId) return res.status(400).json({ reply: "⚠️ Missing client ID." });
+
+    console.log("Incoming chat request:", { clientId, userId, userMessage, isFirstMessage });
+
+    if (!userMessage || !clientId) {
+        return res.status(400).json({ reply: "⚠️ Missing message or client ID." });
+    }
 
     try {
-        const db = await connectDB();
-        const clientsCollection = db.collection("Clients");
-        const clientDoc = await clientsCollection.findOne({ clientId });
-        if (!clientDoc || clientDoc.active === false) return res.status(204).end();
+        // ✅ Connect to DB and fetch client doc
+      // ✅ Connect to DB and fetch client doc
+const db = await connectDB();
+const clientsCollection = db.collection("Clients");
+const clientDoc = await clientsCollection.findOne({ clientId });
 
+// ❌ If client not found, ignore request
+if (!clientDoc) {
+    console.log(`❌ Unknown clientId: ${clientId}`);
+    return res.status(204).end(); // No Content = bot stays silent
+}
+
+// ❌ If client is inactive, ignore too
+if (clientDoc.active === false) {
+    console.log(`🚫 Inactive client: ${clientId}`);
+    return res.status(204).end();
+}
+
+
+        // ✅ Then check message limit
         const usage = await incrementMessageCount(clientId);
-        if (!usage.allowed) return res.json({ reply: "" });
+        if (!usage.allowed) {
+            return res.json({
+                reply: "" // or "⚠️ Message limit reached"
+            });
+        }
 
+        // Ensure customer exists
         await findOrCreateCustomer(userId, clientId);
 
-        // Detect user name
-        let nameMatch = null;
-        const myNameMatch = userMessage?.match(/my name is\s+(.+)/i);
-        const bracketNameMatch = userMessage?.match(/\[name\]\s*:\s*(.+)/i);
-        if (myNameMatch) nameMatch = myNameMatch[1].trim();
-        if (bracketNameMatch) nameMatch = bracketNameMatch[1].trim();
-        if (nameMatch) await updateCustomerName(userId, clientId, nameMatch);
+       // Detect if user provided their name
+let nameMatch = null;
 
+// Case 1: "my name is ..."
+const myNameMatch = userMessage.match(/my name is\s+(.+)/i);
+if (myNameMatch) {
+    nameMatch = myNameMatch[1].trim();
+}
+
+// Case 2: "[Name]: ..." with optional spaces
+const bracketNameMatch = userMessage.match(/\[name\]\s*:\s*(.+)/i);
+if (bracketNameMatch) {
+    nameMatch = bracketNameMatch[1].trim();
+}
+
+if (nameMatch) {
+    await updateCustomerName(userId, clientId, nameMatch);
+    console.log(`📝 Name detected and saved: ${nameMatch}`);
+}
+
+        // Get system prompt
         const finalSystemPrompt = await SYSTEM_PROMPT({ clientId });
+        // ===== Load client files =====
+
         let filesContent = "";
         if (clientDoc?.files?.length) {
             filesContent = clientDoc.files.map(f => `File: ${f.name}\nContent:\n${f.content}`).join("\n\n");
         }
 
+        // Load conversation
         let convo = await getConversation(clientId, userId);
+
+        // Greeting if first message
         let greeting = "";
         if (isFirstMessage) {
-            const customer = await db.collection("Customers").findOne({ customerId: userId, clientId });
-            if (customer?.name) greeting = `Hi ${customer.name}, welcome back! 👋\n\n`;
+            const db = await connectDB();
+            const customers = db.collection("Customers");
+            const customer = await customers.findOne({ customerId: userId, clientId });
+
+            if (customer?.name) {
+                greeting = `Hi ${customer.name}, welcome back! 👋\n\n`;
+            }
         }
 
+        // Build conversation history
         let history = convo?.history || [
             {
                 role: "system",
-                content: [{ type: "text", text: `${finalSystemPrompt}\n\nUse the following client files:\n${filesContent}` }]
+                content: `${finalSystemPrompt}\n\nUse the following client files to answer questions:\n${filesContent}`
             }
         ];
 
-        // Format user message and image (Cloudinary integration)
-        const userContent = await formatMessageForGPT(userMessage, image);
-        history.push({ role: "user", content: userContent, createdAt: new Date() });
+        history.push({ role: "user", content: userMessage, createdAt: new Date() });
 
-        let assistantResponse;
-        try {
-            if (process.env.TEST_MODE === "true") {
-                await new Promise(r => setTimeout(r, Math.floor(Math.random() * 300) + 100));
-                assistantResponse = { text: "🧪 Mock reply (image supported)", imageUrls: [] };
-            } else {
-                assistantResponse = await getChatCompletion(history);
-            }
-        } catch (err) {
-            console.error("❌ OpenAI error:", err.message);
-            await db.collection("Logs").insertOne({
-                clientId, userId, level: "error", source: "openai", message: err.message, timestamp: new Date(),
-            });
-            assistantResponse = { text: "⚠️ I'm having trouble right now.", imageUrls: [] };
-        }
+        // Call OpenAI
+  // Call OpenAI or mock (Test Mode)
+let assistantMessage;
 
-        let assistantMessage = "";
-        let imageUrls = [];
-        if (typeof assistantResponse === "string") {
-            assistantMessage = assistantResponse;
-        } else if (assistantResponse && typeof assistantResponse === "object") {
-            assistantMessage = assistantResponse.text || "";
-            imageUrls = assistantResponse.imageUrls || [];
-        }
+try {
+    if (process.env.TEST_MODE === "true") {
+        // 🧪 Simulate OpenAI response without spending tokens
+        const delay = Math.floor(Math.random() * 300) + 100; // 100–400ms delay
+        await new Promise((r) => setTimeout(r, delay));
 
-     // Only push the assistant text to history
-const assistantContent = [{ role: "assistant", content: [{ type: "text", text: assistantMessage }], createdAt: new Date() }];
-history.push(assistantContent[0]); // push object directly
-
-// Send JSON with clean imageUrls array
-res.json({ 
-    reply: greeting + assistantMessage, 
-    imageUrls: imageUrls, // <-- send array directly
-    userId, 
-    usage: { count: usage.messageCount, limit: usage.messageLimit } 
-});
-
-
-    } catch (error) {
-        console.error("❌ Error:", error.message);
-        res.status(500).json({ reply: "⚠️ Sorry, something went wrong." });
+        assistantMessage = `🧪 Mock reply for ${clientId} — message: "${userMessage.slice(0, 20)}..."`;
+        console.log("✅ Test mode active — skipping OpenAI call");
+    } else {
+        // 🧠 Real OpenAI call
+        assistantMessage = await getChatCompletion(history);
     }
+} catch (err) {
+    console.error("❌ OpenAI error:", err.message);
+
+
+
+    // Optional: log error in DB
+    const db = await connectDB();
+    await db.collection("Logs").insertOne({
+        clientId,
+        userId,
+        level: "error",
+        source: "openai",
+        message: err.message,
+        timestamp: new Date(),
+    });
+
+    assistantMessage = "⚠️ I'm having trouble right now. Please try again later.";
+}
+
+
+        // Append assistant reply
+        history.push({ role: "assistant", content: assistantMessage, createdAt: new Date() });
+
+        // Save conversation
+        await saveConversation(clientId, userId, history);
+
+        // Handle tour booking
+     if (assistantMessage.includes("[TOUR_REQUEST]")) {
+    const data = extractTourData(assistantMessage);
+    data.clientId = clientId;
+
+    console.log("Sending tour email with data:", data);
+    try {
+        await sendTourEmail(data);
+    } catch (err) {
+        console.error("❌ Failed to send tour email:", err.message);
+        const db = await connectDB();
+        await db.collection("Logs").insertOne({
+            clientId,
+            userId,
+            level: "error",
+            source: "email",
+            message: err.message,
+            timestamp: new Date(),
+        });
+    }
+}
+
+
+        // Return reply
+        res.json({
+            reply: greeting + assistantMessage,
+            userId,
+            usage: { count: usage.messageCount, limit: usage.messageLimit }
+        });
+   } catch (error) {
+    console.error("❌ Error:", error.message);
+
+    try {
+        const db = await connectDB();
+        await db.collection("Logs").insertOne({
+            clientId,
+            userId,
+            level: "error",
+            source: "web",
+            message: error.message,
+            timestamp: new Date(),
+        });
+    } catch (dbErr) {
+        console.error("❌ Failed to log error in DB:", dbErr.message);
+    }
+
+    res.status(500).json({ reply: "⚠️ Sorry, something went wrong." });
+}
 });
 
 export default router;
