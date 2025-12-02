@@ -2,6 +2,9 @@
 import fs from "fs";
 import OpenAI from "openai";
 import { MongoClient } from "mongodb";
+import fetch from "node-fetch";
+
+
 
 const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
 const mongoClient = new MongoClient(process.env.MONGODB_URI);
@@ -14,7 +17,17 @@ async function connectDB() {
     }
     return mongoClient.db(dbName);
 }
+async function getImageEmbedding(imageURL) {
+    const response = await fetch(imageURL);
+    const buffer = await response.arrayBuffer();
 
+    const embeddingRes = await openai.embeddings.create({
+        model: "image-embedding-3-large",
+        input: buffer
+    });
+
+    return embeddingRes.data[0].embedding;
+}
 // ===== PRODUCTS CRUD =====
 export async function saveProduct(product) {
     const db = await connectDB();
@@ -48,16 +61,19 @@ export async function importProducts(filePath) {
     console.log(`⏳ Importing ${products.length} products...`);
 
     // 1. Save products
-    for (const item of products) {
-        await saveProduct({
-            id: item.id,
-            name: item.name,
-            price: item.price,
-            imageURL: item.imageURL,
-            description: item.description || "",
-            embedding: null,
-        });
-    }
+  for (const item of products) {
+    const embedding = await getImageEmbedding(item.imageURL);
+
+    await saveProduct({
+        id: item.id,
+        name: item.name,
+        price: item.price,
+        imageURL: item.imageURL,
+        description: item.description || "",
+        embedding,
+    });
+}
+
 
     console.log("✔ Products saved. Now generating embeddings...");
 
@@ -79,18 +95,12 @@ export async function importProducts(filePath) {
 
 // ===== IMAGE MATCHING FUNCTION =====
 export async function matchProduct(userImageUrl) {
-    // 1. Create embedding for user image
-    const embed = await openai.embeddings.create({
-        model: "text-embedding-3-large",
-        input: userImageUrl,
-    });
-
-    const userVec = embed.data[0].embedding;
-
-    // 2. Load products
+    const userVec = await getImageEmbedding(userImageUrl);
     const products = await getAllProducts();
 
-    // 3. Similarity function
+    let best = null;
+    let bestScore = -1;
+
     function cosine(A, B) {
         let dot = 0, a = 0, b = 0;
         for (let i = 0; i < A.length; i++) {
@@ -101,13 +111,8 @@ export async function matchProduct(userImageUrl) {
         return dot / (Math.sqrt(a) * Math.sqrt(b));
     }
 
-    // 4. Find best match
-    let best = null;
-    let bestScore = -1;
-
     for (const p of products) {
         if (!p.embedding) continue;
-
         const score = cosine(userVec, p.embedding);
         if (score > bestScore) {
             bestScore = score;
@@ -115,8 +120,6 @@ export async function matchProduct(userImageUrl) {
         }
     }
 
-    return {
-        product: best,
-        score: bestScore,
-    };
+    return { product: best, score: bestScore };
 }
+
