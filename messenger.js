@@ -357,6 +357,10 @@ await processMessageWithTyping().catch(async (err) => {
 }
 if (webhook_event.message?.attachments?.[0]?.type === "image") {
     const url = webhook_event.message.attachments[0].payload.url;
+    if (!url) {
+      console.error("❌ Image URL is missing:", webhook_event.message.attachments[0]);
+      return;
+    }
 
     const { product, score } = await matchProduct(url);
 
@@ -369,7 +373,6 @@ if (webhook_event.message?.attachments?.[0]?.type === "image") {
         sender_psid,
         `This looks like **${product.name}**.\nPrice: ${product.price} EGP`
     );
-    return;
 }
 
             if (webhook_event.postback?.payload) {
