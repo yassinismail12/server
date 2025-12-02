@@ -223,21 +223,25 @@ router.post("/", async (req, res) => {
         return res.sendStatus(404);
     }
 
-    for (const entry of body.entry) {
-        const pageId = normalizePageId(entry.id);
-        const webhook_event = entry.messaging[0];
-        const sender_psid = webhook_event.sender.id;
+   for (const entry of body.entry) {
+    const pageId = normalizePageId(entry.id);
+
+    for (const webhook_event of entry.messaging) {
+        const sender_psid = webhook_event.sender?.id;
+        if (!sender_psid) {
+            console.warn("❌ sender_psid missing, skipping event", webhook_event);
+            continue;
+        }
+
         console.log(`📬 Event from pageId: ${pageId}, sender_psid: ${sender_psid}`);
 
         try {
             const clientDoc = await getClientDoc(pageId);
 
-        if (clientDoc.active === false) {
-    console.log("⚠️ Bot inactive for this page");
-    // await sendMessengerReply(sender_psid, "⚠️ This bot is currently disabled.", pageId);
-    continue; // skips this message, sends nothing
-}
-
+            if (clientDoc.active === false) {
+                console.log("⚠️ Bot inactive for this page");
+                continue;
+            }
 
             const usage = await incrementMessageCount(pageId);
             if (!usage.allowed) {
@@ -246,135 +250,122 @@ router.post("/", async (req, res) => {
                 continue;
             }
 
-if (webhook_event.message?.text) {
-    const userMessage = webhook_event.message.text;
-    console.log("📝 Received user message:", userMessage);
+            // ===== Show mark_seen before processing =====
+            await sendMarkAsRead(sender_psid, pageId);
+            await new Promise(resolve => setTimeout(resolve, 1200)); // natural pause
 
-    // ===== Robust Typing Handler =====
-    async function processMessageWithTyping() {
-        let convo, history, greeting, firstName;
+            // ===== Handle attachments first (images) =====
+            if (webhook_event.message?.attachments?.length) {
+                for (const attachment of webhook_event.message.attachments) {
+                    if (attachment.type === "image" && attachment.payload?.url) {
+                        const url = attachment.payload.url;
+                        console.log("🖼️ Image detected, URL:", url);
 
-        // ===== AI + DB work =====
-        const finalSystemPrompt = await SYSTEM_PROMPT({ pageId });
-        convo = await getConversation(pageId, sender_psid);
-        history = convo?.history || [{ role: "system", content: finalSystemPrompt }];
+                        const { product, score } = await matchProduct(url);
 
-        firstName = "there";
-        greeting = "";
+                        if (!product || score < 0.75) {
+                            await sendMessengerReply(sender_psid, "Sorry, I couldn't find this item.", pageId);
+                        } else {
+                            await sendMessengerReply(
+                                sender_psid,
+                                `This looks like **${product.name}**.\nPrice: ${product.price} EGP`,
+                                pageId
+                            );
+                        }
+                    }
+                }
+            }
 
-        if (!convo || isNewDay(convo.lastInteraction)) {
-            const userProfile = await getUserProfile(sender_psid, clientDoc.PAGE_ACCESS_TOKEN);
-            firstName = userProfile.first_name || "there";
-            await saveCustomer(pageId, sender_psid, userProfile);
+            // ===== Handle text messages =====
+            if (webhook_event.message?.text) {
+                const userMessage = webhook_event.message.text;
+                console.log("📝 Received text message:", userMessage);
 
-            greeting = `Hi ${firstName}, good to see you today 👋`;
-            history.push({ role: "assistant", content: greeting, createdAt: new Date() });
-        }
+                // ===== Robust Typing Handler =====
+                async function processMessageWithTyping() {
+                    let convo, history, greeting, firstName;
 
-        history.push({ role: "user", content: userMessage, createdAt: new Date() });
+                    const finalSystemPrompt = await SYSTEM_PROMPT({ pageId });
+                    convo = await getConversation(pageId, sender_psid);
+                    history = convo?.history || [{ role: "system", content: finalSystemPrompt }];
 
-        // Generate AI reply
-       let assistantMessage;
-try {
-    assistantMessage = await getChatCompletion(history);
-} catch (err) {
-    console.error("❌ OpenAI error:", err.message);
+                    firstName = "there";
+                    greeting = "";
 
-    // Save error log in MongoDB
-    const db = await connectDB();
-    await db.collection("Logs").insertOne({
-        pageId,
-        psid: sender_psid,
-        level: "error",
-        source: "openai",
-        message: err.message,
-        timestamp: new Date(),
-    });
+                    if (!convo || isNewDay(convo.lastInteraction)) {
+                        const userProfile = await getUserProfile(sender_psid, clientDoc.PAGE_ACCESS_TOKEN);
+                        firstName = userProfile.first_name || "there";
+                        await saveCustomer(pageId, sender_psid, userProfile);
 
-    assistantMessage = "⚠️ I'm having trouble right now. Please try again shortly.";
-}
+                        greeting = `Hi ${firstName}, good to see you today 👋`;
+                        history.push({ role: "assistant", content: greeting, createdAt: new Date() });
+                    }
 
+                    history.push({ role: "user", content: userMessage, createdAt: new Date() });
 
-        history.push({ role: "assistant", content: assistantMessage, createdAt: new Date() });
-        await saveConversation(pageId, sender_psid, history, new Date());
+                    let assistantMessage;
+                    try {
+                        assistantMessage = await getChatCompletion(history);
+                    } catch (err) {
+                        console.error("❌ OpenAI error:", err.message);
+                        const db = await connectDB();
+                        await db.collection("Logs").insertOne({
+                            pageId,
+                            psid: sender_psid,
+                            level: "error",
+                            source: "openai",
+                            message: err.message,
+                            timestamp: new Date(),
+                        });
+                        assistantMessage = "⚠️ I'm having trouble right now. Please try again shortly.";
+                    }
 
-        let combinedMessage = assistantMessage;
-        if (greeting) combinedMessage = `${greeting}\n\n${assistantMessage}`;
+                    history.push({ role: "assistant", content: assistantMessage, createdAt: new Date() });
+                    await saveConversation(pageId, sender_psid, history, new Date());
 
-   if (assistantMessage.includes("[TOUR_REQUEST]")) {
-    const data = extractTourData(assistantMessage);
-    data.pageId = pageId;
-    console.log("✈️ Tour request detected, sending email", data);
+                    let combinedMessage = assistantMessage;
+                    if (greeting) combinedMessage = `${greeting}\n\n${assistantMessage}`;
 
-    try {
-        await sendTourEmail(data);
-    } catch (err) {
-        console.error("❌ Failed to send tour email:", err.message);
-        const db = await connectDB();
-        await db.collection("Logs").insertOne({
-            pageId,
-            psid: sender_psid,
-            level: "error",
-            source: "email",
-            message: err.message,
-            timestamp: new Date(),
-        });
-    }
-}
+                    if (assistantMessage.includes("[TOUR_REQUEST]")) {
+                        const data = extractTourData(assistantMessage);
+                        data.pageId = pageId;
+                        console.log("✈️ Tour request detected, sending email", data);
 
+                        try {
+                            await sendTourEmail(data);
+                        } catch (err) {
+                            console.error("❌ Failed to send tour email:", err.message);
+                            const db = await connectDB();
+                            await db.collection("Logs").insertOne({
+                                pageId,
+                                psid: sender_psid,
+                                level: "error",
+                                source: "email",
+                                message: err.message,
+                                timestamp: new Date(),
+                            });
+                        }
+                    }
 
-        await sendMessengerReply(sender_psid, combinedMessage, pageId);
-    }
+                    await sendMessengerReply(sender_psid, combinedMessage, pageId);
+                }
 
-    // ===== Show typing while processing =====
-  // ===== Show mark_seen while processing =====
-await sendMarkAsRead(sender_psid, pageId); // Let user know message is seen
-await new Promise((resolve) => setTimeout(resolve, 1200)); // Small natural pause
-await processMessageWithTyping().catch(async (err) => {
-  console.error("❌ Processing error:", err.message);
+                await processMessageWithTyping().catch(async (err) => {
+                    console.error("❌ Processing error:", err.message);
+                    const db = await connectDB();
+                    await db.collection("Logs").insertOne({
+                        pageId,
+                        psid: sender_psid,
+                        level: "error",
+                        source: "messenger",
+                        message: err.message,
+                        timestamp: new Date(),
+                    });
+                    await sendMessengerReply(sender_psid, "⚠️ حصلت مشكلة. جرب تاني بعد شوية.", pageId);
+                });
+            }
 
-  const db = await connectDB();
-  await db.collection("Logs").insertOne({
-    pageId,
-    psid: sender_psid,
-    level: "error",
-    source: "messenger",
-    message: err.message,
-    timestamp: new Date(),
-  });
-
-  await sendMessengerReply(
-    sender_psid,
-    "⚠️ حصلت مشكلة. جرب تاني بعد شوية.",
-    pageId
-  );
-});
-
-
-
-
-
-}
-if (webhook_event.message?.attachments?.[0]?.type === "image") {
-    const url = webhook_event.message.attachments[0].payload.url;
-    if (!url) {
-      console.error("❌ Image URL is missing:", webhook_event.message.attachments[0]);
-      return;
-    }
-
-    const { product, score } = await matchProduct(url);
-
-    if (!product || score < 0.75) {
-        await sendMessengerReply(sender_psid, "Sorry, I couldn't find this item.");
-        return;
-    }
-
-    await sendMessengerReply(
-        sender_psid,
-        `This looks like **${product.name}**.\nPrice: ${product.price} EGP`
-    );
-}
-
+            // ===== Handle postbacks =====
             if (webhook_event.postback?.payload) {
                 const payload = webhook_event.postback.payload;
                 console.log("📌 Postback received:", payload);
@@ -384,19 +375,19 @@ if (webhook_event.message?.attachments?.[0]?.type === "image") {
                     ICE_BREAKER_PAYMENT: "Yes! We offer several payment plans. What’s your budget or preferred duration?",
                 };
                 if (responses[payload]) {
-                    // 👉 Show typing before sending postback response
-                    await sendMarkAsRead(sender_psid, pageId)
-
-
+                    await sendMarkAsRead(sender_psid, pageId);
                     await sendMessengerReply(sender_psid, responses[payload], pageId);
                     console.log("🤖 Sent postback response");
                 }
             }
+
         } catch (error) {
             console.error("❌ Messenger error:", error);
             await sendMessengerReply(sender_psid, "⚠️ حصلت مشكلة. جرب تاني بعد شوية.", pageId);
         }
     }
+}
+
 
     res.status(200).send("EVENT_RECEIVED");
 });
