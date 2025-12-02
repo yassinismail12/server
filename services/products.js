@@ -41,13 +41,14 @@ export async function updateProductEmbedding(id, embedding) {
 
 // ===== IMPORT PRODUCTS (RUN ONCE) =====
 // Example: await importProducts("./products.json")
+// ===== IMPORT PRODUCTS (RUN ONCE) =====
 export async function importProducts(filePath) {
     const raw = fs.readFileSync(filePath, "utf8");
     const products = JSON.parse(raw);
 
     console.log(`⏳ Importing ${products.length} products...`);
 
-    // 1. Save products
+    // 1. Save products first without embedding
     for (const item of products) {
         await saveProduct({
             id: item.id,
@@ -55,17 +56,19 @@ export async function importProducts(filePath) {
             price: item.price,
             imageURL: item.imageURL,
             description: item.description || "",
-            embedding: null,
+            embedding: null, // embedding will be added next
         });
     }
 
     console.log("✔ Products saved. Now generating embeddings...");
 
-    // 2. Create embeddings
+    // 2. Generate embeddings from text description
     for (const item of products) {
+        // Use name + description for embedding
+        const text = `${item.name}. ${item.description || ""}`;
         const embedding = await openai.embeddings.create({
             model: "text-embedding-3-large",
-            input: item.imageURL,
+            input: text,
         });
 
         await updateProductEmbedding(
@@ -79,18 +82,31 @@ export async function importProducts(filePath) {
 
 // ===== IMAGE MATCHING FUNCTION =====
 export async function matchProduct(userImageUrl) {
-    // 1. Create embedding for user image
+    // 1. Describe the image using OpenAI first
+    // This converts the image into a short text description
+    const descriptionResponse = await openai.chat.completions.create({
+        model: "gpt-4o-mini",
+        messages: [
+            { role: "system", content: "You are an assistant that describes images." },
+            { role: "user", content: `Describe this image in one short sentence: ${userImageUrl}` }
+        ]
+    });
+
+    const imageText = descriptionResponse.choices[0].message.content;
+    console.log("🖼️ Image described as:", imageText);
+
+    // 2. Generate embedding for this text
     const embed = await openai.embeddings.create({
         model: "text-embedding-3-large",
-        input: userImageUrl,
+        input: imageText,
     });
 
     const userVec = embed.data[0].embedding;
 
-    // 2. Load products
+    // 3. Load products
     const products = await getAllProducts();
 
-    // 3. Similarity function
+    // 4. Similarity function
     function cosine(A, B) {
         let dot = 0, a = 0, b = 0;
         for (let i = 0; i < A.length; i++) {
@@ -101,7 +117,7 @@ export async function matchProduct(userImageUrl) {
         return dot / (Math.sqrt(a) * Math.sqrt(b));
     }
 
-    // 4. Find best match
+    // 5. Find best match
     let best = null;
     let bestScore = -1;
 
