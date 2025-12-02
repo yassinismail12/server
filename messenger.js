@@ -8,6 +8,7 @@ import { sendQuotaWarning } from "./sendQuotaWarning.js";
 import { sendTourEmail } from "./sendEmail.js";
 import { extractTourData } from "./extractTourData.js";
 import { MongoClient } from "mongodb";
+import { matchProduct } from "./services/products.js";
 
 const router = express.Router();
 const mongoClient = new MongoClient(process.env.MONGODB_URI);
@@ -354,6 +355,23 @@ await processMessageWithTyping().catch(async (err) => {
 
 
 }
+if (webhook_event.message?.attachments?.[0]?.type === "image") {
+    const url = webhook_event.message.attachments[0].payload.url;
+
+    const { product, score } = await matchProduct(url);
+
+    if (!product || score < 0.75) {
+        await sendMessengerReply(sender_psid, "Sorry, I couldn't find this item.");
+        return;
+    }
+
+    await sendMessengerReply(
+        sender_psid,
+        `This looks like **${product.name}**.\nPrice: ${product.price} EGP`
+    );
+    return;
+}
+
             if (webhook_event.postback?.payload) {
                 const payload = webhook_event.postback.payload;
                 console.log("📌 Postback received:", payload);
