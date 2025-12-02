@@ -18,7 +18,7 @@ async function connectDB() {
 // ===== PRODUCTS CRUD =====
 export async function saveProduct(product) {
     const db = await connectDB();
-    await db.collection("Products").updateOne(
+    await db.collection("products").updateOne(
         { id: product.id },
         { $set: product },
         { upsert: true }
@@ -27,16 +27,17 @@ export async function saveProduct(product) {
 
 export async function getAllProducts() {
     const db = await connectDB();
-    return db.collection("Products").find().toArray();
+    return db.collection("products").find().toArray();
 }
 
 export async function updateProductEmbedding(id, embedding) {
     const db = await connectDB();
-    await db.collection("Products").updateOne(
+    await db.collection("products").updateOne(
         { id },
         { $set: { embedding } }
     );
 }
+
 
 // ===== IMPORT PRODUCTS (RUN ONCE) =====
 // Example: await importProducts("./products.json")
