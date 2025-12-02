@@ -17,7 +17,7 @@ import User from "./Users.js";
 import jwt from "jsonwebtoken";
 import cookieParser from "cookie-parser";
 import Page from "./pages.js";
-import Product from "./models/Product.js"; // ✅ this registers the model
+import Product from "./Product.js"; // ✅ this registers the model
 
 const app = express();
 dotenv.config();
