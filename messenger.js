@@ -283,98 +283,91 @@ if (convoCheck?.humanEscalation === true) {
 
 
     // ===== Robust Typing Handler =====
-    async function processMessageWithTyping() {
-        let convo, history, greeting, firstName;
+ async function processMessageWithTyping() {
+    let convo, history, greeting, firstName;
 
-        // ===== AI + DB work =====
-        const finalSystemPrompt = await SYSTEM_PROMPT({ pageId });
-        convo = await getConversation(pageId, sender_psid);
-        history = convo?.history || [{ role: "system", content: finalSystemPrompt }];
+    const finalSystemPrompt = await SYSTEM_PROMPT({ pageId });
+    convo = await getConversation(pageId, sender_psid);
+    history = convo?.history || [{ role: "system", content: finalSystemPrompt }];
 
-        firstName = "there";
-        greeting = "";
+    firstName = "there";
+    greeting = "";
 
-        if (!convo || isNewDay(convo.lastInteraction)) {
-            const userProfile = await getUserProfile(sender_psid, clientDoc.PAGE_ACCESS_TOKEN);
-            firstName = userProfile.first_name || "there";
-            await saveCustomer(pageId, sender_psid, userProfile);
+    // ✅ Define isNewInteraction
+    const isNewInteraction = !convo || isNewDay(convo.lastInteraction);
 
-            greeting = `Hi ${firstName}, good to see you today 👋`;
-            history.push({ role: "assistant", content: greeting, createdAt: new Date() });
-        }
-        
+    if (isNewInteraction) {
+        const userProfile = await getUserProfile(sender_psid, clientDoc.PAGE_ACCESS_TOKEN);
+        firstName = userProfile.first_name || "there";
+        await saveCustomer(pageId, sender_psid, userProfile);
 
-        history.push({ role: "user", content: userMessage, createdAt: new Date() });
+        greeting = `Hi ${firstName}, good to see you today 👋`;
+        history.push({ role: "assistant", content: greeting, createdAt: new Date() });
+    }
 
-        // Generate AI reply
-       let assistantMessage;
-try {
-    assistantMessage = await getChatCompletion(history);
-} catch (err) {
-    console.error("❌ OpenAI error:", err.message);
+    history.push({ role: "user", content: userMessage, createdAt: new Date() });
 
-    // Save error log in MongoDB
-    const db = await connectDB();
-    await db.collection("Logs").insertOne({
-        pageId,
-        psid: sender_psid,
-        level: "error",
-        source: "openai",
-        message: err.message,
-        timestamp: new Date(),
-    });
-
-    assistantMessage = "⚠️ I'm having trouble right now. Please try again shortly.";
-}
-// --- AI-triggered human escalation ---
-if (assistantMessage.trim() === "[HUMAN_ESCALATION]") {
-    await db.collection("Conversations").updateOne(
-        { pageId, userId: sender_psid, source: "messenger" },
-        { $set: { humanEscalation: true } },
-        { upsert: true }
-    );
-
-    await sendMessengerReply(
-        sender_psid,
-        "👤 A human agent will reply shortly.\nTo return to the bot, type: !bot",
-        pageId
-    );
-
-    return; // ❗ Stop here, don't send more messages
-}
-
-
-
-        history.push({ role: "assistant", content: assistantMessage, createdAt: new Date() });
-        await saveConversation(pageId, sender_psid, history, new Date());
-
-        let combinedMessage = assistantMessage;
-        if (greeting) combinedMessage = `${greeting}\n\n${assistantMessage}`;
-
-   if (assistantMessage.includes("[TOUR_REQUEST]")) {
-    const data = extractTourData(assistantMessage);
-    data.pageId = pageId;
-    console.log("✈️ Tour request detected, sending email", data);
-
+    let assistantMessage;
     try {
-        await sendTourEmail(data);
+        assistantMessage = await getChatCompletion(history);
     } catch (err) {
-        console.error("❌ Failed to send tour email:", err.message);
+        console.error("❌ OpenAI error:", err.message);
         const db = await connectDB();
         await db.collection("Logs").insertOne({
             pageId,
             psid: sender_psid,
             level: "error",
-            source: "email",
+            source: "openai",
             message: err.message,
             timestamp: new Date(),
         });
+        assistantMessage = "⚠️ I'm having trouble right now. Please try again shortly.";
     }
+
+    if (assistantMessage.trim() === "[HUMAN_ESCALATION]") {
+        await db.collection("Conversations").updateOne(
+            { pageId, userId: sender_psid, source: "messenger" },
+            { $set: { humanEscalation: true } },
+            { upsert: true }
+        );
+
+        await sendMessengerReply(
+            sender_psid,
+            "👤 A human agent will reply shortly.\nTo return to the bot, type: !bot",
+            pageId
+        );
+        return; // stop here
+    }
+
+    history.push({ role: "assistant", content: assistantMessage, createdAt: new Date() });
+    await saveConversation(pageId, sender_psid, history, new Date());
+
+    // ✅ Combine greeting only if this is the first interaction of the day
+    const combinedMessage = isNewInteraction ? `${greeting}\n\n${assistantMessage}` : assistantMessage;
+
+    if (assistantMessage.includes("[TOUR_REQUEST]")) {
+        const data = extractTourData(assistantMessage);
+        data.pageId = pageId;
+        console.log("✈️ Tour request detected, sending email", data);
+        try {
+            await sendTourEmail(data);
+        } catch (err) {
+            console.error("❌ Failed to send tour email:", err.message);
+            const db = await connectDB();
+            await db.collection("Logs").insertOne({
+                pageId,
+                psid: sender_psid,
+                level: "error",
+                source: "email",
+                message: err.message,
+                timestamp: new Date(),
+            });
+        }
+    }
+
+    await sendMessengerReply(sender_psid, combinedMessage, pageId);
 }
 
-
-        await sendMessengerReply(sender_psid, combinedMessage, pageId);
-    }
 
     // ===== Show typing while processing =====
   // ===== Show mark_seen while processing =====
