@@ -221,7 +221,7 @@ router.post("/", async (req, res) => {
         console.warn("❌ Body object is not page");
         return res.sendStatus(404);
     }
-      res.status(200).send("EVENT_RECEIVED");
+   
 
     for (const entry of body.entry) {
         const pageId = normalizePageId(entry.id);
