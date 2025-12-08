@@ -248,6 +248,55 @@ router.post("/", async (req, res) => {
 if (webhook_event.message?.text) {
     const userMessage = webhook_event.message.text;
     console.log("📝 Received user message:", userMessage);
+// ===== Human Escalation (Messenger only) =====
+const db = await connectDB();
+
+// Check existing conversation
+const convoCheck = await db.collection("Conversations").findOne({
+    pageId,
+    userId: sender_psid,
+    source: "messenger"
+});
+
+// --- Resume bot command ---
+if (webhook_event.message.text.trim().toLowerCase() === "!bot") {
+    await db.collection("Conversations").updateOne(
+        { pageId, userId: sender_psid, source: "messenger" },
+        { $set: { humanEscalation: false } },
+        { upsert: true }
+    );
+
+    await sendMessengerReply(sender_psid, "🤖 Bot reactivated! How can I help?", pageId);
+    return;
+}
+
+// --- If human escalation active → ignore bot AI reply ---
+if (convoCheck?.humanEscalation === true) {
+    console.log("👤 Human escalation active → bot will NOT reply.");
+    return;
+}
+
+// --- Trigger human escalation by natural keywords ---
+const lower = webhook_event.message.text.toLowerCase();
+if (
+    lower.includes("human") ||
+    lower.includes("agent") ||
+    lower.includes("support") ||
+    lower.includes("real person")
+) {
+    await db.collection("Conversations").updateOne(
+        { pageId, userId: sender_psid, source: "messenger" },
+        { $set: { humanEscalation: true } },
+        { upsert: true }
+    );
+
+    await sendMessengerReply(
+        sender_psid,
+        "👤 A human agent will reply shortly.\nTo return to the bot, type: !bot",
+        pageId
+    );
+    return;
+}
 
     // ===== Robust Typing Handler =====
     async function processMessageWithTyping() {
