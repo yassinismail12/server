@@ -277,26 +277,9 @@ if (convoCheck?.humanEscalation === true) {
 }
 
 // --- Trigger human escalation by natural keywords ---
-const lower = webhook_event.message.text.toLowerCase();
-if (
-    lower.includes("human") ||
-    lower.includes("agent") ||
-    lower.includes("support") ||
-    lower.includes("real person")
-) {
-    await db.collection("Conversations").updateOne(
-        { pageId, userId: sender_psid, source: "messenger" },
-        { $set: { humanEscalation: true } },
-        { upsert: true }
-    );
 
-    await sendMessengerReply(
-        sender_psid,
-        "👤 A human agent will reply shortly.\nTo return to the bot, type: !bot",
-        pageId
-    );
-    return;
-}
+
+
 
     // ===== Robust Typing Handler =====
     async function processMessageWithTyping() {
@@ -341,6 +324,23 @@ try {
 
     assistantMessage = "⚠️ I'm having trouble right now. Please try again shortly.";
 }
+// --- AI-triggered human escalation ---
+if (assistantMessage.trim() === "[HUMAN_ESCALATION]") {
+    await db.collection("Conversations").updateOne(
+        { pageId, userId: sender_psid, source: "messenger" },
+        { $set: { humanEscalation: true } },
+        { upsert: true }
+    );
+
+    await sendMessengerReply(
+        sender_psid,
+        "👤 A human agent will reply shortly.\nTo return to the bot, type: !bot",
+        pageId
+    );
+
+    return; // ❗ Stop here, don't send more messages
+}
+
 
 
         history.push({ role: "assistant", content: assistantMessage, createdAt: new Date() });
