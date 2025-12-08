@@ -276,7 +276,7 @@ if (convoCheck?.humanEscalation === true) {
 }
 
 // --- Trigger human escalation by keyword ---
-const escalationKeywords = ["agent", "human", "support", "help"];
+const escalationKeywords = ["agent", "human", "support", "دعم", "موظف"];
 if (escalationKeywords.some(word => userMessage.toLowerCase().includes(word))) {
     await db.collection("Conversations").updateOne(
         { pageId, userId: sender_psid, source: "messenger" },
