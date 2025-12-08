@@ -221,6 +221,7 @@ router.post("/", async (req, res) => {
         console.warn("❌ Body object is not page");
         return res.sendStatus(404);
     }
+      res.status(200).send("EVENT_RECEIVED");
 
     for (const entry of body.entry) {
         const pageId = normalizePageId(entry.id);
@@ -267,13 +268,13 @@ if (webhook_event.message.text.trim().toLowerCase() === "!bot") {
     );
 
     await sendMessengerReply(sender_psid, "🤖 Bot reactivated! How can I help?", pageId);
-    return;
+  continue; // do not process AI
 }
 
 // --- If human escalation active → ignore bot AI reply ---
 if (convoCheck?.humanEscalation === true) {
     console.log("👤 Human escalation active → bot will NOT reply.");
-    return;
+   continue; // do not process AI
 }
 
 // --- Trigger human escalation by natural keywords ---
@@ -301,6 +302,7 @@ if (convoCheck?.humanEscalation === true) {
             greeting = `Hi ${firstName}, good to see you today 👋`;
             history.push({ role: "assistant", content: greeting, createdAt: new Date() });
         }
+        
 
         history.push({ role: "user", content: userMessage, createdAt: new Date() });
 
