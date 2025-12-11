@@ -244,6 +244,15 @@ router.post("/", async (req, res) => {
                 await sendMessengerReply(sender_psid, "⚠️ Message limit reached.", pageId);
                 continue;
             }
+// ===== Image / Attachment Handler =====
+if (webhook_event.message?.attachments?.length > 0) {
+    await sendMessengerReply(
+        sender_psid,
+        "Could you describe what's in the image, or say the name of the item u are looking for so I can help you better?",
+        pageId
+    );
+    continue;
+}
 
 if (webhook_event.message?.text) {
     const userMessage = webhook_event.message.text;
