@@ -436,6 +436,25 @@ app.get("/api/stats", verifyToken, async (req, res) => {
     try {
         const totalClients = await Client.countDocuments();
         const clients = await Client.find();
+// 🔹 Aggregate human + tour requests across ALL conversations
+const convoStats = await Conversation.aggregate([
+  {
+    $group: {
+      _id: null,
+      totalHumanRequests: { $sum: "$humanRequestCount" },
+      totalTourRequests: { $sum: "$tourRequestCount" },
+      activeHumanChats: {
+        $sum: { $cond: ["$humanEscalation", 1, 0] }
+      }
+    }
+  }
+]);
+
+const globalStats = convoStats[0] || {
+  totalHumanRequests: 0,
+  totalTourRequests: 0,
+  activeHumanChats: 0
+};
 
         console.log("✅ Total clients:", totalClients);
 
@@ -516,30 +535,35 @@ app.get("/api/stats", verifyToken, async (req, res) => {
 
 
         // 🔹 Build clients array for dashboard table
-        const clientsData = clients.map(c => {
-            const used = c.messageCount || 0;
-            const quota = c.messageLimit || 0;
-            const remaining = quota - used;
-            return {
-                _id: c._id,
-                name: c.name,
-                email: c.email || "",
-                used,
-                clientId: c.clientId || "",
-                pageId: c.pageId || 0,
-                igId: c.igId || "",
-                quota,
-                remaining,
-                systemPrompt: c.systemPrompt || "",
-                faqs: c.faqs || "",
-                files: c.files || [],
-                lastActive: c.updatedAt || c.createdAt,
-                active: c.active ?? false,
-                PAGE_ACCESS_TOKEN: c.PAGE_ACCESS_TOKEN || "",
-                VERIFY_TOKEN: c.VERIFY_TOKEN || "",
-                igAccessToken: c.igAccessToken || ""
-            };
-        });
+       const clientsData = clients.map(c => {
+    const used = c.messageCount || 0;
+    const quota = c.messageLimit || 0;
+    const remaining = quota - used;
+
+    const clientStats = statsMap[c.clientId] || {}; // 🔹 get per-client counts
+
+    return {
+        _id: c._id,
+        name: c.name,
+        email: c.email || "",
+        used,
+        clientId: c.clientId || "",
+        pageId: c.pageId || 0,
+        igId: c.igId || "",
+        quota,
+        remaining,
+        systemPrompt: c.systemPrompt || "",
+        faqs: c.faqs || "",
+        files: c.files || [],
+        humanRequests: clientStats.humanRequests || 0,
+        tourRequests: clientStats.tourRequests || 0,
+        lastActive: c.updatedAt || c.createdAt,
+        active: c.active ?? false,
+        PAGE_ACCESS_TOKEN: c.PAGE_ACCESS_TOKEN || "",
+        VERIFY_TOKEN: c.VERIFY_TOKEN || "",
+        igAccessToken: c.igAccessToken || ""
+    };
+});
 
         res.json({
             totalClients,
@@ -547,6 +571,9 @@ app.get("/api/stats", verifyToken, async (req, res) => {
             remaining,
             quota,
             chartResults,
+              totalHumanRequests: globalStats.totalHumanRequests,
+  totalTourRequests: globalStats.totalTourRequests,
+  activeHumanChats: globalStats.activeHumanChats,
             clients: clientsData
         });
 
