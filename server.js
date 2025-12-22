@@ -141,6 +141,21 @@ app.get("/api/clients/:id", verifyToken, requireClientOwnership, async (req, res
             return res.status(404).json({ error: "Client not found" });
         }
 
+        // 🔹 Aggregate conversation stats for this client
+        const stats = await Conversation.aggregate([
+            { $match: { clientId: id } },
+            {
+                $group: {
+                    _id: "$clientId",
+                    totalHumanRequests: { $sum: "$humanRequestCount" },
+                    totalTourRequests: { $sum: "$tourRequestCount" },
+                    activeHumanChats: { $sum: { $cond: ["$humanEscalation", 1, 0] } },
+                },
+            },
+        ]);
+
+        const convoStats = stats[0] || {};
+
         res.json({
             _id: client._id,
             name: client.name,
@@ -157,13 +172,19 @@ app.get("/api/clients/:id", verifyToken, requireClientOwnership, async (req, res
             faqs: client.faqs || "",
             active: client.active ?? false,
             PAGE_ACCESS_TOKEN: client.PAGE_ACCESS_TOKEN || "",
-            igAccessToken: client.igAccessToken || ""
+            igAccessToken: client.igAccessToken || "",
+
+            // ✅ Added stats
+            totalHumanRequests: convoStats.totalHumanRequests || 0,
+            totalTourRequests: convoStats.totalTourRequests || 0,
+            activeHumanChats: convoStats.activeHumanChats || 0,
         });
     } catch (err) {
         console.error("❌ Error fetching client:", err);
         res.status(500).json({ error: "Server error" });
     }
 });
+
 // POST /admin/renew/:clientId
 
 app.post("/admin/renew/:clientId", async (req, res) => {

@@ -285,22 +285,7 @@ if (convoCheck?.humanEscalation === true) {
 }
 
 // --- Trigger human escalation by keyword ---
-const escalationKeywords = ["agent", "human", "support", "دعم", "موظف"];
-if (escalationKeywords.some(word => userMessage.toLowerCase().includes(word))) {
-    await db.collection("Conversations").updateOne(
-        { pageId, userId: sender_psid, source: "messenger" },
-        { $set: { humanEscalation: true } },
-        { upsert: true }
-    );
 
-    await sendMessengerReply(
-        sender_psid,
-        "👤 A human agent will reply shortly.\nTo return to the bot, type: !bot",
-        pageId
-    );
-
-    continue; // skip AI processing
-}
 
     // ===== Robust Typing Handler =====
     async function processMessageWithTyping() {
@@ -345,6 +330,31 @@ try {
 
     assistantMessage = "⚠️ I'm having trouble right now. Please try again shortly.";
 }
+// --- AI-triggered human escalation ---
+// --- AI-triggered human escalation ---
+if (assistantMessage.includes("[Human_request]")) {
+    assistantMessage = assistantMessage.replace("[Human_request]", "").trim();
+
+    await db.collection("Conversations").updateOne(
+        { pageId, userId: sender_psid, source: "messenger" },
+        {
+            $set: { humanEscalation: true },
+            $inc: { humanRequestCount: 1 }
+        },
+        { upsert: true }
+    );
+
+    // OPTIONAL: also increment global counter (see below)
+
+    await sendMessengerReply(
+        sender_psid,
+        "👤 A human agent will take over shortly.\nYou can type !bot anytime to return to the assistant.",
+        pageId
+    );
+
+    return;
+}
+
 
 
         history.push({ role: "assistant", content: assistantMessage, createdAt: new Date() });
@@ -353,16 +363,22 @@ try {
         let combinedMessage = assistantMessage;
         if (greeting) combinedMessage = `${greeting}\n\n${assistantMessage}`;
 
-   if (assistantMessage.includes("[TOUR_REQUEST]")) {
+if (assistantMessage.includes("[TOUR_REQUEST]")) {
     const data = extractTourData(assistantMessage);
     data.pageId = pageId;
+
+    await db.collection("Conversations").updateOne(
+        { pageId, userId: sender_psid, source: "messenger" },
+        { $inc: { tourRequestCount: 1 } },
+        { upsert: true }
+    );
+
     console.log("✈️ Tour request detected, sending email", data);
 
     try {
         await sendTourEmail(data);
     } catch (err) {
         console.error("❌ Failed to send tour email:", err.message);
-        const db = await connectDB();
         await db.collection("Logs").insertOne({
             pageId,
             psid: sender_psid,
@@ -373,6 +389,7 @@ try {
         });
     }
 }
+
 
 
         await sendMessengerReply(sender_psid, combinedMessage, pageId);
