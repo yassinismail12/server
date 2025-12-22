@@ -532,14 +532,24 @@ const globalStats = convoStats[0] || {
         }
 
         const chartResults = pipeline.length > 0 ? await Conversation.aggregate(pipeline) : [];
+const perClientStatsArr = await Conversation.aggregate([
+    {
+        $group: {
+            _id: "$clientId",
+            humanRequests: { $sum: "$humanRequestCount" },
+            tourRequests: { $sum: "$tourRequestCount" }
+        }
+    }
+]);
 
-  const statsMap = {};
-        perClientStatsArr.forEach(s => {
-            statsMap[s._id] = {
-                humanRequests: s.humanRequests || 0,
-                tourRequests: s.tourRequests || 0
-            };
-        });
+// 🔹 Build stats map
+const statsMap = {};
+perClientStatsArr.forEach(s => {
+    statsMap[s._id] = {
+        humanRequests: s.humanRequests || 0,
+        tourRequests: s.tourRequests || 0
+    };
+});
         // 🔹 Build clients array for dashboard table
        const clientsData = clients.map(c => {
     const used = c.messageCount || 0;
