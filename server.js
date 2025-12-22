@@ -667,6 +667,10 @@ app.get("/api/stats/:clientId", verifyToken, requireClientOwnership, async (req,
         pipeline.push({ $sort: { "_id": 1 } });
 
         const chartResults = await Conversation.aggregate(pipeline);
+// Fetch all conversations for this client
+const clientConvos = await Conversation.find({ clientId });
+
+// Now you can safely calculate
 const totalHumanRequests = clientConvos.reduce(
   (sum, c) => sum + (c.humanRequestCount || 0),
   0
@@ -681,6 +685,7 @@ const activeHumanChats = clientConvos.reduce(
   (sum, c) => sum + (c.humanEscalation ? 1 : 0),
   0
 );
+
 
         // build the same shaped object as admin uses
         res.json({
