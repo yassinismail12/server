@@ -130,19 +130,24 @@ async function saveConversation(pageId, userId, history, lastInteraction) {
     }
 
     console.log(`💾 Saving Messenger conversation for clientId: ${client.clientId}, userId: ${userId}`);
-
-    await db.collection("Conversations").updateOne(
-        { clientId: client.clientId, userId, source: "messenger" },
-        {
-            $set: {
-                pageId: pageIdStr,       // keep a reference to the pageId too
-                history,
-                lastInteraction,
-                updatedAt: new Date(),
-            },
-        },
-        { upsert: true }
-    );
+await db.collection("Conversations").updateOne(
+  { clientId: client.clientId, userId, source: "messenger" },
+  {
+    $set: {
+      pageId: pageIdStr,
+      history,
+      lastInteraction,
+      updatedAt: new Date(),
+    },
+    $setOnInsert: {
+      humanEscalation: false,
+      humanRequestCount: 0,
+      tourRequestCount: 0,
+      createdAt: new Date(),
+    },
+  },
+  { upsert: true }
+);
 }
 
 async function saveCustomer(pageId, psid, userProfile) {
