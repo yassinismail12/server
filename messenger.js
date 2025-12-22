@@ -368,31 +368,19 @@ if (assistantMessage.includes("[Human_request]")) {
         let combinedMessage = assistantMessage;
         if (greeting) combinedMessage = `${greeting}\n\n${assistantMessage}`;
 
+// --- AI-triggered tour request ---
 if (assistantMessage.includes("[TOUR_REQUEST]")) {
-    const data = extractTourData(assistantMessage);
-    data.pageId = pageId;
+    // 🔹 Remove token so user never sees it
+    assistantMessage = assistantMessage.replace("[TOUR_REQUEST]", "").trim();
 
+    // 🔹 Increment analytics counter
     await db.collection("Conversations").updateOne(
         { pageId, userId: sender_psid, source: "messenger" },
         { $inc: { tourRequestCount: 1 } },
         { upsert: true }
     );
 
-    console.log("✈️ Tour request detected, sending email", data);
-
-    try {
-        await sendTourEmail(data);
-    } catch (err) {
-        console.error("❌ Failed to send tour email:", err.message);
-        await db.collection("Logs").insertOne({
-            pageId,
-            psid: sender_psid,
-            level: "error",
-            source: "email",
-            message: err.message,
-            timestamp: new Date(),
-        });
-    }
+    console.log("📊 Tour request detected (no email sent)");
 }
 
 
