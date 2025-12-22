@@ -667,6 +667,20 @@ app.get("/api/stats/:clientId", verifyToken, requireClientOwnership, async (req,
         pipeline.push({ $sort: { "_id": 1 } });
 
         const chartResults = await Conversation.aggregate(pipeline);
+const totalHumanRequests = clientConvos.reduce(
+  (sum, c) => sum + (c.humanRequestCount || 0),
+  0
+);
+
+const totalTourRequests = clientConvos.reduce(
+  (sum, c) => sum + (c.tourRequestCount || 0),
+  0
+);
+
+const activeHumanChats = clientConvos.reduce(
+  (sum, c) => sum + (c.humanEscalation ? 1 : 0),
+  0
+);
 
         // build the same shaped object as admin uses
         res.json({
@@ -688,7 +702,10 @@ app.get("/api/stats/:clientId", verifyToken, requireClientOwnership, async (req,
             active: client.active ?? false,
             PAGE_ACCESS_TOKEN: client.PAGE_ACCESS_TOKEN || "",
             igAccessToken: client.igAccessToken || "",
-            chartResults
+            chartResults,
+             totalHumanRequests,
+    totalTourRequests,
+    activeHumanChats
         });
     } catch (err) {
         console.error("❌ Error fetching client stats:", err);
