@@ -385,7 +385,7 @@ if (assistantMessage.includes("[Human_request]")) {
 
     await sendMessengerReply(
         sender_psid,
-        "👤 A human agent will take over shortly.\nYou can type !bot anytime to return to the assistant.",
+        "👤 A human agent will take over shortly.\nYou can type !bot anytime to return to the assistant.\nسيقوم أحد موظفي الدعم بالرد عليك قريبًا.\nيمكنك كتابة !bot في أي وقت للعودة إلى المساعد الذكي",
         pageId
     );
 
