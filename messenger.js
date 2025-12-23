@@ -270,18 +270,50 @@ const convoCheck = await db.collection("Conversations").findOne({
     userId: sender_psid,
     source: "messenger"
 });
+// ⏱ Auto-resume bot if 2-hour timer expired
+if (
+    convoCheck?.humanEscalation === true &&
+    convoCheck?.botResumeAt &&
+    new Date() >= new Date(convoCheck.botResumeAt)
+) {
+    await db.collection("Conversations").updateOne(
+        { pageId, userId: sender_psid, source: "messenger" },
+        {
+            $set: {
+                humanEscalation: false,
+                botResumeAt: null,
+                autoResumedAt: new Date()
+            }
+        }
+    );
+
+    console.log("🤖 Bot auto-resumed after 2 hours");
+}
+
 
 // --- Resume bot command ---
 if (userMessage.trim().toLowerCase() === "!bot") {
+    const resumeAt = new Date(Date.now() + 2 * 60 * 60 * 1000); // 2 hours
+
     await db.collection("Conversations").updateOne(
         { pageId, userId: sender_psid, source: "messenger" },
-        { $set: { humanEscalation: false } },
+        {
+            $set: {
+                botResumeAt: resumeAt
+            }
+        },
         { upsert: true }
     );
 
-    await sendMessengerReply(sender_psid, "🤖 Bot reactivated! How can I help?", pageId);
-    continue; // skip AI processing
+    await sendMessengerReply(
+        sender_psid,
+        "⏳ Bot will automatically return in 2 hours.",
+        pageId
+    );
+
+    continue; // still keep bot muted
 }
+
 
 // --- If human escalation active → ignore bot AI reply ---
 if (convoCheck?.humanEscalation === true) {
