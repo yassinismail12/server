@@ -299,7 +299,8 @@ if (userMessage.trim().toLowerCase() === "!bot") {
         { pageId, userId: sender_psid, source: "messenger" },
         {
             $set: {
-                botResumeAt: resumeAt
+                botResumeAt: resumeAt,
+                humanEscalation: false 
             }
         },
         { upsert: true }
@@ -307,7 +308,7 @@ if (userMessage.trim().toLowerCase() === "!bot") {
 
     await sendMessengerReply(
         sender_psid,
-        "⏳ Bot will automatically return in 2 hours.",
+        "Bot is Reactivated! ",
         pageId
     );
 
