@@ -14,6 +14,11 @@ export async function notifyStaffWhatsApp({ to, message, pageId, psid }) {
   // Create a direct Messenger link to the conversation
   const convoLink = `https://m.me/${pageId}?ref=${psid}`;
 
+  // ✅ Log the numbers before sending
+  console.log("📲 Sending WhatsApp message");
+  console.log("From:", process.env.TWILIO_WHATSAPP_FROM);
+  console.log("To:", `whatsapp:${to}`);
+
   await client.messages.create({
     from: process.env.TWILIO_WHATSAPP_FROM, // whatsapp:+14155238886
     to: `whatsapp:${to}`,
@@ -22,4 +27,3 @@ export async function notifyStaffWhatsApp({ to, message, pageId, psid }) {
 
   console.log("📲 Staff notified via WhatsApp with direct link");
 }
-
