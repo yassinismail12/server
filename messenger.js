@@ -6,7 +6,7 @@ import { SYSTEM_PROMPT } from "./utils/systemPrompt.js";
 import { sendMessengerReply,sendMarkAsRead } from "./services/messenger.js";
 import { sendQuotaWarning } from "./sendQuotaWarning.js";
 import {buildStaffAlert} from "./utils/buildStaffAlert.js";
-import { Twilio } from "twilio";
+import { notifyStaffWhatsApp } from "./services/twilio.js";
 import { MongoClient } from "mongodb";
 
 const router = express.Router();
