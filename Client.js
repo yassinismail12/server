@@ -18,7 +18,10 @@ const clientSchema = new mongoose.Schema({
     igAccessToken: { type: String, default: "" },  // Instagram Page Access Token
     PAGE_ACCESS_TOKEN: { type: String, default: "" },
     VERIFY_TOKEN: { type: String, default: "" },
-
+staffWhatsApp: {
+    type: String,
+    default: "", // empty = no human handoff configured
+},
     // ✅ Flexible file storage
     files: [
         {

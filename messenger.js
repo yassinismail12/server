@@ -5,8 +5,8 @@ import { getChatCompletion } from "./services/openai.js";
 import { SYSTEM_PROMPT } from "./utils/systemPrompt.js";
 import { sendMessengerReply,sendMarkAsRead } from "./services/messenger.js";
 import { sendQuotaWarning } from "./sendQuotaWarning.js";
-import { sendTourEmail } from "./sendEmail.js";
-import { extractTourData } from "./extractTourData.js";
+import {buildStaffAlert} from "./utils/buildStaffAlert.js";
+import { Twilio } from "twilio";
 import { MongoClient } from "mongodb";
 
 const router = express.Router();
@@ -381,16 +381,33 @@ if (assistantMessage.includes("[Human_request]")) {
         { upsert: true }
     );
 
-    // OPTIONAL: also increment global counter (see below)
+    // 🔔 Notify staff on WhatsApp
+    try {
+        await notifyStaffWhatsApp({
+            to: clientDoc.staffWhatsApp,
+            message: `
+🚨 HUMAN ESCALATION 🚨
+
+Page: ${pageId}
+User PSID: ${sender_psid}
+
+Last message:
+"${userMessage}"
+            `
+        });
+    } catch (err) {
+        console.error("❌ WhatsApp notify failed:", err.message);
+    }
 
     await sendMessengerReply(
         sender_psid,
-        "👤 A human agent will take over shortly.\nYou can type !bot anytime to return to the assistant.\nسيقوم أحد موظفي الدعم بالرد عليك قريبًا.\nيمكنك كتابة !bot في أي وقت للعودة إلى المساعد الذكي",
+        "👤 A human agent will take over shortly.\nYou can type !bot anytime to return to the assistant.\n\nسيقوم أحد موظفي الدعم بالرد عليك قريبًا.",
         pageId
     );
 
     return;
 }
+
 
 
 
