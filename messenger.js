@@ -401,6 +401,21 @@ if (assistantMessage.includes("[Human_request]")) {
         if (greeting) combinedMessage = `${greeting}\n\n${assistantMessage}`;
 
 // --- AI-triggered tour request ---
+// --- AI-triggered order request ---
+if (assistantMessage.includes("[ORDER_REQUEST]")) {
+    // 🔹 Remove token so user never sees it
+    assistantMessage = assistantMessage.replace("[ORDER_REQUEST]", "").trim();
+
+    // 🔹 Increment analytics counter
+    await db.collection("Conversations").updateOne(
+        { pageId, userId: sender_psid, source: "messenger" },
+        { $inc: { orderRequestCount: 1 } },
+        { upsert: true }
+    );
+
+    console.log("🛒 Order request detected");
+}
+
 if (assistantMessage.includes("[TOUR_REQUEST]")) {
     // 🔹 Remove token so user never sees it
     assistantMessage = assistantMessage.replace("[TOUR_REQUEST]", "").trim();
@@ -420,6 +435,7 @@ if (assistantMessage.includes("[TOUR_REQUEST]")) {
 
         await sendMessengerReply(sender_psid, combinedMessage, pageId);
     }
+    
 
     // ===== Show typing while processing =====
   // ===== Show mark_seen while processing =====

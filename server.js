@@ -149,6 +149,7 @@ app.get("/api/clients/:id", verifyToken, requireClientOwnership, async (req, res
                     _id: "$clientId",
                     totalHumanRequests: { $sum: "$humanRequestCount" },
                     totalTourRequests: { $sum: "$tourRequestCount" },
+                    totalorderRequests: { $sum: "$orderRequestCount" },
                     activeHumanChats: { $sum: { $cond: ["$humanEscalation", 1, 0] } },
                 },
             },
@@ -177,6 +178,7 @@ app.get("/api/clients/:id", verifyToken, requireClientOwnership, async (req, res
             // ✅ Added stats
             totalHumanRequests: convoStats.totalHumanRequests || 0,
             totalTourRequests: convoStats.totalTourRequests || 0,
+            totalorderRequests: convoStats.totalorderRequests || 0,
             activeHumanChats: convoStats.activeHumanChats || 0,
         });
     } catch (err) {
@@ -443,6 +445,7 @@ const convoStats = await Conversation.aggregate([
       _id: null,
       totalHumanRequests: { $sum: "$humanRequestCount" },
       totalTourRequests: { $sum: "$tourRequestCount" },
+      totalorderRequests: { $sum: "$orderRequestCount" },
       activeHumanChats: {
         $sum: { $cond: ["$humanEscalation", 1, 0] }
       }
@@ -453,6 +456,7 @@ const convoStats = await Conversation.aggregate([
 const globalStats = convoStats[0] || {
   totalHumanRequests: 0,
   totalTourRequests: 0,
+    totalorderRequests: 0,
   activeHumanChats: 0
 };
 
@@ -537,7 +541,8 @@ const perClientStatsArr = await Conversation.aggregate([
         $group: {
             _id: "$clientId",
             humanRequests: { $sum: "$humanRequestCount" },
-            tourRequests: { $sum: "$tourRequestCount" }
+            tourRequests: { $sum: "$tourRequestCount" },
+            orderRequests: { $sum: "$orderRequestCount" }
         }
     }
 ]);
@@ -547,7 +552,8 @@ const statsMap = {};
 perClientStatsArr.forEach(s => {
     statsMap[s._id] = {
         humanRequests: s.humanRequests || 0,
-        tourRequests: s.tourRequests || 0
+        tourRequests: s.tourRequests || 0,
+        orderRequests: s.orderRequests || 0
     };
 });
         // 🔹 Build clients array for dashboard table
@@ -573,6 +579,7 @@ perClientStatsArr.forEach(s => {
         files: c.files || [],
         humanRequests: clientStats.humanRequests || 0,
         tourRequests: clientStats.tourRequests || 0,
+        orderRequests: clientStats.orderRequests || 0,
         lastActive: c.updatedAt || c.createdAt,
         active: c.active ?? false,
         PAGE_ACCESS_TOKEN: c.PAGE_ACCESS_TOKEN || "",
@@ -589,6 +596,7 @@ perClientStatsArr.forEach(s => {
             chartResults,
               totalHumanRequests: globalStats.totalHumanRequests,
   totalTourRequests: globalStats.totalTourRequests,
+    totalorderRequests: globalStats.totalorderRequests,
   activeHumanChats: globalStats.activeHumanChats,
             clients: clientsData
         });
@@ -680,6 +688,10 @@ const totalTourRequests = clientConvos.reduce(
   (sum, c) => sum + (c.tourRequestCount || 0),
   0
 );
+const orderRequestCount = clientConvos.reduce(
+    (sum, c) => sum + (c.orderRequestCount || 0),
+    0
+);
 
 const activeHumanChats = clientConvos.reduce(
   (sum, c) => sum + (c.humanEscalation ? 1 : 0),
@@ -710,6 +722,7 @@ const activeHumanChats = clientConvos.reduce(
             chartResults,
              totalHumanRequests,
     totalTourRequests,
+    totalorderRequests: orderRequestCount,
     activeHumanChats
         });
     } catch (err) {
