@@ -447,7 +447,7 @@ if (assistantMessage.includes("[TOUR_REQUEST]")) {
     console.log("📊 Tour request detected (no email sent)");
 }
 
- combinedMessage = assistantMessage;
+
 
 
         await sendMessengerReply(sender_psid, combinedMessage, pageId);
