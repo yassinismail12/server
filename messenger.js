@@ -383,22 +383,15 @@ if (assistantMessage.includes("[Human_request]")) {
 
     // 🔔 Notify staff on WhatsApp
     try {
-        await notifyStaffWhatsApp({
-            to: clientDoc.staffWhatsApp,
-            message: `
-🚨 HUMAN ESCALATION 🚨
-
-Page: ${pageId}
-User PSID: ${sender_psid}
-
-Last message:
-"${userMessage}"
-            `
-        });
+     await notifyStaffWhatsApp({
+  to: clientDoc.staffWhatsApp,
+  message: `🚨 HUMAN ESCALATION 🚨\n\nUser PSID: ${sender_psid}\nLast message: "${userMessage}"`,
+  pageId,
+  psid: sender_psid
+});
     } catch (err) {
-        console.error("❌ WhatsApp notify failed:", err.message);
+        console.error("❌ Failed to notify staff via WhatsApp:", err.message);
     }
-
     await sendMessengerReply(
         sender_psid,
         "👤 A human agent will take over shortly.\nYou can type !bot anytime to return to the assistant.\n\nسيقوم أحد موظفي الدعم بالرد عليك قريبًا.",
