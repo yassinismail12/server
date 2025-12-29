@@ -131,7 +131,8 @@ async function saveConversation(pageId, userId, history, lastInteraction) {
 
     console.log(`💾 Saving Messenger conversation for clientId: ${client.clientId}, userId: ${userId}`);
 await db.collection("Conversations").updateOne(
-  { clientId: client.clientId, userId, source: "messenger" },
+  { pageId: pageIdStr, userId, source: "messenger" },
+
   {
     $set: {
       pageId: pageIdStr,
@@ -265,11 +266,15 @@ if (webhook_event.message?.text) {
 const db = await connectDB();
 
 // Fetch existing conversation to check if human escalation is active
-const convoCheck = await db.collection("Conversations").findOne({
+const getFreshConvo = async () =>
+  db.collection("Conversations").findOne({
     pageId,
     userId: sender_psid,
     source: "messenger"
-});
+  });
+
+let convoCheck = await getFreshConvo();
+
 // ⏱ Auto-resume bot if 2-hour timer expired
 if (
     convoCheck?.humanEscalation === true &&
