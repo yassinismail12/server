@@ -331,126 +331,133 @@ if (convoCheck?.humanEscalation === true) {
 
 
     // ===== Robust Typing Handler =====
-    async function processMessageWithTyping() {
-        let convo, history, greeting, firstName;
+  async function processMessageWithTyping() {
+    let convo, history, greeting, firstName;
 
-        // ===== AI + DB work =====
-        const finalSystemPrompt = await SYSTEM_PROMPT({ pageId });
-        convo = await getConversation(pageId, sender_psid);
-        history = convo?.history || [{ role: "system", content: finalSystemPrompt }];
+    // ===== AI + DB work =====
+    const finalSystemPrompt = await SYSTEM_PROMPT({ pageId });
+    convo = await getConversation(pageId, sender_psid);
+    history = convo?.history || [{ role: "system", content: finalSystemPrompt }];
 
-        firstName = "there";
-        greeting = "";
+    firstName = "there";
+    greeting = "";
 
-        if (!convo || isNewDay(convo.lastInteraction)) {
-            const userProfile = await getUserProfile(sender_psid, clientDoc.PAGE_ACCESS_TOKEN);
-            firstName = userProfile.first_name || "there";
-            await saveCustomer(pageId, sender_psid, userProfile);
+    if (!convo || isNewDay(convo.lastInteraction)) {
+        const userProfile = await getUserProfile(sender_psid, clientDoc.PAGE_ACCESS_TOKEN);
+        firstName = userProfile.first_name || "there";
+        await saveCustomer(pageId, sender_psid, userProfile);
 
-            greeting = `Hi ${firstName}, good to see you today 👋`;
-            history.push({ role: "assistant", content: greeting, createdAt: new Date() });
+        greeting = `Hi ${firstName}, good to see you today 👋`;
+        history.push({ role: "assistant", content: greeting, createdAt: new Date() });
+    }
+
+    history.push({ role: "user", content: userMessage, createdAt: new Date() });
+
+    // ===== Generate AI reply =====
+    let assistantMessage;
+    try {
+        assistantMessage = await getChatCompletion(history);
+    } catch (err) {
+        console.error("❌ OpenAI error:", err.message);
+
+        const db = await connectDB();
+        await db.collection("Logs").insertOne({
+            pageId,
+            psid: sender_psid,
+            level: "error",
+            source: "openai",
+            message: err.message,
+            timestamp: new Date(),
+        });
+
+        assistantMessage = "⚠️ I'm having trouble right now. Please try again shortly.";
+    }
+
+    // ===== CONTROL TOKENS PARSING (FIX) =====
+    const flags = {
+        human: false,
+        tour: false,
+        order: false,
+    };
+
+    if (assistantMessage.includes("[Human_request]")) {
+        flags.human = true;
+        assistantMessage = assistantMessage.replace("[Human_request]", "").trim();
+    }
+
+    if (assistantMessage.includes("[ORDER_REQUEST]")) {
+        flags.order = true;
+        assistantMessage = assistantMessage.replace("[ORDER_REQUEST]", "").trim();
+    }
+
+    if (assistantMessage.includes("[TOUR_REQUEST]")) {
+        flags.tour = true;
+        assistantMessage = assistantMessage.replace("[TOUR_REQUEST]", "").trim();
+    }
+
+    const db = await connectDB();
+
+    // ===== Human escalation =====
+    if (flags.human) {
+        await db.collection("Conversations").updateOne(
+            { pageId, userId: sender_psid, source: "messenger" },
+            {
+                $set: { humanEscalation: true },
+                $inc: { humanRequestCount: 1 }
+            },
+            { upsert: true }
+        );
+
+        try {
+            await notifyStaffWhatsApp({
+                to: clientDoc.staffWhatsApp,
+                message: `🚨 HUMAN ESCALATION 🚨\n\nUser PSID: ${sender_psid}\nLast message: "${userMessage}"`,
+                pageId,
+                psid: sender_psid
+            });
+        } catch (err) {
+            console.error("❌ Failed to notify staff via WhatsApp:", err.message);
         }
 
-        history.push({ role: "user", content: userMessage, createdAt: new Date() });
+        await sendMessengerReply(
+            sender_psid,
+            "👤 A human agent will take over shortly.\nYou can type !bot anytime to return to the assistant.\n\nسيقوم أحد موظفي الدعم بالرد عليك قريبًا.",
+            pageId
+        );
 
-        // Generate AI reply
-       let assistantMessage;
-try {
-    assistantMessage = await getChatCompletion(history);
-} catch (err) {
-    console.error("❌ OpenAI error:", err.message);
-
-    // Save error log in MongoDB
-    const db = await connectDB();
-    await db.collection("Logs").insertOne({
-        pageId,
-        psid: sender_psid,
-        level: "error",
-        source: "openai",
-        message: err.message,
-        timestamp: new Date(),
-    });
-
-    assistantMessage = "⚠️ I'm having trouble right now. Please try again shortly.";
-}
-// --- AI-triggered human escalation ---
-// --- AI-triggered human escalation ---
-if (assistantMessage.includes("[Human_request]")) {
-    assistantMessage = assistantMessage.replace("[Human_request]", "").trim();
-
-    await db.collection("Conversations").updateOne(
-        { pageId, userId: sender_psid, source: "messenger" },
-        {
-            $set: { humanEscalation: true },
-            $inc: { humanRequestCount: 1 }
-        },
-        { upsert: true }
-    );
-
-    // 🔔 Notify staff on WhatsApp
-    try {
-     await notifyStaffWhatsApp({
-  to: clientDoc.staffWhatsApp,
-  message: `🚨 HUMAN ESCALATION 🚨\n\nUser PSID: ${sender_psid}\nLast message: "${userMessage}"`,
-  pageId,
-  psid: sender_psid
-});
-    } catch (err) {
-        console.error("❌ Failed to notify staff via WhatsApp:", err.message);
+        return;
     }
-    await sendMessengerReply(
-        sender_psid,
-        "👤 A human agent will take over shortly.\nYou can type !bot anytime to return to the assistant.\n\nسيقوم أحد موظفي الدعم بالرد عليك قريبًا.",
-        pageId
-    );
 
-    return;
-}
-
-
-
-
-        history.push({ role: "assistant", content: assistantMessage, createdAt: new Date() });
-        await saveConversation(pageId, sender_psid, history, new Date());
-
-        let combinedMessage = assistantMessage;
-        if (greeting) combinedMessage = `${greeting}\n\n${assistantMessage}`;
-
-// --- AI-triggered tour request ---
-// --- AI-triggered order request ---
-if (assistantMessage.includes("[ORDER_REQUEST]")) {
-    // 🔹 Remove token so user never sees it
-    assistantMessage = assistantMessage.replace("[ORDER_REQUEST]", "").trim();
-
-    // 🔹 Increment analytics counter
-    await db.collection("Conversations").updateOne(
-        { pageId, userId: sender_psid, source: "messenger" },
-        { $inc: { orderRequestCount: 1 } },
-        { upsert: true }
-    );
-
-    console.log("🛒 Order request detected");
-}
-
-if (assistantMessage.includes("[TOUR_REQUEST]")) {
-    // 🔹 Remove token so user never sees it
-    assistantMessage = assistantMessage.replace("[TOUR_REQUEST]", "").trim();
-
-    // 🔹 Increment analytics counter
-    await db.collection("Conversations").updateOne(
-        { pageId, userId: sender_psid, source: "messenger" },
-        { $inc: { tourRequestCount: 1 } },
-        { upsert: true }
-    );
-
-    console.log("📊 Tour request detected (no email sent)");
-}
-
-
-
-
-        await sendMessengerReply(sender_psid, combinedMessage, pageId);
+    // ===== Analytics counters =====
+    if (flags.order) {
+        await db.collection("Conversations").updateOne(
+            { pageId, userId: sender_psid, source: "messenger" },
+            { $inc: { orderRequestCount: 1 } },
+            { upsert: true }
+        );
+        console.log("🛒 Order request detected");
     }
+
+    if (flags.tour) {
+        await db.collection("Conversations").updateOne(
+            { pageId, userId: sender_psid, source: "messenger" },
+            { $inc: { tourRequestCount: 1 } },
+            { upsert: true }
+        );
+        console.log("📊 Tour request detected (no email sent)");
+    }
+
+    // ===== Save conversation (CLEAN) =====
+    history.push({ role: "assistant", content: assistantMessage, createdAt: new Date() });
+    await saveConversation(pageId, sender_psid, history, new Date());
+
+    let combinedMessage = assistantMessage;
+    if (greeting) combinedMessage = `${greeting}\n\n${assistantMessage}`;
+
+    // ===== Send reply =====
+    await sendMessengerReply(sender_psid, combinedMessage, pageId);
+}
+
     
 
     // ===== Show typing while processing =====
