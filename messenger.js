@@ -136,6 +136,7 @@ await db.collection("Conversations").updateOne(
   {
     $set: {
       pageId: pageIdStr,
+      clientId: client.clientId,
       history,
       lastInteraction,
       updatedAt: new Date(),
