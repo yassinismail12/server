@@ -145,6 +145,7 @@ await db.collection("Conversations").updateOne(
       humanEscalation: false,
       humanRequestCount: 0,
       tourRequestCount: 0,
+      orderRequestCount: 0,
       createdAt: new Date(),
     },
   },

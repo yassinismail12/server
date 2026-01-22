@@ -1015,11 +1015,22 @@ app.get("/auth/facebook/callback", async (req, res) => {
   const clientId = state;
   const redirectUri = process.env.FACEBOOK_REDIRECT_URI;
 
+  if (!code || !clientId) {
+    return res.status(400).send("Missing OAuth code or clientId");
+  }
+
   try {
-    // 🔹 Exchange code for USER access token
+    // =====================================================
+    // 1️⃣ Exchange code for USER access token
+    // =====================================================
     const tokenRes = await fetch(
-      `https://graph.facebook.com/v20.0/oauth/access_token?client_id=${process.env.FACEBOOK_APP_ID}&redirect_uri=${redirectUri}&client_secret=${process.env.FACEBOOK_APP_SECRET}&code=${code}`
+      `https://graph.facebook.com/v20.0/oauth/access_token` +
+        `?client_id=${process.env.FACEBOOK_APP_ID}` +
+        `&redirect_uri=${redirectUri}` +
+        `&client_secret=${process.env.FACEBOOK_APP_SECRET}` +
+        `&code=${code}`
     );
+
     const tokenData = await tokenRes.json();
 
     if (!tokenData.access_token) {
@@ -1028,25 +1039,38 @@ app.get("/auth/facebook/callback", async (req, res) => {
     }
 
     const userAccessToken = tokenData.access_token;
-    console.log("🔹 Facebook user access token received:", userAccessToken);
+    console.log("✅ User access token received");
 
-    // 🔹 Get user’s managed pages
-    const userRes = await fetch(
-      `https://graph.facebook.com/me/accounts?access_token=${userAccessToken}`
+    // =====================================================
+    // 2️⃣ Get user's managed Pages
+    // =====================================================
+    const pagesRes = await fetch(
+      `https://graph.facebook.com/v20.0/me/accounts?access_token=${userAccessToken}`
     );
-    const userPages = await userRes.json();
+    const pagesData = await pagesRes.json();
 
-    if (!userPages.data || !userPages.data.length) {
-      console.error("❌ No managed pages found:", userPages);
+    if (!pagesData.data || pagesData.data.length === 0) {
+      console.error("❌ No managed pages found:", pagesData);
       return res.status(400).send("No managed pages found");
     }
 
-    // 🔹 Pick the first page (later: let user select)
-    const page = userPages.data[0];
-    const { id: pageId, access_token: pageAccessToken, name: pageName } = page;
-    console.log(`🔹 Selected page: ${pageName} (${pageId})`);
+    // ⚠️ For demo / review: pick first page
+    const page = pagesData.data[0];
+    const {
+      id: pageId,
+      access_token: pageAccessToken,
+      name: pageName,
+    } = page;
 
-    // 🔹 Subscribe the page to your webhook
+    if (!pageId || !pageAccessToken) {
+      return res.status(400).send("Invalid Page data");
+    }
+
+    console.log(`✅ Selected Page: ${pageName} (${pageId})`);
+
+    // =====================================================
+    // 3️⃣ Subscribe Page to Webhooks
+    // =====================================================
     try {
       const subscribeRes = await fetch(
         `https://graph.facebook.com/v20.0/${pageId}/subscribed_apps`,
@@ -1065,49 +1089,71 @@ app.get("/auth/facebook/callback", async (req, res) => {
       );
 
       const subscribeData = await subscribeRes.json();
-      console.log("🔹 Subscription response:", subscribeData);
 
       if (subscribeData.success) {
-        console.log(`✅ Page ${pageId} successfully subscribed to webhook events`);
+        console.log(`✅ Page ${pageId} subscribed to webhook events`);
       } else {
-        console.warn(`⚠️ Failed to subscribe page ${pageId}:`, subscribeData);
+        console.warn("⚠️ Webhook subscription response:", subscribeData);
       }
     } catch (subErr) {
-      console.error("❌ Error subscribing page:", subErr);
+      console.error("❌ Error subscribing Page:", subErr);
     }
 
-    // 🔹 Save or update page in Pages collection
-    let pageDoc = await Page.findOne({ pageId });
-    if (!pageDoc) {
-      pageDoc = await Page.create({
-        pageId,
-        name: pageName,
-        userAccessToken,
-        pageAccessToken,
-        clientId, // links the page to its dashboard client
-        connectedAt: new Date(),
-      });
-      console.log(`✅ Added new page: ${pageName} (${pageId})`);
+    // =====================================================
+    // 4️⃣ STORE DATA — CLIENT FIRST, PAGE AS FALLBACK
+    // =====================================================
+    const client = await Client.findOne({ clientId });
+
+    if (client) {
+      // ✅ Update Client directly
+      client.pageId = pageId;
+      client.pageName = pageName;
+      client.pageAccessToken = pageAccessToken;
+      client.userAccessToken = userAccessToken;
+      client.connectedAt = new Date();
+
+      await client.save();
+
+      console.log(`✅ Client ${clientId} updated with Page ${pageName}`);
     } else {
-      pageDoc.name = pageName;
-      pageDoc.userAccessToken = userAccessToken;
-      pageDoc.pageAccessToken = pageAccessToken;
-      pageDoc.clientId = clientId;
-      pageDoc.connectedAt = new Date();
-      await pageDoc.save();
-      console.log(`🔄 Updated existing page: ${pageName} (${pageId})`);
+      // ⚠️ Fallback: store in Pages collection
+      let pageDoc = await Page.findOne({ pageId });
+
+      if (!pageDoc) {
+        await Page.create({
+          pageId,
+          name: pageName,
+          pageAccessToken,
+          userAccessToken,
+          clientId,
+          connectedAt: new Date(),
+        });
+
+        console.log(
+          `⚠️ Client not found. Page ${pageName} stored in Pages collection`
+        );
+      } else {
+        pageDoc.name = pageName;
+        pageDoc.pageAccessToken = pageAccessToken;
+        pageDoc.userAccessToken = userAccessToken;
+        pageDoc.clientId = clientId;
+        pageDoc.connectedAt = new Date();
+
+        await pageDoc.save();
+
+        console.log(`🔄 Updated existing Page record ${pageName}`);
+      }
     }
 
-    console.log(`✅ Connected page ${pageId} to client ${clientId}`);
-
-    // 🔹 Redirect back to dashboard
-    res.redirect(`http://localhost:5173/dashboard?connected=success`);
+    // =====================================================
+    // 5️⃣ Redirect back to dashboard
+    // =====================================================
+    res.redirect("http://localhost:5173/dashboard?connected=success");
   } catch (err) {
     console.error("❌ OAuth callback error:", err);
     res.status(500).send("OAuth callback error");
   }
 });
-
 
 
 // API routes
