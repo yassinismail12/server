@@ -1039,7 +1039,6 @@ app.get("/auth/facebook/callback", async (req, res) => {
     }
 
     const userAccessToken = tokenData.access_token;
-    console.log("✅ User access token received");
 
     // =====================================================
     // 2️⃣ Get user's managed Pages
@@ -1050,29 +1049,24 @@ app.get("/auth/facebook/callback", async (req, res) => {
     const pagesData = await pagesRes.json();
 
     if (!pagesData.data || pagesData.data.length === 0) {
-      console.error("❌ No managed pages found:", pagesData);
       return res.status(400).send("No managed pages found");
     }
 
-    // ⚠️ For demo / review: pick first page
     const page = pagesData.data[0];
-    const {
-      id: pageId,
-      access_token: pageAccessToken,
-      name: pageName,
-    } = page;
 
-    if (!pageId || !pageAccessToken) {
+    const pageId = page.id;
+    const PAGE_ACCESS_TOKEN = page.access_token;
+    const pageName = page.name;
+
+    if (!pageId || !PAGE_ACCESS_TOKEN) {
       return res.status(400).send("Invalid Page data");
     }
-
-    console.log(`✅ Selected Page: ${pageName} (${pageId})`);
 
     // =====================================================
     // 3️⃣ Subscribe Page to Webhooks
     // =====================================================
     try {
-      const subscribeRes = await fetch(
+      await fetch(
         `https://graph.facebook.com/v20.0/${pageId}/subscribed_apps`,
         {
           method: "POST",
@@ -1083,70 +1077,52 @@ app.get("/auth/facebook/callback", async (req, res) => {
               "messaging_postbacks",
               "messaging_optins",
             ],
-            access_token: pageAccessToken,
+            access_token: PAGE_ACCESS_TOKEN,
           }),
         }
       );
-
-      const subscribeData = await subscribeRes.json();
-
-      if (subscribeData.success) {
-        console.log(`✅ Page ${pageId} subscribed to webhook events`);
-      } else {
-        console.warn("⚠️ Webhook subscription response:", subscribeData);
-      }
-    } catch (subErr) {
-      console.error("❌ Error subscribing Page:", subErr);
+    } catch (err) {
+      console.error("Webhook subscription failed:", err);
     }
 
     // =====================================================
-    // 4️⃣ STORE DATA — CLIENT FIRST, PAGE AS FALLBACK
+    // 4️⃣ STORE DATA — CLIENT FIRST
     // =====================================================
     const client = await Client.findOne({ clientId });
 
     if (client) {
-      // ✅ Update Client directly
       client.pageId = pageId;
       client.pageName = pageName;
-      client.pageAccessToken = pageAccessToken;
+      client.PAGE_ACCESS_TOKEN = PAGE_ACCESS_TOKEN; // ✅ FIX
       client.userAccessToken = userAccessToken;
       client.connectedAt = new Date();
 
       await client.save();
-
-      console.log(`✅ Client ${clientId} updated with Page ${pageName}`);
     } else {
-      // ⚠️ Fallback: store in Pages collection
       let pageDoc = await Page.findOne({ pageId });
 
       if (!pageDoc) {
         await Page.create({
           pageId,
           name: pageName,
-          pageAccessToken,
+          PAGE_ACCESS_TOKEN, // ✅ FIX
           userAccessToken,
           clientId,
           connectedAt: new Date(),
         });
-
-        console.log(
-          `⚠️ Client not found. Page ${pageName} stored in Pages collection`
-        );
       } else {
         pageDoc.name = pageName;
-        pageDoc.pageAccessToken = pageAccessToken;
+        pageDoc.PAGE_ACCESS_TOKEN = PAGE_ACCESS_TOKEN; // ✅ FIX
         pageDoc.userAccessToken = userAccessToken;
         pageDoc.clientId = clientId;
         pageDoc.connectedAt = new Date();
 
         await pageDoc.save();
-
-        console.log(`🔄 Updated existing Page record ${pageName}`);
       }
     }
 
     // =====================================================
-    // 5️⃣ Redirect back to dashboard
+    // 5️⃣ Redirect
     // =====================================================
     res.redirect("http://localhost:5173/dashboard?connected=success");
   } catch (err) {
