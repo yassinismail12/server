@@ -1094,7 +1094,7 @@ app.get("/auth/facebook/callback", async (req, res) => {
 
     if (client) {
       client.pageId = pageId;
-      client.PAGE_NAME = PAGE_NAME;
+      client.PAGE_NAME = pageName; ;
       client.PAGE_ACCESS_TOKEN = PAGE_ACCESS_TOKEN; // ✅ FIX
       client.userAccessToken = userAccessToken;
       client.connectedAt = new Date();
@@ -1106,14 +1106,14 @@ app.get("/auth/facebook/callback", async (req, res) => {
       if (!pageDoc) {
         await Page.create({
           pageId,
-          PAGE_NAME: PAGE_NAME,
+           PAGE_NAME: pageName, 
           PAGE_ACCESS_TOKEN, // ✅ FIX
           userAccessToken,
           clientId,
           connectedAt: new Date(),
         });
       } else {
-        pageDoc.PAGE_NAME = PAGE_NAME;
+       pageDoc.PAGE_NAME = pageName;
         pageDoc.PAGE_ACCESS_TOKEN = PAGE_ACCESS_TOKEN; // ✅ FIX
         pageDoc.userAccessToken = userAccessToken;
         pageDoc.clientId = clientId;
