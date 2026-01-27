@@ -174,7 +174,7 @@ app.get("/api/clients/:id", verifyToken, requireClientOwnership, async (req, res
             active: client.active ?? false,
             PAGE_ACCESS_TOKEN: client.PAGE_ACCESS_TOKEN || "",
             igAccessToken: client.igAccessToken || "",
-
+PAGE_NAME: client.PAGE_NAME || "",
             // ✅ Added stats
             totalHumanRequests: convoStats.totalHumanRequests || 0,
             totalTourRequests: convoStats.totalTourRequests || 0,
@@ -583,6 +583,7 @@ perClientStatsArr.forEach(s => {
         lastActive: c.updatedAt || c.createdAt,
         active: c.active ?? false,
         PAGE_ACCESS_TOKEN: c.PAGE_ACCESS_TOKEN || "",
+        PAGE_NAME: c.PAGE_NAME || "",
         VERIFY_TOKEN: c.VERIFY_TOKEN || "",
         igAccessToken: c.igAccessToken || ""
     };
@@ -718,6 +719,7 @@ const activeHumanChats = clientConvos.reduce(
             lastActive: client.updatedAt || client.createdAt,
             active: client.active ?? false,
             PAGE_ACCESS_TOKEN: client.PAGE_ACCESS_TOKEN || "",
+            PAGE_NAME: client.PAGE_NAME || "",
             igAccessToken: client.igAccessToken || "",
             chartResults,
              totalHumanRequests,
@@ -1092,7 +1094,7 @@ app.get("/auth/facebook/callback", async (req, res) => {
 
     if (client) {
       client.pageId = pageId;
-      client.pageName = pageName;
+      client.PAGE_NAME = PAGE_NAME;
       client.PAGE_ACCESS_TOKEN = PAGE_ACCESS_TOKEN; // ✅ FIX
       client.userAccessToken = userAccessToken;
       client.connectedAt = new Date();
@@ -1104,14 +1106,14 @@ app.get("/auth/facebook/callback", async (req, res) => {
       if (!pageDoc) {
         await Page.create({
           pageId,
-          name: pageName,
+          PAGE_NAME: PAGE_NAME,
           PAGE_ACCESS_TOKEN, // ✅ FIX
           userAccessToken,
           clientId,
           connectedAt: new Date(),
         });
       } else {
-        pageDoc.name = pageName;
+        pageDoc.PAGE_NAME = PAGE_NAME;
         pageDoc.PAGE_ACCESS_TOKEN = PAGE_ACCESS_TOKEN; // ✅ FIX
         pageDoc.userAccessToken = userAccessToken;
         pageDoc.clientId = clientId;
