@@ -1460,34 +1460,28 @@ async function saveLastWebhook(req, res, next) {
   return next();
 }
 app.post("/api/review/send-test", async (req, res) => {
-  console.log("✅ HIT /api/review/send-test");
-  console.log("📦 BODY:", req.body);
+  console.log("✅ /api/review/send-test HIT", req.body);
 
   try {
     const { pageId, psid, text } = req.body;
 
-    console.log("🔎 pageId:", pageId);
-    console.log("🔎 psid:", psid);
-
-    const db = await connectDB();
-    console.log("✅ DB connected");
-
-    const clients = db.collection("clients");
-    const clientDoc = await clients.findOne({ pageId: String(pageId).trim() });
-
-    console.log("📄 clientDoc:", clientDoc);
-
-    const PAGE_ACCESS_TOKEN =
-      clientDoc?.PAGE_ACCESS_TOKEN ||
-      clientDoc?.pageAccessToken ||
-      clientDoc?.PAGE_TOKEN;
-
-    console.log("🔑 PAGE_ACCESS_TOKEN exists:", Boolean(PAGE_ACCESS_TOKEN));
-
-    if (!PAGE_ACCESS_TOKEN) {
-      return res.status(404).json({ error: "No PAGE_ACCESS_TOKEN found" });
+    if (!pageId || !psid || !text) {
+      return res.status(400).json({ error: "Missing pageId / psid / text" });
     }
 
+    // ✅ get client using mongoose (same as rest of app)
+    const client = await Client.findOne({ pageId });
+
+    if (!client) {
+      return res.status(404).json({ error: "Client not found" });
+    }
+
+    const PAGE_ACCESS_TOKEN = client.PAGE_ACCESS_TOKEN;
+    if (!PAGE_ACCESS_TOKEN) {
+      return res.status(404).json({ error: "Page access token not found" });
+    }
+
+    // ✅ Send API
     const url = `https://graph.facebook.com/v20.0/${pageId}/messages?access_token=${PAGE_ACCESS_TOKEN}`;
 
     const r = await fetch(url, {
@@ -1502,13 +1496,16 @@ app.post("/api/review/send-test", async (req, res) => {
     const data = await r.json();
     console.log("📨 META RESPONSE:", data);
 
+    if (!r.ok) {
+      return res.status(400).json({ ok: false, metaError: data });
+    }
+
     return res.json({ ok: true, meta: data });
   } catch (err) {
     console.error("❌ SEND TEST ERROR:", err);
     return res.status(500).json({ error: String(err) });
   }
 });
-
 
 // API routes
 app.use("/webhook", saveLastWebhook);
