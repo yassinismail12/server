@@ -997,67 +997,81 @@ app.get("/health", async (req, res) => {
 
 // Step 1: Start OAuth flow
 // STEP 1️⃣ — Start Facebook OAuth (backend redirects to Meta)
+// Helpers
+function normalizeUrl(u = "") {
+  return String(u).trim().replace(/\/+$/, ""); // remove trailing slash
+}
+
 app.get("/auth/facebook", async (req, res) => {
   try {
-    const { clientId } = req.query; // from dashboard/frontend
+    const { clientId } = req.query;
     if (!clientId) return res.status(400).send("Missing clientId");
 
-    const redirectUri = process.env.FACEBOOK_REDIRECT_URI;
+    // ✅ single source of truth
+    const redirectUri = normalizeUrl(process.env.FACEBOOK_REDIRECT_URI);
+    if (!redirectUri) return res.status(500).send("Missing FACEBOOK_REDIRECT_URI");
+
     const fbAuthUrl =
       `https://www.facebook.com/v20.0/dialog/oauth` +
-      `?client_id=${process.env.FACEBOOK_APP_ID}` +
+      `?client_id=${encodeURIComponent(process.env.FACEBOOK_APP_ID)}` +
       `&redirect_uri=${encodeURIComponent(redirectUri)}` +
-      `&scope=pages_show_list,pages_read_engagement,pages_manage_metadata,pages_messaging` +
+      `&scope=${encodeURIComponent(
+        "pages_show_list,pages_read_engagement,pages_manage_metadata,pages_messaging"
+      )}` +
       `&state=${encodeURIComponent(clientId)}`;
 
-    res.redirect(fbAuthUrl);
+    // Debug (temporarily)
+    console.log("🔁 OAuth START redirect_uri:", redirectUri);
+
+    return res.redirect(fbAuthUrl);
   } catch (err) {
     console.error("❌ Error starting Facebook OAuth:", err);
-    res.status(500).send("OAuth start error");
+    return res.status(500).send("OAuth start error");
   }
 });
 
-// STEP 2️⃣ — Handle callback
 app.get("/auth/facebook/callback", async (req, res) => {
-  const { code, state } = req.query; // state = clientId
+  const { code, state } = req.query;
   const clientId = state;
-  const redirectUri = process.env.FACEBOOK_REDIRECT_URI;
 
   if (!code || !clientId) {
     return res.status(400).send("Missing OAuth code or clientId");
   }
 
-  const FRONTEND_URL = process.env.FRONTEND_URL || "http://localhost:5173";
+  const redirectUri = normalizeUrl(process.env.FACEBOOK_REDIRECT_URI);
+  const FRONTEND_URL = normalizeUrl(process.env.FRONTEND_URL || "http://localhost:5173");
+
+  if (!redirectUri) return res.status(500).send("Missing FACEBOOK_REDIRECT_URI");
 
   try {
-    // =====================================================
-    // 1️⃣ Exchange code for USER access token
-    // =====================================================
-    const tokenRes = await fetch(
-      `https://graph.facebook.com/v20.0/oauth/access_token` +
-        `?client_id=${process.env.FACEBOOK_APP_ID}` +
-        `&redirect_uri=${encodeURIComponent(redirectUri)}` +
-        `&client_secret=${process.env.FACEBOOK_APP_SECRET}` +
-        `&code=${encodeURIComponent(code)}`
-    );
+    console.log("🔁 OAuth CALLBACK redirect_uri:", redirectUri);
 
+    // 1) Exchange code -> user access token
+    const tokenUrl =
+      `https://graph.facebook.com/v20.0/oauth/access_token` +
+      `?client_id=${encodeURIComponent(process.env.FACEBOOK_APP_ID)}` +
+      `&redirect_uri=${encodeURIComponent(redirectUri)}` +
+      `&client_secret=${encodeURIComponent(process.env.FACEBOOK_APP_SECRET)}` +
+      `&code=${encodeURIComponent(code)}`;
+
+    const tokenRes = await fetch(tokenUrl);
     const tokenData = await tokenRes.json();
 
     if (!tokenData.access_token) {
       console.error("❌ Failed to get user access token:", tokenData);
+      console.error("Token URL used:", tokenUrl);
       return res.status(400).send("Failed to get user access token");
     }
 
     const userAccessToken = tokenData.access_token;
 
-    // =====================================================
-    // 2️⃣ Get user's managed Pages
-    // =====================================================
-    const pagesRes = await fetch(
-      `https://graph.facebook.com/v20.0/me/accounts?access_token=${encodeURIComponent(
-        userAccessToken
-      )}`
-    );
+    // 2) Get user's managed Pages (include fields)
+    const pagesUrl =
+      `https://graph.facebook.com/v20.0/me/accounts` +
+      `?fields=id,name,access_token` +
+      `&access_token=${encodeURIComponent(userAccessToken)}`;
+
+    const pagesRes = await fetch(pagesUrl);
     const pagesData = await pagesRes.json();
 
     if (!pagesData.data || pagesData.data.length === 0) {
@@ -1065,14 +1079,18 @@ app.get("/auth/facebook/callback", async (req, res) => {
       return res.status(400).send("No managed pages found");
     }
 
-    // ✅ IMPORTANT: don't blindly pick the first page if multiple exist
+    // ✅ If multiple pages, let the user pick in your dashboard UI
     if (pagesData.data.length > 1) {
-      // Best for App Review: force the user to pick in your UI
-      // Your dashboard should call an endpoint to list pages and let user select one.
+      // You should also store userAccessToken against clientId here if you want
+      // to fetch pages later in the dashboard page-picker step.
+      await Client.updateOne(
+        { clientId },
+        { $set: { userAccessToken, connectedAt: new Date() } },
+        { upsert: true }
+      );
+
       return res.redirect(
-        `${FRONTEND_URL}/dashboard?choose_page=1&connected=partial&clientId=${encodeURIComponent(
-          clientId
-        )}`
+        `${FRONTEND_URL}/dashboard?choose_page=1&connected=partial&clientId=${encodeURIComponent(clientId)}`
       );
     }
 
@@ -1086,31 +1104,29 @@ app.get("/auth/facebook/callback", async (req, res) => {
       return res.status(400).send("Invalid Page data");
     }
 
-    // =====================================================
-    // 3️⃣ Subscribe Page to Webhooks (use form-encoded params)
-    // =====================================================
+    // 3) Subscribe Page to Webhooks
     try {
       const params = new URLSearchParams();
-      params.append(
-        "subscribed_fields",
-        "messages,messaging_postbacks,messaging_optins"
-      );
+      params.append("subscribed_fields", "messages,messaging_postbacks,messaging_optins");
       params.append("access_token", PAGE_ACCESS_TOKEN);
 
       const subRes = await fetch(
-        `https://graph.facebook.com/v20.0/${pageId}/subscribed_apps`,
+        `https://graph.facebook.com/v20.0/${encodeURIComponent(pageId)}/subscribed_apps`,
         { method: "POST", body: params }
       );
 
       const subData = await subRes.json();
       console.log("✅ Webhook subscribe response:", subData);
+
+      // Optional: treat failure as warning
+      if (!subData.success) {
+        console.warn("⚠️ Webhook subscription not confirmed:", subData);
+      }
     } catch (err) {
       console.error("Webhook subscription failed:", err);
     }
 
-    // =====================================================
-    // 4️⃣ STORE DATA — CLIENT FIRST
-    // =====================================================
+    // 4) Store data (Client first)
     const client = await Client.findOne({ clientId });
 
     if (client) {
@@ -1142,17 +1158,13 @@ app.get("/auth/facebook/callback", async (req, res) => {
       }
     }
 
-    // =====================================================
-    // 5️⃣ Redirect (include pageName/pageId to make review obvious)
-    // =====================================================
-    res.redirect(
-      `${FRONTEND_URL}/dashboard?connected=success&pageId=${encodeURIComponent(
-        pageId
-      )}&pageName=${encodeURIComponent(pageName)}`
+    // 5) Redirect back to dashboard (make review proof)
+    return res.redirect(
+      `${FRONTEND_URL}/dashboard?connected=success&pageId=${encodeURIComponent(pageId)}&pageName=${encodeURIComponent(pageName)}`
     );
   } catch (err) {
     console.error("❌ OAuth callback error:", err);
-    res.status(500).send("OAuth callback error");
+    return res.status(500).send("OAuth callback error");
   }
 });
 
