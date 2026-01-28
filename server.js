@@ -1460,29 +1460,35 @@ async function saveLastWebhook(req, res, next) {
   return next();
 }
 app.post("/api/review/send-test", async (req, res) => {
+  console.log("✅ HIT /api/review/send-test");
+  console.log("📦 BODY:", req.body);
+
   try {
     const { pageId, psid, text } = req.body;
 
-    if (!pageId || !psid || !text) {
-      return res.status(400).json({ error: "Missing pageId/psid/text" });
-    }
+    console.log("🔎 pageId:", pageId);
+    console.log("🔎 psid:", psid);
 
-    // 1) get Page token from DB
     const db = await connectDB();
-    const clients = db.collection("clients"); // change if your collection name differs
+    console.log("✅ DB connected");
 
+    const clients = db.collection("clients");
     const clientDoc = await clients.findOne({ pageId: String(pageId).trim() });
-    if (!clientDoc?.PAGE_ACCESS_TOKEN) {
-      return res.status(404).json({ error: "No PAGE_ACCESS_TOKEN found for this pageId" });
+
+    console.log("📄 clientDoc:", clientDoc);
+
+    const PAGE_ACCESS_TOKEN =
+      clientDoc?.PAGE_ACCESS_TOKEN ||
+      clientDoc?.pageAccessToken ||
+      clientDoc?.PAGE_TOKEN;
+
+    console.log("🔑 PAGE_ACCESS_TOKEN exists:", Boolean(PAGE_ACCESS_TOKEN));
+
+    if (!PAGE_ACCESS_TOKEN) {
+      return res.status(404).json({ error: "No PAGE_ACCESS_TOKEN found" });
     }
 
-    const PAGE_ACCESS_TOKEN = clientDoc.PAGE_ACCESS_TOKEN || clientDoc.PAGE_ACCESS_TOKEN; 
-    // ^ adjust this line to match your exact field name (PAGE_ACCESS_TOKEN vs PAGE_ACCESS_TOKEN)
-
-    // 2) call Meta Send API
-    const url = `https://graph.facebook.com/v20.0/${pageId}/messages?access_token=${encodeURIComponent(
-      PAGE_ACCESS_TOKEN
-    )}`;
+    const url = `https://graph.facebook.com/v20.0/${pageId}/messages?access_token=${PAGE_ACCESS_TOKEN}`;
 
     const r = await fetch(url, {
       method: "POST",
@@ -1494,17 +1500,15 @@ app.post("/api/review/send-test", async (req, res) => {
     });
 
     const data = await r.json();
+    console.log("📨 META RESPONSE:", data);
 
-    if (!r.ok) {
-      return res.status(400).json({ ok: false, metaError: data });
-    }
-
-    // success
     return res.json({ ok: true, meta: data });
-  } catch (e) {
-    return res.status(500).json({ ok: false, error: String(e) });
+  } catch (err) {
+    console.error("❌ SEND TEST ERROR:", err);
+    return res.status(500).json({ error: String(err) });
   }
 });
+
 
 // API routes
 app.use("/webhook", saveLastWebhook);
