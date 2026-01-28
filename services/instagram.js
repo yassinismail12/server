@@ -49,7 +49,8 @@ export async function sendInstagramReply(psid, text, igId, igAccessTokenOverride
     if (!token) {
       const db = await connectDB();
       const clientDoc = await db.collection("Clients").findOne({ igId: igIdStr });
-      token = sanitizeAccessToken(clientDoc?.igAccessToken);
+      token = sanitizeAccessToken(clientDoc.PAGE_ACCESS_TOKEN
+);
     }
 
     console.log("🔑 IG token length:", token.length);

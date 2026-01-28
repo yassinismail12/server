@@ -157,12 +157,14 @@ async function saveCustomer(igId, psid, userProfile) {
 }
 
 // ===== Users =====
-async function getUserProfile(psid, igAccessToken) {
-  const token = sanitizeAccessToken(igAccessToken);
+// ✅ IMPORTANT: fetching IG user profile can use igAccessToken (IGAA) OR page token.
+// We'll pass the token we have (page token) and fall back gracefully.
+async function getUserProfile(psid, accessToken) {
+  const token = sanitizeAccessToken(accessToken);
   console.log(`🔍 Fetching IG user profile for PSID: ${psid}`);
 
   if (!isLikelyValidToken(token)) {
-    console.warn("⚠️ IG access token missing/invalid while fetching profile, using fallback name 'there'");
+    console.warn("⚠️ Access token missing/invalid while fetching profile, using fallback name 'there'");
     return { username: "there" };
   }
 
@@ -234,24 +236,30 @@ router.post("/", async (req, res) => {
         const mid = messaging?.message?.mid;
         console.log(`📬 Event from igId: ${igId}, sender_psid: ${sender_psid}, mid: ${mid}`);
 
-        let token = "";
+        // We'll use PAGE token for sending messages (this is the fix)
+        let pageToken = "";
 
         try {
           const clientDoc = await getClientDoc(igId);
-          token = sanitizeAccessToken(clientDoc?.igAccessToken);
 
-          console.log("🔑 IG token length:", token.length);
-          console.log("🔑 IG token preview:", token ? `${token.slice(0, 10)}...${token.slice(-6)}` : "(empty)");
+          // ✅ FIX: use PAGE_ACCESS_TOKEN (EAA...) for IG Messaging API send
+          pageToken = sanitizeAccessToken(clientDoc?.PAGE_ACCESS_TOKEN);
 
-          if (!isLikelyValidToken(token)) {
-            console.warn("❌ IG access token missing/invalid for this client. Cannot send IG replies.");
+          console.log("🔑 PAGE token length:", pageToken.length);
+          console.log(
+            "🔑 PAGE token preview:",
+            pageToken ? `${pageToken.slice(0, 10)}...${pageToken.slice(-6)}` : "(empty)"
+          );
+
+          if (!isLikelyValidToken(pageToken)) {
+            console.warn("❌ PAGE_ACCESS_TOKEN missing/invalid for this client. Cannot send IG replies.");
             const db = await connectDB();
             await db.collection("Logs").insertOne({
               igId,
               userId: sender_psid,
               source: "instagram",
               level: "error",
-              message: "Missing/invalid igAccessToken.",
+              message: "Missing/invalid PAGE_ACCESS_TOKEN for IG send.",
               timestamp: new Date(),
             });
             continue;
@@ -271,14 +279,14 @@ router.post("/", async (req, res) => {
 
           if (clientDoc.active === false) {
             console.log("⚠️ Bot inactive for this page");
-            await sendInstagramReply(sender_psid, "⚠️ This bot is currently disabled.", igId, token);
+            await sendInstagramReply(sender_psid, "⚠️ This bot is currently disabled.", igId, pageToken);
             continue;
           }
 
           const usage = await incrementMessageCount(igId);
           if (!usage.allowed) {
             console.log("⚠️ Message limit reached, not sending reply");
-            await sendInstagramReply(sender_psid, "⚠️ Message limit reached.", igId, token);
+            await sendInstagramReply(sender_psid, "⚠️ Message limit reached.", igId, pageToken);
             continue;
           }
 
@@ -294,7 +302,9 @@ router.post("/", async (req, res) => {
             let greeting = "";
 
             if (!convo || isNewDay(convo?.lastInteraction)) {
-              const userProfile = await getUserProfile(sender_psid, token);
+              // For profile fetch, PAGE token often works; fallback is handled
+              const userProfile = await getUserProfile(sender_psid, pageToken);
+
               firstName = userProfile.username || "there";
               await saveCustomer(igId, sender_psid, userProfile);
 
@@ -344,23 +354,25 @@ router.post("/", async (req, res) => {
                   source: "email",
                   level: "error",
                   message: err.message,
-                  timestamp: new Date(),
+                 timestamp: new Date(),
                 });
               }
             }
 
-            // ✅ Correct debug_token (optional). Uses APP token.
+            // ✅ Correct debug_token (optional). Uses APP token and checks the PAGE token
             try {
               const appToken = `${process.env.FACEBOOK_APP_ID}|${process.env.FACEBOOK_APP_SECRET}`;
               const debugRes = await fetch(
-                `https://graph.facebook.com/debug_token?input_token=${encodeURIComponent(token)}&access_token=${encodeURIComponent(appToken)}`
+                `https://graph.facebook.com/debug_token?input_token=${encodeURIComponent(
+                  pageToken
+                )}&access_token=${encodeURIComponent(appToken)}`
               );
-              console.log("🔎 debug_token:", await debugRes.json());
+              console.log("🔎 debug_token (PAGE token):", await debugRes.json());
             } catch (e) {
               console.warn("⚠️ debug_token check failed:", e.message);
             }
 
-            await sendInstagramReply(sender_psid, combinedMessage, igId, token);
+            await sendInstagramReply(sender_psid, combinedMessage, igId, pageToken);
           }
         } catch (error) {
           console.error("❌ Instagram error:", error.message);
@@ -379,12 +391,12 @@ router.post("/", async (req, res) => {
             console.error("❌ Failed to log IG error:", dbErr.message);
           }
 
-          // ✅ Only try fallback if token looks valid
+          // ✅ Only try fallback if page token looks valid
           try {
-            if (isLikelyValidToken(token)) {
-              await sendInstagramReply(sender_psid, "⚠️ حصلت مشكلة. جرب تاني بعد شوية.", igId, token);
+            if (isLikelyValidToken(pageToken)) {
+              await sendInstagramReply(sender_psid, "⚠️ حصلت مشكلة. جرب تاني بعد شوية.", igId, pageToken);
             } else {
-              console.warn("⚠️ Skipping fallback IG reply because token is missing/invalid.");
+              console.warn("⚠️ Skipping fallback IG reply because PAGE token is missing/invalid.");
             }
           } catch (sendErr) {
             console.error("❌ Failed to send fallback IG reply:", sendErr.message);
