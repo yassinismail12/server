@@ -1459,7 +1459,6 @@ async function saveLastWebhook(req, res, next) {
 }
 
 
-export default router;
 // API routes
 app.use("/webhook", saveLastWebhook);
 
