@@ -1372,6 +1372,7 @@ app.get("/api/webhooks/last/:clientId", async (req, res) => {
 // ------------------------------
 // Meta webhook verification
 // ------------------------------
+// Meta webhook verification (keep this)
 app.get("/webhook", (req, res) => {
   const VERIFY_TOKEN = process.env.META_VERIFY_TOKEN;
 
@@ -1395,14 +1396,15 @@ app.get("/webhook", (req, res) => {
   return res.sendStatus(403);
 });
 
+// ✅ first: save/log payload (no response here)
+
+
+
 // ------------------------------
 // Meta webhook receiver
 // ------------------------------
-app.post("/webhook", async (req, res) => {
+async function saveLastWebhook(req, res, next) {
   const body = req.body;
-
-  // 🔴 CRITICAL: respond fast to Meta
-  res.sendStatus(200);
 
   // ✅ logs to confirm you are receiving events
   console.log("🔥 WEBHOOK POST HIT:", new Date().toISOString());
@@ -1416,9 +1418,6 @@ app.post("/webhook", async (req, res) => {
       hasChanges: Boolean(entry0?.changes?.length),
       hasMessaging: Boolean(entry0?.messaging?.length),
     });
-
-    // Optional: log a small preview of the entry without spamming logs too hard
-    console.log("🔥 entry[0] keys:", entry0 ? Object.keys(entry0) : []);
 
     const incomingPageId = entry0?.id;
 
@@ -1446,7 +1445,7 @@ app.post("/webhook", async (req, res) => {
       });
 
       if (!updateRes?.matchedCount) {
-        console.warn("⚠️ No Client matched for incomingPageId. Check stored client.pageId:", incomingPageId);
+        console.warn("⚠️ No Client matched for incomingPageId:", incomingPageId);
       }
     } else {
       console.warn("⚠️ No incomingPageId found in webhook body");
@@ -1455,13 +1454,19 @@ app.post("/webhook", async (req, res) => {
     console.error("❌ Failed saving last webhook:", err);
   }
 
-
-});
+  // ✅ IMPORTANT: let messengerRoute handle replying
+  return next();
+}
 
 
 // API routes
-app.use("/api/chat", chatRoute);
+app.use("/webhook", saveLastWebhook);
+
+// ✅ second: messengerRoute does the real work + sends 200
 app.use("/webhook", messengerRoute);
+
+// other routes
+app.use("/api/chat", chatRoute);
 app.use("/instagram", instagramRoute);
 
 // ✅ MongoDB connection + start server only after DB connects
