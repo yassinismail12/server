@@ -1303,7 +1303,7 @@ app.post("/webhook", async (req, res) => {
   } catch (err) {
     console.error("❌ Failed saving last webhook:", err);
   }
-
+ return; // ✅ important
   // ---- your existing bot logic can run here too
 });
 
