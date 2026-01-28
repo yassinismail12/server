@@ -21,7 +21,7 @@ import Product from "./Product.js"; // ✅ this registers the model
 
 const app = express();
 dotenv.config();
-
+const router = express.Router();
 // Middleware
 app.use(cors({
     origin: ["http://localhost:5173", "http://127.0.0.1:5500","https://dashboardai1.netlify.app","https://dashboardai1.netlify.app/client","https://dashboardai1.netlify.app/admin"],
