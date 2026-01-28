@@ -21,7 +21,7 @@ import Product from "./Product.js"; // ✅ this registers the model
 
 const app = express();
 dotenv.config();
-const router = express.Router();
+
 // Middleware
 app.use(cors({
     origin: ["http://localhost:5173", "http://127.0.0.1:5500","https://dashboardai1.netlify.app","https://dashboardai1.netlify.app/client","https://dashboardai1.netlify.app/admin"],
@@ -1458,52 +1458,6 @@ async function saveLastWebhook(req, res, next) {
   return next();
 }
 
-router.post("/api/review/send-test", async (req, res) => {
-  try {
-    const { pageId, psid, text } = req.body;
-
-    if (!pageId || !psid || !text) {
-      return res.status(400).json({ error: "Missing pageId/psid/text" });
-    }
-
-    // 1) get Page token from DB
-    const db = await connectDB();
-    const clients = db.collection("clients"); // change if your collection name differs
-
-    const clientDoc = await clients.findOne({ pageId: String(pageId).trim() });
-    if (!clientDoc?.PAGE_ACCESS_TOKEN) {
-      return res.status(404).json({ error: "No PAGE_ACCESS_TOKEN found for this pageId" });
-    }
-
-    const PAGE_ACCESS_TOKEN = clientDoc.PAGE_ACCESS_TOKEN || clientDoc.PAGE_ACCESS_TOKEN; 
-    // ^ adjust this line to match your exact field name (PAGE_ACCESS_TOKEN vs PAGE_ACCESS_TOKEN)
-
-    // 2) call Meta Send API
-    const url = `https://graph.facebook.com/v20.0/${pageId}/messages?access_token=${encodeURIComponent(
-      PAGE_ACCESS_TOKEN
-    )}`;
-
-    const r = await fetch(url, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        recipient: { id: psid },
-        message: { text },
-      }),
-    });
-
-    const data = await r.json();
-
-    if (!r.ok) {
-      return res.status(400).json({ ok: false, metaError: data });
-    }
-
-    // success
-    return res.json({ ok: true, meta: data });
-  } catch (e) {
-    return res.status(500).json({ ok: false, error: String(e) });
-  }
-});
 
 export default router;
 // API routes
