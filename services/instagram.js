@@ -18,12 +18,12 @@ function normalizeIgId(id) {
   return id.toString().trim();
 }
 
-// ✅ Strong sanitize: remove Bearer, quotes, AND ALL whitespace anywhere in token
 function sanitizeAccessToken(token) {
+  // remove quotes, Bearer prefix, normal whitespace + common zero-width chars
   return String(token || "")
     .replace(/^Bearer\s+/i, "")
     .replace(/^"|"$/g, "")
-    .replace(/\s+/g, "") // ✅ removes hidden newlines/tabs inside the token
+    .replace(/[\s\u200B-\u200D\uFEFF]/g, "")
     .trim();
 }
 
@@ -34,44 +34,33 @@ function tokenPreview(t) {
 
 /**
  * Send an Instagram DM reply
- * @param {string} psid - Instagram user PSID
- * @param {string} text - Message text
- * @param {string} igId - Instagram business account ID (entry.id)
- * @param {string} [igAccessTokenOverride] - optional token passed from caller (preferred)
+ * @param {string} psid
+ * @param {string} text
+ * @param {string} igId
+ * @param {string} [igAccessTokenOverride]
  */
 export async function sendInstagramReply(psid, text, igId, igAccessTokenOverride = null) {
   try {
     const igIdStr = normalizeIgId(igId);
 
-    // ✅ Prefer token passed from caller
+    // prefer caller token
     let token = sanitizeAccessToken(igAccessTokenOverride);
 
-    // Fallback to DB if not passed
     if (!token) {
       const db = await connectDB();
-      const clients = db.collection("Clients");
-      const clientDoc = await clients.findOne({ igId: igIdStr });
-
-      if (!clientDoc?.igAccessToken) {
-        console.error("❌ Missing IG client or igAccessToken for igId:", igIdStr);
-        return;
-      }
-
-      token = sanitizeAccessToken(clientDoc.igAccessToken);
+      const clientDoc = await db.collection("Clients").findOne({ igId: igIdStr });
+      token = sanitizeAccessToken(clientDoc?.igAccessToken);
     }
 
-    // ✅ Safe logs to catch whitespace / wrong token quickly
     console.log("🔑 IG token length:", token.length);
     console.log("🔑 IG token preview:", tokenPreview(token));
-    console.log("🔑 IG token has whitespace?:", /\s/.test(String(igAccessTokenOverride || "")));
 
     if (!token || token.length < 60) {
-      console.error("❌ Invalid IG access token (empty/too short). Cannot send IG message.");
+      console.error("❌ Invalid IG access token (empty/too short).");
       return;
     }
 
-    // ✅ Use Authorization header (cleaner) + still include access_token as query for compatibility
-    const url = `https://graph.facebook.com/v21.0/${igIdStr}/messages?access_token=${encodeURIComponent(token)}`;
+    const url = `https://graph.facebook.com/v21.0/${igIdStr}/messages`;
 
     const payload = {
       recipient: { id: psid },
@@ -84,7 +73,7 @@ export async function sendInstagramReply(psid, text, igId, igAccessTokenOverride
       method: "POST",
       headers: {
         "Content-Type": "application/json",
-        Authorization: `Bearer ${token}`, // ✅ helps in some cases
+        Authorization: `Bearer ${token}`, // ✅ this is the key change
       },
       body: JSON.stringify(payload),
     });

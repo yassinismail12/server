@@ -3,7 +3,7 @@ import express from "express";
 import fetch from "node-fetch";
 import { getChatCompletion } from "./services/openai.js";
 import { SYSTEM_PROMPT } from "./utils/systemPrompt.js";
-import { sendInstagramReply } from "./services/instagram.js"; // ✅ Create this like messenger.js
+import { sendInstagramReply } from "./services/instagram.js";
 import { sendQuotaWarning } from "./sendQuotaWarning.js";
 import { sendTourEmail } from "./sendEmail.js";
 import { extractTourData } from "./extractTourData.js";
@@ -18,18 +18,18 @@ function normalizeIgId(id) {
   return id.toString().trim();
 }
 
-// ✅ Helper to sanitize tokens (prevents "Cannot parse access token")
+// ✅ Strong sanitize (removes hidden newlines/zero-width chars too)
 function sanitizeAccessToken(token) {
   return String(token || "")
-    .trim()
     .replace(/^Bearer\s+/i, "")
-    .replace(/^"|"$/g, "");
+    .replace(/^"|"$/g, "")
+    .replace(/[\s\u200B-\u200D\uFEFF]/g, "")
+    .trim();
 }
 
 // ✅ Helper: validate token quickly
 function isLikelyValidToken(token) {
   const t = sanitizeAccessToken(token);
-  // Meta tokens are long and usually start with EAA (not always, but good heuristic)
   return t.length >= 60;
 }
 
@@ -221,160 +221,178 @@ router.post("/", async (req, res) => {
     return res.sendStatus(404);
   }
 
-  for (const entry of body.entry) {
-    const igId = normalizeIgId(entry.id);
+  // ✅ Respond immediately so Meta doesn't retry and cause duplicates
+  res.status(200).send("EVENT_RECEIVED");
 
-    // 👇 Loop through all messaging events
-    for (const messaging of entry.messaging || []) {
-      const sender_psid = messaging?.sender?.id;
-      console.log(`📬 Event from igId: ${igId}, sender_psid: ${sender_psid}`);
+  // ✅ Process in background
+  (async () => {
+    for (const entry of body.entry) {
+      const igId = normalizeIgId(entry.id);
 
-      // track these for catch block fallback
-      let clientDoc = null;
-      let token = "";
+      for (const messaging of entry.messaging || []) {
+        const sender_psid = messaging?.sender?.id;
+        const mid = messaging?.message?.mid;
+        console.log(`📬 Event from igId: ${igId}, sender_psid: ${sender_psid}, mid: ${mid}`);
 
-      try {
-        clientDoc = await getClientDoc(igId);
-        token = sanitizeAccessToken(clientDoc?.igAccessToken);
+        let token = "";
 
-        // ✅ Token sanity logs (safe)
-        console.log("🔑 IG token length:", token.length);
-        console.log("🔑 IG token preview:", token ? `${token.slice(0, 10)}...${token.slice(-6)}` : "(empty)");
+        try {
+          const clientDoc = await getClientDoc(igId);
+          token = sanitizeAccessToken(clientDoc?.igAccessToken);
 
-        if (!isLikelyValidToken(token)) {
-          console.warn("❌ IG access token missing/invalid for this client. Cannot send IG replies.");
-          const db = await connectDB();
-          await db.collection("Logs").insertOne({
-            igId,
-            userId: sender_psid,
-            source: "instagram",
-            level: "error",
-            message: "Missing/invalid igAccessToken (cannot parse / too short).",
-            timestamp: new Date(),
-          });
-          continue; // don't try to reply with a broken token
-        }
+          console.log("🔑 IG token length:", token.length);
+          console.log("🔑 IG token preview:", token ? `${token.slice(0, 10)}...${token.slice(-6)}` : "(empty)");
 
-        if (clientDoc.active === false) {
-          console.log("⚠️ Bot inactive for this page");
-          // passing token as extra arg is harmless if sendInstagramReply ignores it
-          await sendInstagramReply(sender_psid, "⚠️ This bot is currently disabled.", igId, token);
-          continue;
-        }
-
-        const usage = await incrementMessageCount(igId);
-        if (!usage.allowed) {
-          console.log("⚠️ Message limit reached, not sending reply");
-          await sendInstagramReply(sender_psid, "⚠️ Message limit reached.", igId, token);
-          continue;
-        }
-
-        if (messaging?.message?.text) {
-          const userMessage = messaging.message.text;
-          console.log("📝 Received IG user message:", userMessage);
-
-          const finalSystemPrompt = await SYSTEM_PROMPT({ igId });
-          let convo = await getConversation(igId, sender_psid);
-          let history = convo?.history || [{ role: "system", content: finalSystemPrompt }];
-
-          let firstName = "there";
-          let greeting = "";
-
-          if (!convo || isNewDay(convo?.lastInteraction)) {
-            const userProfile = await getUserProfile(sender_psid, token);
-
-            firstName = userProfile.username || "there";
-            await saveCustomer(igId, sender_psid, userProfile);
-
-            greeting = `Hi ${firstName}, good to see you today 👋`;
-            history.push({ role: "assistant", content: greeting, createdAt: new Date() });
-          }
-
-          history.push({ role: "user", content: userMessage, createdAt: new Date() });
-
-          let assistantMessage;
-          try {
-            assistantMessage = await getChatCompletion(history);
-          } catch (err) {
-            console.error("❌ OpenAI error:", err.message);
+          if (!isLikelyValidToken(token)) {
+            console.warn("❌ IG access token missing/invalid for this client. Cannot send IG replies.");
             const db = await connectDB();
             await db.collection("Logs").insertOne({
               igId,
               userId: sender_psid,
-              source: "openai",
+              source: "instagram",
               level: "error",
-              message: err.message,
+              message: "Missing/invalid igAccessToken.",
               timestamp: new Date(),
             });
-            assistantMessage = "⚠️ Sorry, I’m having trouble. Please try again later.";
+            continue;
           }
 
-          console.log("🤖 Assistant message:", assistantMessage);
-
-          history.push({ role: "assistant", content: assistantMessage, createdAt: new Date() });
-          await saveConversation(igId, sender_psid, history, new Date());
-
-          let combinedMessage = assistantMessage;
-          if (greeting) combinedMessage = `${greeting}\n\n${assistantMessage}`;
-
-          if (assistantMessage.includes("[TOUR_REQUEST]")) {
-            const data = extractTourData(assistantMessage);
-            data.igId = igId;
-            console.log("✈️ Tour request detected, sending email", data);
+          // ✅ DEDUPE: skip already processed mids (create unique index on ProcessedEvents.mid)
+          if (mid) {
+            const db = await connectDB();
+            const processed = db.collection("ProcessedEvents");
             try {
-              await sendTourEmail(data);
+              await processed.insertOne({ mid, igId, sender_psid, createdAt: new Date() });
+            } catch (e) {
+              console.log("🔁 Duplicate webhook event, skipping mid:", mid);
+              continue;
+            }
+          }
+
+          if (clientDoc.active === false) {
+            console.log("⚠️ Bot inactive for this page");
+            await sendInstagramReply(sender_psid, "⚠️ This bot is currently disabled.", igId, token);
+            continue;
+          }
+
+          const usage = await incrementMessageCount(igId);
+          if (!usage.allowed) {
+            console.log("⚠️ Message limit reached, not sending reply");
+            await sendInstagramReply(sender_psid, "⚠️ Message limit reached.", igId, token);
+            continue;
+          }
+
+          if (messaging?.message?.text) {
+            const userMessage = messaging.message.text;
+            console.log("📝 Received IG user message:", userMessage);
+
+            const finalSystemPrompt = await SYSTEM_PROMPT({ igId });
+            let convo = await getConversation(igId, sender_psid);
+            let history = convo?.history || [{ role: "system", content: finalSystemPrompt }];
+
+            let firstName = "there";
+            let greeting = "";
+
+            if (!convo || isNewDay(convo?.lastInteraction)) {
+              const userProfile = await getUserProfile(sender_psid, token);
+              firstName = userProfile.username || "there";
+              await saveCustomer(igId, sender_psid, userProfile);
+
+              greeting = `Hi ${firstName}, good to see you today 👋`;
+              history.push({ role: "assistant", content: greeting, createdAt: new Date() });
+            }
+
+            history.push({ role: "user", content: userMessage, createdAt: new Date() });
+
+            let assistantMessage;
+            try {
+              assistantMessage = await getChatCompletion(history);
             } catch (err) {
-              console.error("❌ Failed to send tour email:", err.message);
+              console.error("❌ OpenAI error:", err.message);
               const db = await connectDB();
               await db.collection("Logs").insertOne({
                 igId,
                 userId: sender_psid,
-                source: "email",
+                source: "openai",
                 level: "error",
                 message: err.message,
                 timestamp: new Date(),
               });
+              assistantMessage = "⚠️ Sorry, I’m having trouble. Please try again later.";
             }
-          }
-const debugRes = await fetch(
-  `https://graph.facebook.com/debug_token?input_token=${encodeURIComponent(token)}&access_token=${encodeURIComponent(token)}`
-);
-console.log("🔎 debug_token:", await debugRes.json());
 
-          await sendInstagramReply(sender_psid, combinedMessage, igId, token);
-        }
-      } catch (error) {
-        console.error("❌ Instagram error:", error.message);
-        try {
-          const db = await connectDB();
-          await db.collection("Logs").insertOne({
-            igId,
-            userId: sender_psid,
-            source: "instagram",
-            level: "error",
-            message: error.message,
-            timestamp: new Date(),
-          });
-        } catch (dbErr) {
-          console.error("❌ Failed to log IG error:", dbErr.message);
-        }
+            console.log("🤖 Assistant message:", assistantMessage);
 
-        // ✅ Only try to send fallback if token looks valid
-        try {
-          if (isLikelyValidToken(token)) {
-            await sendInstagramReply(sender_psid, "⚠️ حصلت مشكلة. جرب تاني بعد شوية.", igId, token);
-          } else {
-            console.warn("⚠️ Skipping fallback IG reply because token is missing/invalid.");
+            history.push({ role: "assistant", content: assistantMessage, createdAt: new Date() });
+            await saveConversation(igId, sender_psid, history, new Date());
+
+            let combinedMessage = assistantMessage;
+            if (greeting) combinedMessage = `${greeting}\n\n${assistantMessage}`;
+
+            if (assistantMessage.includes("[TOUR_REQUEST]")) {
+              const data = extractTourData(assistantMessage);
+              data.igId = igId;
+              console.log("✈️ Tour request detected, sending email", data);
+              try {
+                await sendTourEmail(data);
+              } catch (err) {
+                console.error("❌ Failed to send tour email:", err.message);
+                const db = await connectDB();
+                await db.collection("Logs").insertOne({
+                  igId,
+                  userId: sender_psid,
+                  source: "email",
+                  level: "error",
+                  message: err.message,
+                  timestamp: new Date(),
+                });
+              }
+            }
+
+            // ✅ Correct debug_token (optional). Uses APP token.
+            try {
+              const appToken = `${process.env.FACEBOOK_APP_ID}|${process.env.FACEBOOK_APP_SECRET}`;
+              const debugRes = await fetch(
+                `https://graph.facebook.com/debug_token?input_token=${encodeURIComponent(token)}&access_token=${encodeURIComponent(appToken)}`
+              );
+              console.log("🔎 debug_token:", await debugRes.json());
+            } catch (e) {
+              console.warn("⚠️ debug_token check failed:", e.message);
+            }
+
+            await sendInstagramReply(sender_psid, combinedMessage, igId, token);
           }
-        } catch (sendErr) {
-          console.error("❌ Failed to send fallback IG reply:", sendErr.message);
+        } catch (error) {
+          console.error("❌ Instagram error:", error.message);
+
+          try {
+            const db = await connectDB();
+            await db.collection("Logs").insertOne({
+              igId,
+              userId: sender_psid,
+              source: "instagram",
+              level: "error",
+              message: error.message,
+              timestamp: new Date(),
+            });
+          } catch (dbErr) {
+            console.error("❌ Failed to log IG error:", dbErr.message);
+          }
+
+          // ✅ Only try fallback if token looks valid
+          try {
+            if (isLikelyValidToken(token)) {
+              await sendInstagramReply(sender_psid, "⚠️ حصلت مشكلة. جرب تاني بعد شوية.", igId, token);
+            } else {
+              console.warn("⚠️ Skipping fallback IG reply because token is missing/invalid.");
+            }
+          } catch (sendErr) {
+            console.error("❌ Failed to send fallback IG reply:", sendErr.message);
+          }
         }
       }
     }
-  }
-
-  // ✅ Respond once after processing all entries
-  res.status(200).send("EVENT_RECEIVED");
+  })();
 });
 
 export default router;
