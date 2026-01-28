@@ -17,7 +17,7 @@ import User from "./Users.js";
 import jwt from "jsonwebtoken";
 import cookieParser from "cookie-parser";
 import Page from "./pages.js";
-import reviewSendTestRouter from "./reviewSendTest.js";
+
 
 import Product from "./Product.js"; // ✅ this registers the model
 
@@ -1459,8 +1459,7 @@ async function saveLastWebhook(req, res, next) {
   // ✅ IMPORTANT: let messengerRoute handle replying
   return next();
 }
-const router = express.Router();
-router.post("/api/review/send-test", async (req, res) => {
+app.post("/api/review/send-test", async (req, res) => {
   try {
     const { pageId, psid, text } = req.body;
 
