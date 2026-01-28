@@ -1089,9 +1089,10 @@ app.get("/auth/facebook/callback", async (req, res) => {
         { upsert: true }
       );
 
-      return res.redirect(
-        `${FRONTEND_URL}/dashboard?choose_page=1&connected=partial&clientId=${encodeURIComponent(clientId)}`
-      );
+   return res.redirect(
+  `${FRONTEND_URL}/client?choose_page=1&connected=partial&clientId=${encodeURIComponent(clientId)}`
+);
+
     }
 
     const page = pagesData.data[0];
@@ -1159,9 +1160,10 @@ app.get("/auth/facebook/callback", async (req, res) => {
     }
 
     // 5) Redirect back to dashboard (make review proof)
-    return res.redirect(
-      `${FRONTEND_URL}/dashboard?connected=success&pageId=${encodeURIComponent(pageId)}&pageName=${encodeURIComponent(pageName)}`
-    );
+   return res.redirect(
+  `${FRONTEND_URL}/client?connected=success&pageId=${encodeURIComponent(pageId)}&pageName=${encodeURIComponent(pageName)}`
+);
+
   } catch (err) {
     console.error("❌ OAuth callback error:", err);
     return res.status(500).send("OAuth callback error");
