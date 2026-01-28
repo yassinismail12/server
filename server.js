@@ -882,9 +882,14 @@ app.get("/api/me", verifyToken, async (req, res) => {
 
 
 app.post("/api/logout", (req, res) => {
-    res.clearCookie("token");
-    res.json({ message: "Logged out" });
+  res.clearCookie("token", {
+    httpOnly: true,
+    secure: process.env.NODE_ENV === "production",
+    sameSite: process.env.NODE_ENV === "production" ? "none" : "lax",
+  });
+  res.json({ message: "Logged out" });
 });
+
 
 
 
