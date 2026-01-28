@@ -336,6 +336,10 @@ router.post("/", async (req, res) => {
               });
             }
           }
+const debugRes = await fetch(
+  `https://graph.facebook.com/debug_token?input_token=${encodeURIComponent(token)}&access_token=${encodeURIComponent(token)}`
+);
+console.log("🔎 debug_token:", await debugRes.json());
 
           await sendInstagramReply(sender_psid, combinedMessage, igId, token);
         }
