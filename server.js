@@ -24,7 +24,7 @@ dotenv.config();
 
 // Middleware
 app.use(cors({
-    origin: ["http://localhost:5173", "http://127.0.0.1:5500","https://dashboardai1.netlify.app"],
+    origin: ["http://localhost:5173", "http://127.0.0.1:5500","https://dashboardai1.netlify.app","https://dashboardai1.netlify.app/client","https://dashboardai1.netlify.app/admin"],
     credentials: true
 }));
 
