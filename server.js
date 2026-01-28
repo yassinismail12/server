@@ -1273,6 +1273,39 @@ app.get("/webhook", (req, res) => {
   console.warn("❌ Webhook verification failed");
   return res.sendStatus(403);
 });
+// Meta webhook receiver
+app.post("/webhook", async (req, res) => {
+  const body = req.body;
+
+  // 🔴 CRITICAL: respond fast to Meta
+  res.sendStatus(200);
+
+  // ---- Save last webhook (for dashboard + review proof)
+  try {
+    const incomingPageId = body?.entry?.[0]?.id;
+
+    const lastType =
+      body?.entry?.[0]?.changes?.[0]?.field || // "feed"
+      (body?.entry?.[0]?.messaging ? "messages" : "unknown");
+
+    if (incomingPageId) {
+      await Client.updateOne(
+        { pageId: incomingPageId },
+        {
+          $set: {
+            lastWebhookAt: new Date(),
+            lastWebhookType: lastType,
+            lastWebhookPayload: body,
+          },
+        }
+      );
+    }
+  } catch (err) {
+    console.error("❌ Failed saving last webhook:", err);
+  }
+
+  // ---- your existing bot logic can run here too
+});
 
 
 // API routes
