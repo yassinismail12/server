@@ -1007,10 +1007,6 @@ function normalizeUrl(u = "") {
   return String(u).trim().replace(/\/+$/, ""); // remove trailing slash
 }
 
-function normalizeUrl(u = "") {
-  return String(u).trim().replace(/\/+$/, "");
-}
-
 // ------------------------------
 // OAuth START
 // ------------------------------
