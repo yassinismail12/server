@@ -1257,6 +1257,22 @@ app.get("/api/webhooks/last/:clientId", async (req, res) => {
     return res.status(500).json({ error: "Last webhook fetch failed" });
   }
 });
+// Meta webhook verification
+app.get("/webhook", (req, res) => {
+  const VERIFY_TOKEN = process.env.META_VERIFY_TOKEN;
+
+  const mode = req.query["hub.mode"];
+  const token = req.query["hub.verify_token"];
+  const challenge = req.query["hub.challenge"];
+
+  if (mode === "subscribe" && token === VERIFY_TOKEN) {
+    console.log("✅ Webhook verified");
+    return res.status(200).send(challenge);
+  }
+
+  console.warn("❌ Webhook verification failed");
+  return res.sendStatus(403);
+});
 
 
 // API routes
