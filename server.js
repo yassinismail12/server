@@ -1080,6 +1080,10 @@ app.get("/auth/facebook/callback", async (req, res) => {
 
   try {
     console.log("🔁 OAuth CALLBACK redirect_uri:", redirectUri);
+    console.log("🔁 OAuth CALLBACK params:", {
+      hasCode: Boolean(code),
+      clientId,
+    });
 
     // 1) Exchange code -> user access token
     const tokenUrl =
@@ -1089,16 +1093,35 @@ app.get("/auth/facebook/callback", async (req, res) => {
       `&client_secret=${encodeURIComponent(process.env.FACEBOOK_APP_SECRET)}` +
       `&code=${encodeURIComponent(code)}`;
 
+    console.log("🧾 Token exchange URL (no secret):", {
+      client_id: process.env.FACEBOOK_APP_ID,
+      redirectUri,
+      graph: "v20.0/oauth/access_token",
+    });
+
     const tokenRes = await fetch(tokenUrl);
-    const tokenData = await tokenRes.json();
+    const tokenText = await tokenRes.text();
+    console.log("🧾 Token exchange HTTP:", tokenRes.status);
+    console.log("🧾 Token exchange RAW:", tokenText);
+
+    let tokenData = {};
+    try {
+      tokenData = JSON.parse(tokenText);
+    } catch {
+      tokenData = { raw: tokenText };
+    }
 
     if (!tokenData.access_token) {
       console.error("❌ Failed to get user access token:", tokenData);
-      console.error("Token URL used:", tokenUrl);
       return res.status(400).send("Failed to get user access token");
     }
 
     const userAccessToken = tokenData.access_token;
+    console.log("✅ Got user access token:", {
+      preview: String(userAccessToken).slice(0, 15) + "...",
+      expires_in: tokenData.expires_in,
+      token_type: tokenData.token_type,
+    });
 
     // 2) Get user's managed Pages
     const pagesUrl =
@@ -1106,16 +1129,33 @@ app.get("/auth/facebook/callback", async (req, res) => {
       `?fields=id,name,access_token` +
       `&access_token=${encodeURIComponent(userAccessToken)}`;
 
+    console.log("📄 Fetch pages URL:", "v20.0/me/accounts?fields=id,name,access_token");
+
     const pagesRes = await fetch(pagesUrl);
-    const pagesData = await pagesRes.json();
+    const pagesText = await pagesRes.text();
+    console.log("📄 Fetch pages HTTP:", pagesRes.status);
+    console.log("📄 Fetch pages RAW:", pagesText);
+
+    let pagesData = {};
+    try {
+      pagesData = JSON.parse(pagesText);
+    } catch {
+      pagesData = { raw: pagesText };
+    }
 
     if (!pagesData.data || pagesData.data.length === 0) {
       console.error("❌ No managed pages found:", pagesData);
       return res.status(400).send("No managed pages found");
     }
 
+    console.log("✅ Pages found:", pagesData.data.map((p) => ({ id: p.id, name: p.name })));
+
     // ✅ Multiple pages: just store userAccessToken and redirect to picker
     if (pagesData.data.length > 1) {
+      console.log("ℹ️ Multiple pages detected, redirecting to picker:", {
+        count: pagesData.data.length,
+      });
+
       await Client.updateOne(
         { clientId },
         { $set: { userAccessToken, connectedAt: new Date() } },
@@ -1133,6 +1173,8 @@ app.get("/auth/facebook/callback", async (req, res) => {
     const PAGE_ACCESS_TOKEN = page.access_token;
     const pageName = page.name;
 
+    console.log("✅ Single page selected:", { pageId, pageName });
+
     if (!pageId || !PAGE_ACCESS_TOKEN) {
       console.error("❌ Invalid Page data:", page);
       return res.status(400).send("Invalid Page data");
@@ -1143,25 +1185,50 @@ app.get("/auth/facebook/callback", async (req, res) => {
     let webhookSubscribed = false;
 
     try {
+      console.log("🧩 SUBSCRIBE (OAuth) Attempt", {
+        pageId,
+        pageName,
+        fields,
+        tokenPreview: String(PAGE_ACCESS_TOKEN || "").slice(0, 15) + "...",
+      });
+
       const params = new URLSearchParams();
       params.append("subscribed_fields", fields.join(","));
       params.append("access_token", PAGE_ACCESS_TOKEN);
 
-      const subRes = await fetch(`https://graph.facebook.com/v20.0/${pageId}/subscribed_apps`, {
-        method: "POST",
-        body: params,
-      });
+      const subUrl = `https://graph.facebook.com/v20.0/${pageId}/subscribed_apps`;
+      console.log("🧩 SUBSCRIBE URL:", subUrl);
 
-      const subData = await subRes.json();
-      console.log("✅ Webhook subscribe response:", subData);
+      const subRes = await fetch(subUrl, { method: "POST", body: params });
+      const subText = await subRes.text();
+
+      console.log("🧩 SUBSCRIBE HTTP:", subRes.status);
+      console.log("🧩 SUBSCRIBE RAW:", subText);
+
+      let subData = {};
+      try {
+        subData = JSON.parse(subText);
+      } catch {
+        subData = { raw: subText };
+      }
+
+      console.log("✅ Webhook subscribe response (OAuth):", subData);
 
       webhookSubscribed = Boolean(subData?.success);
-      if (!webhookSubscribed) console.warn("⚠️ Webhook subscription not confirmed:", subData);
+      if (!webhookSubscribed) console.warn("⚠️ Webhook subscription not confirmed (OAuth):", subData);
     } catch (err) {
-      console.error("Webhook subscription failed:", err);
+      console.error("❌ Webhook subscription failed (OAuth):", err);
     }
 
     // 4) Store everything
+    console.log("💾 upsertClientConnection:", {
+      clientId,
+      pageId,
+      pageName,
+      webhookSubscribed,
+      fields,
+    });
+
     await upsertClientConnection({
       clientId,
       pageId,
@@ -1173,6 +1240,10 @@ app.get("/auth/facebook/callback", async (req, res) => {
     });
 
     // 5) Redirect back
+    console.log("↩️ Redirecting back to dashboard:", {
+      url: `${FRONTEND_URL}/client?connected=success&pageId=${pageId}&pageName=${pageName}`,
+    });
+
     return res.redirect(
       `${FRONTEND_URL}/client?connected=success&pageId=${encodeURIComponent(pageId)}&pageName=${encodeURIComponent(pageName)}`
     );
@@ -1188,31 +1259,53 @@ app.get("/auth/facebook/callback", async (req, res) => {
 app.post("/api/webhooks/subscribe/:clientId", async (req, res) => {
   try {
     const { clientId } = req.params;
+    console.log("🟦 /api/webhooks/subscribe called:", { clientId });
+
     const client = await Client.findOne({ clientId }).lean();
+    console.log("🟦 Client lookup result:", {
+      found: Boolean(client),
+      pageId: client?.pageId,
+      hasPageToken: Boolean(client?.PAGE_ACCESS_TOKEN),
+      tokenPreview: client?.PAGE_ACCESS_TOKEN ? String(client.PAGE_ACCESS_TOKEN).slice(0, 15) + "..." : null,
+    });
 
     if (!client?.pageId || !client?.PAGE_ACCESS_TOKEN) {
+      console.warn("🟨 No page connected or missing page token:", { clientId });
       return res.status(400).json({ error: "No page connected" });
     }
 
     const fields = ["messages", "messaging_postbacks", "messaging_optins", "feed"];
+    console.log("🟦 Subscribing page to fields:", { pageId: client.pageId, fields });
 
     const params = new URLSearchParams();
     params.append("subscribed_fields", fields.join(","));
     params.append("access_token", client.PAGE_ACCESS_TOKEN);
 
-    const subRes = await fetch(`https://graph.facebook.com/v20.0/${client.pageId}/subscribed_apps`, {
-      method: "POST",
-      body: params,
-    });
+    const subUrl = `https://graph.facebook.com/v20.0/${client.pageId}/subscribed_apps`;
+    console.log("🟦 Subscribe URL:", subUrl);
 
-    const subData = await subRes.json();
+    const subRes = await fetch(subUrl, { method: "POST", body: params });
+    const subText = await subRes.text();
+
+    console.log("🟦 Subscribe HTTP:", subRes.status);
+    console.log("🟦 Subscribe RAW:", subText);
+
+    let subData = {};
+    try {
+      subData = JSON.parse(subText);
+    } catch {
+      subData = { raw: subText };
+    }
+
     const ok = Boolean(subData?.success);
+    console.log("🟦 Subscribe parsed:", { ok, subData });
 
     await Client.updateOne(
       { clientId },
       { $set: { webhookSubscribed: ok, webhookFields: fields, webhookSubscribedAt: ok ? new Date() : null } }
     );
 
+    console.log("💾 Stored webhook subscription meta:", { clientId, ok, fields });
     return res.json({ success: ok, fields, subData });
   } catch (err) {
     console.error("❌ /api/webhooks/subscribe error:", err);
@@ -1226,10 +1319,19 @@ app.post("/api/webhooks/subscribe/:clientId", async (req, res) => {
 app.get("/api/webhooks/status/:clientId", async (req, res) => {
   try {
     const { clientId } = req.params;
+    console.log("🟩 /api/webhooks/status called:", { clientId });
+
     const client = await Client.findOne(
       { clientId },
       "webhookSubscribed webhookFields webhookSubscribedAt lastWebhookAt lastWebhookType"
     ).lean();
+
+    console.log("🟩 Status result:", {
+      found: Boolean(client),
+      webhookSubscribed: client?.webhookSubscribed,
+      lastWebhookAt: client?.lastWebhookAt,
+      lastWebhookType: client?.lastWebhookType,
+    });
 
     if (!client) return res.status(404).json({ error: "Client not found" });
     return res.json(client);
@@ -1245,10 +1347,19 @@ app.get("/api/webhooks/status/:clientId", async (req, res) => {
 app.get("/api/webhooks/last/:clientId", async (req, res) => {
   try {
     const { clientId } = req.params;
+    console.log("🟪 /api/webhooks/last called:", { clientId });
+
     const client = await Client.findOne(
       { clientId },
       "lastWebhookAt lastWebhookType lastWebhookPayload"
     ).lean();
+
+    console.log("🟪 Last payload meta:", {
+      found: Boolean(client),
+      lastWebhookAt: client?.lastWebhookAt,
+      lastWebhookType: client?.lastWebhookType,
+      hasPayload: Boolean(client?.lastWebhookPayload),
+    });
 
     if (!client) return res.status(404).json({ error: "Client not found" });
     return res.json(client);
@@ -1257,13 +1368,23 @@ app.get("/api/webhooks/last/:clientId", async (req, res) => {
     return res.status(500).json({ error: "Last webhook fetch failed" });
   }
 });
+
+// ------------------------------
 // Meta webhook verification
+// ------------------------------
 app.get("/webhook", (req, res) => {
   const VERIFY_TOKEN = process.env.META_VERIFY_TOKEN;
 
   const mode = req.query["hub.mode"];
   const token = req.query["hub.verify_token"];
   const challenge = req.query["hub.challenge"];
+
+  console.log("🧪 Webhook VERIFY hit:", {
+    mode,
+    tokenReceived: token,
+    expected: VERIFY_TOKEN ? "[set]" : "[missing]",
+    hasChallenge: Boolean(challenge),
+  });
 
   if (mode === "subscribe" && token === VERIFY_TOKEN) {
     console.log("✅ Webhook verified");
@@ -1273,23 +1394,42 @@ app.get("/webhook", (req, res) => {
   console.warn("❌ Webhook verification failed");
   return res.sendStatus(403);
 });
+
+// ------------------------------
 // Meta webhook receiver
+// ------------------------------
 app.post("/webhook", async (req, res) => {
   const body = req.body;
 
   // 🔴 CRITICAL: respond fast to Meta
   res.sendStatus(200);
 
-  // ---- Save last webhook (for dashboard + review proof)
+  // ✅ logs to confirm you are receiving events
+  console.log("🔥 WEBHOOK POST HIT:", new Date().toISOString());
+  console.log("🔥 Body top-level keys:", Object.keys(body || {}));
+
   try {
-    const incomingPageId = body?.entry?.[0]?.id;
+    const entry0 = body?.entry?.[0];
+    console.log("🔥 entry[0] summary:", {
+      hasEntry0: Boolean(entry0),
+      entry0Id: entry0?.id,
+      hasChanges: Boolean(entry0?.changes?.length),
+      hasMessaging: Boolean(entry0?.messaging?.length),
+    });
+
+    // Optional: log a small preview of the entry without spamming logs too hard
+    console.log("🔥 entry[0] keys:", entry0 ? Object.keys(entry0) : []);
+
+    const incomingPageId = entry0?.id;
 
     const lastType =
-      body?.entry?.[0]?.changes?.[0]?.field || // "feed"
-      (body?.entry?.[0]?.messaging ? "messages" : "unknown");
+      entry0?.changes?.[0]?.field || // "feed"
+      (entry0?.messaging ? "messages" : "unknown");
+
+    console.log("🔥 Parsed webhook:", { incomingPageId, lastType });
 
     if (incomingPageId) {
-      await Client.updateOne(
+      const updateRes = await Client.updateOne(
         { pageId: incomingPageId },
         {
           $set: {
@@ -1299,12 +1439,23 @@ app.post("/webhook", async (req, res) => {
           },
         }
       );
+
+      console.log("💾 Saved last webhook to Client:", {
+        matched: updateRes?.matchedCount,
+        modified: updateRes?.modifiedCount,
+      });
+
+      if (!updateRes?.matchedCount) {
+        console.warn("⚠️ No Client matched for incomingPageId. Check stored client.pageId:", incomingPageId);
+      }
+    } else {
+      console.warn("⚠️ No incomingPageId found in webhook body");
     }
   } catch (err) {
     console.error("❌ Failed saving last webhook:", err);
   }
- return; // ✅ important
-  // ---- your existing bot logic can run here too
+
+  return; // ✅ important
 });
 
 
