@@ -1072,13 +1072,10 @@ app.get("/auth/facebook/callback", async (req, res) => {
   const { code, state } = req.query;
   const clientId = state;
 
-  if (!code || !clientId) {
-    return res.status(400).send("Missing OAuth code or clientId");
-  }
+  if (!code || !clientId) return res.status(400).send("Missing OAuth code or clientId");
 
   const redirectUri = normalizeUrl(process.env.FACEBOOK_REDIRECT_URI);
   const FRONTEND_URL = normalizeUrl(process.env.FRONTEND_URL || "http://localhost:5173");
-
   if (!redirectUri) return res.status(500).send("Missing FACEBOOK_REDIRECT_URI");
 
   try {
@@ -1117,7 +1114,7 @@ app.get("/auth/facebook/callback", async (req, res) => {
       return res.status(400).send("No managed pages found");
     }
 
-    // ✅ If multiple pages, redirect to page picker (don’t reference pageId/subData here)
+    // ✅ Multiple pages: just store userAccessToken and redirect to picker
     if (pagesData.data.length > 1) {
       await Client.updateOne(
         { clientId },
@@ -1150,24 +1147,21 @@ app.get("/auth/facebook/callback", async (req, res) => {
       params.append("subscribed_fields", fields.join(","));
       params.append("access_token", PAGE_ACCESS_TOKEN);
 
-      const subRes = await fetch(
-        `https://graph.facebook.com/v20.0/${encodeURIComponent(pageId)}/subscribed_apps`,
-        { method: "POST", body: params }
-      );
+      const subRes = await fetch(`https://graph.facebook.com/v20.0/${pageId}/subscribed_apps`, {
+        method: "POST",
+        body: params,
+      });
 
       const subData = await subRes.json();
       console.log("✅ Webhook subscribe response:", subData);
 
       webhookSubscribed = Boolean(subData?.success);
-
-      if (!webhookSubscribed) {
-        console.warn("⚠️ Webhook subscription not confirmed:", subData);
-      }
+      if (!webhookSubscribed) console.warn("⚠️ Webhook subscription not confirmed:", subData);
     } catch (err) {
       console.error("Webhook subscription failed:", err);
     }
 
-    // 4) Store everything in Client (single source of truth)
+    // 4) Store everything
     await upsertClientConnection({
       clientId,
       pageId,
@@ -1194,7 +1188,7 @@ app.get("/auth/facebook/callback", async (req, res) => {
 app.post("/api/webhooks/subscribe/:clientId", async (req, res) => {
   try {
     const { clientId } = req.params;
-    const client = await Client.findOne({ clientId });
+    const client = await Client.findOne({ clientId }).lean();
 
     if (!client?.pageId || !client?.PAGE_ACCESS_TOKEN) {
       return res.status(400).json({ error: "No page connected" });
@@ -1235,7 +1229,8 @@ app.get("/api/webhooks/status/:clientId", async (req, res) => {
     const client = await Client.findOne(
       { clientId },
       "webhookSubscribed webhookFields webhookSubscribedAt lastWebhookAt lastWebhookType"
-    );
+    ).lean();
+
     if (!client) return res.status(404).json({ error: "Client not found" });
     return res.json(client);
   } catch (err) {
@@ -1245,7 +1240,7 @@ app.get("/api/webhooks/status/:clientId", async (req, res) => {
 });
 
 // ------------------------------
-// OPTIONAL: last webhook payload for modal
+// Last webhook payload (for modal)
 // ------------------------------
 app.get("/api/webhooks/last/:clientId", async (req, res) => {
   try {
@@ -1253,7 +1248,8 @@ app.get("/api/webhooks/last/:clientId", async (req, res) => {
     const client = await Client.findOne(
       { clientId },
       "lastWebhookAt lastWebhookType lastWebhookPayload"
-    );
+    ).lean();
+
     if (!client) return res.status(404).json({ error: "Client not found" });
     return res.json(client);
   } catch (err) {

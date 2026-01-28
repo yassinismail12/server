@@ -23,6 +23,10 @@ staffWhatsApp: {
     type: String,
     default: "", // empty = no human handoff configured
 },
+lastWebhookAt: { type: Date, default: null },
+lastWebhookType: { type: String, default: "" },
+lastWebhookPayload: { type: Object, default: null },
+
     // ✅ Flexible file storage
     files: [
         {
