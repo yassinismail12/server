@@ -1455,13 +1455,13 @@ app.post("/webhook", async (req, res) => {
     console.error("❌ Failed saving last webhook:", err);
   }
 
-  return; // ✅ important
+
 });
 
 
 // API routes
 app.use("/api/chat", chatRoute);
-app.use("/webhook", messengerRoute);
+app.use("/messenger", messengerRoute);
 app.use("/instagram", instagramRoute);
 
 // ✅ MongoDB connection + start server only after DB connects
