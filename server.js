@@ -1461,7 +1461,7 @@ app.post("/webhook", async (req, res) => {
 
 // API routes
 app.use("/api/chat", chatRoute);
-app.use("/messenger", messengerRoute);
+app.use("/webhook", messengerRoute);
 app.use("/instagram", instagramRoute);
 
 // ✅ MongoDB connection + start server only after DB connects
