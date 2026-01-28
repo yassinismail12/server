@@ -32,7 +32,7 @@ const conversationSchema = new mongoose.Schema(
 
     source: {
       type: String,
-      enum: ["messenger", "web", "whatsapp"],
+      enum: ["messenger", "web", "whatsapp","instagram"],
       default: "messenger",
       index: true,
     },

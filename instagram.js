@@ -125,16 +125,28 @@ async function getConversation(igId, userId) {
   return await db.collection("Conversations").findOne({ igId: igIdStr, userId });
 }
 
-async function saveConversation(igId, userId, history, lastInteraction) {
+async function saveConversation(igId, userId, history, lastInteraction, clientId) {
   const db = await connectDB();
   const igIdStr = normalizeIgId(igId);
-  console.log(`💾 Saving conversation for igId: ${igIdStr}, userId: ${userId}`);
+
   await db.collection("Conversations").updateOne(
     { igId: igIdStr, userId, source: "instagram" },
-    { $set: { history, lastInteraction, updatedAt: new Date() } },
+    {
+      $set: {
+        igId: igIdStr,
+        userId,
+        clientId,               // ✅ add
+        source: "instagram",    // ✅ add (so queries work)
+        history,
+        lastInteraction,
+        updatedAt: new Date(),
+      },
+      $setOnInsert: { createdAt: new Date() },
+    },
     { upsert: true }
   );
 }
+
 
 async function saveCustomer(igId, psid, userProfile) {
   const db = await connectDB();
@@ -334,7 +346,8 @@ router.post("/", async (req, res) => {
             console.log("🤖 Assistant message:", assistantMessage);
 
             history.push({ role: "assistant", content: assistantMessage, createdAt: new Date() });
-            await saveConversation(igId, sender_psid, history, new Date());
+            await saveConversation(igId, sender_psid, history, new Date(), clientDoc.clientId);
+
 
             let combinedMessage = assistantMessage;
             if (greeting) combinedMessage = `${greeting}\n\n${assistantMessage}`;
