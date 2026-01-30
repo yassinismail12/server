@@ -37,11 +37,10 @@ async function getClientDoc(pageId) {
 
   const pageIdStr = normalizePageId(pageId);
 
-  console.log(`🔍 Fetching client document for pageId: ${pageIdStr}`);
   let client = await clients.findOne({ pageId: pageIdStr });
 
   if (!client) {
-    console.log("⚠️ Client not found, creating new one");
+    console.warn("⚠️ Client not found for pageId:", pageIdStr);
     client = {
       pageId: pageIdStr,
       messageCount: 0,
@@ -52,6 +51,7 @@ async function getClientDoc(pageId) {
       quotaWarningSent: false,
     };
     await clients.insertOne(client);
+    console.log("✅ Client created for pageId:", pageIdStr);
   }
 
   return client;
@@ -62,8 +62,6 @@ async function incrementMessageCount(pageId) {
   const clients = db.collection("Clients");
 
   const pageIdStr = normalizePageId(pageId);
-
-  console.log(`➕ Incrementing message count for pageId: ${pageIdStr}`);
 
   const updated = await clients.findOneAndUpdate(
     { pageId: pageIdStr },
@@ -85,14 +83,12 @@ async function incrementMessageCount(pageId) {
   const doc = updated.value || (await clients.findOne({ pageId: pageIdStr }));
 
   if (!doc) {
-    console.error("❌ Still could not find or create client");
-    throw new Error(
-      `Failed to increment or create client for pageId: ${pageIdStr}`
-    );
+    console.error("❌ Still could not find or create client for pageId:", pageIdStr);
+    throw new Error(`Failed to increment or create client for pageId: ${pageIdStr}`);
   }
 
   if (doc.messageCount > doc.messageLimit) {
-    console.log("❌ Message limit reached");
+    console.warn("❌ Message limit reached for pageId:", pageIdStr);
     return {
       allowed: false,
       messageCount: doc.messageCount,
@@ -103,7 +99,7 @@ async function incrementMessageCount(pageId) {
   const remaining = doc.messageLimit - doc.messageCount;
 
   if (remaining === 100 && !doc.quotaWarningSent) {
-    console.log("⚠️ Only 100 messages left, sending quota warning");
+    console.warn("⚠️ Only 100 messages left for pageId:", pageIdStr);
     await sendQuotaWarning(pageIdStr);
     await clients.updateOne(
       { pageId: pageIdStr },
@@ -122,9 +118,6 @@ async function incrementMessageCount(pageId) {
 async function getConversation(pageId, userId) {
   const db = await connectDB();
   const pageIdStr = normalizePageId(pageId);
-  console.log(
-    `💬 Fetching conversation for pageId: ${pageIdStr}, userId: ${userId}`
-  );
   return await db.collection("Conversations").findOne({ pageId: pageIdStr, userId });
 }
 
@@ -135,16 +128,12 @@ async function saveConversation(pageId, userId, history, lastInteraction) {
   // 🔍 Lookup the client that owns this Messenger pageId
   const client = await db.collection("Clients").findOne({ pageId: pageIdStr });
   if (!client) {
-    console.error(`❌ No client found for pageId: ${pageIdStr}`);
+    console.error("❌ No client found for pageId:", pageIdStr);
     return;
   }
 
-  console.log(
-    `💾 Saving Messenger conversation for clientId: ${client.clientId}, userId: ${userId}`
-  );
   await db.collection("Conversations").updateOne(
     { pageId: pageIdStr, userId, source: "messenger" },
-
     {
       $set: {
         pageId: pageIdStr,
@@ -168,10 +157,7 @@ async function saveConversation(pageId, userId, history, lastInteraction) {
 async function saveCustomer(pageId, psid, userProfile) {
   const db = await connectDB();
   const pageIdStr = normalizePageId(pageId);
-  const fullName = `${userProfile.first_name || ""} ${
-    userProfile.last_name || ""
-  }`.trim();
-  console.log(`💾 Saving customer ${fullName} for pageId: ${pageIdStr}`);
+  const fullName = `${userProfile.first_name || ""} ${userProfile.last_name || ""}`.trim();
   await db.collection("Customers").updateOne(
     { pageId: pageIdStr, psid },
     {
@@ -189,11 +175,9 @@ async function saveCustomer(pageId, psid, userProfile) {
 
 // ===== Users =====
 async function getUserProfile(psid, pageAccessToken) {
-  console.log(`🔍 Fetching user profile for PSID: ${psid}`);
   const url = `https://graph.facebook.com/${psid}?fields=first_name,last_name&access_token=${pageAccessToken}`;
   const res = await fetch(url);
   if (!res.ok) {
-    console.warn("⚠️ Failed to fetch user profile, using fallback name 'there'");
     return { first_name: "there" };
   }
   return res.json();
@@ -215,10 +199,9 @@ router.get("/", async (req, res) => {
   const mode = req.query["hub.mode"];
   const token = req.query["hub.verify_token"];
   const challenge = req.query["hub.challenge"];
-  console.log("🔑 Webhook verification request received");
 
   if (!mode || !token) {
-    console.warn("❌ Mode or token missing");
+    console.warn("❌ Webhook verification missing mode/token");
     return res.sendStatus(403);
   }
 
@@ -226,21 +209,19 @@ router.get("/", async (req, res) => {
   const client = await db.collection("Clients").findOne({ VERIFY_TOKEN: token });
 
   if (mode === "subscribe" && client) {
-    console.log("✅ Webhook verified successfully");
-    res.status(200).send(challenge);
-  } else {
-    console.warn("❌ Webhook verification failed");
-    res.sendStatus(403);
+    console.log("✅ Webhook verified");
+    return res.status(200).send(challenge);
   }
+
+  console.warn("❌ Webhook verification failed");
+  return res.sendStatus(403);
 });
 
 // ===== Messenger message handler =====
 router.post("/", async (req, res) => {
   const body = req.body;
-  console.log("📩 Messenger POST received", JSON.stringify(body));
 
   if (body.object !== "page") {
-    console.warn("❌ Body object is not page");
     return res.sendStatus(404);
   }
 
@@ -248,15 +229,13 @@ router.post("/", async (req, res) => {
     const pageId = normalizePageId(entry.id);
     const webhook_event = entry.messaging[0];
     const sender_psid = webhook_event.sender.id;
-    console.log(`📬 Event from pageId: ${pageId}, sender_psid: ${sender_psid}`);
 
     try {
       const clientDoc = await getClientDoc(pageId);
 
       if (clientDoc.active === false) {
-        console.log("⚠️ Bot inactive for this page");
-        // await sendMessengerReply(sender_psid, "⚠️ This bot is currently disabled.", pageId);
-        continue; // skips this message, sends nothing
+        // bot disabled for this page
+        continue;
       }
 
       // ===== Image / Attachment Handler =====
@@ -271,7 +250,6 @@ router.post("/", async (req, res) => {
 
       if (webhook_event.message?.text) {
         const userMessage = webhook_event.message.text;
-        console.log("📝 Received user message:", userMessage);
         const db = await connectDB();
 
         // Fetch existing conversation to check if human escalation is active
@@ -301,8 +279,8 @@ router.post("/", async (req, res) => {
             }
           );
 
-          console.log("🤖 Bot auto-resumed after timer");
-          convoCheck = await getFreshConvo(); // ✅ refresh state
+          console.log("🤖 Bot auto-resumed (timer)");
+          convoCheck = await getFreshConvo();
         }
 
         // --- Resume bot command (customer) ---
@@ -321,14 +299,12 @@ router.post("/", async (req, res) => {
           );
 
           await sendMessengerReply(sender_psid, "✅ Bot is reactivated!", pageId);
-
-          continue; // ✅ command handled; skip AI for this message
+          continue; // command handled; skip AI
         }
 
         // --- If human escalation active → ignore bot AI reply ---
         if (convoCheck?.humanEscalation === true) {
-          console.log("👤 Human escalation active → bot will NOT reply.");
-          continue; // skip AI processing
+          continue;
         }
 
         // ===== Robust Typing Handler =====
@@ -364,7 +340,6 @@ router.post("/", async (req, res) => {
           // ✅ Count ONLY when we actually use the bot (OpenAI call)
           const usage = await incrementMessageCount(pageId);
           if (!usage.allowed) {
-            console.log("⚠️ Message limit reached, not sending reply");
             await sendMessengerReply(sender_psid, "⚠️ Message limit reached.", pageId);
             return;
           }
@@ -416,7 +391,7 @@ router.post("/", async (req, res) => {
 
           // ===== Human escalation =====
           if (flags.human) {
-            const botResumeAt = new Date(Date.now() + 2 * 60 * 60 * 1000); // ✅ auto-unmute fallback
+            const botResumeAt = new Date(Date.now() + 2 * 60 * 60 * 1000); // auto-unmute fallback
 
             await db.collection("Conversations").updateOne(
               { pageId, userId: sender_psid, source: "messenger" },
@@ -430,6 +405,8 @@ router.post("/", async (req, res) => {
               },
               { upsert: true }
             );
+
+            console.warn("👤 Human escalation triggered:", { pageId, psid: sender_psid });
 
             try {
               await notifyStaffWhatsApp({
@@ -458,7 +435,6 @@ router.post("/", async (req, res) => {
               { $inc: { orderRequestCount: 1 } },
               { upsert: true }
             );
-            console.log("🛒 Order request detected");
           }
 
           if (flags.tour) {
@@ -467,7 +443,6 @@ router.post("/", async (req, res) => {
               { $inc: { tourRequestCount: 1 } },
               { upsert: true }
             );
-            console.log("📊 Tour request detected (no email sent)");
           }
 
           // ===== Save conversation (CLEAN) =====
@@ -486,8 +461,8 @@ router.post("/", async (req, res) => {
         }
 
         // ===== Show mark_seen while processing =====
-        await sendMarkAsRead(sender_psid, pageId); // Let user know message is seen
-        await new Promise((resolve) => setTimeout(resolve, 1200)); // Small natural pause
+        await sendMarkAsRead(sender_psid, pageId);
+        await new Promise((resolve) => setTimeout(resolve, 1200));
         await processMessageWithTyping().catch(async (err) => {
           console.error("❌ Processing error:", err.message);
 
@@ -507,7 +482,6 @@ router.post("/", async (req, res) => {
 
       if (webhook_event.postback?.payload) {
         const payload = webhook_event.postback.payload;
-        console.log("📌 Postback received:", payload);
         const responses = {
           ICE_BREAKER_PROPERTIES:
             "Sure! What type of property are you looking for and in which area?",
@@ -517,16 +491,17 @@ router.post("/", async (req, res) => {
             "Yes! We offer several payment plans. What’s your budget or preferred duration?",
         };
         if (responses[payload]) {
-          // 👉 Show typing before sending postback response
           await sendMarkAsRead(sender_psid, pageId);
-
           await sendMessengerReply(sender_psid, responses[payload], pageId);
-          console.log("🤖 Sent postback response");
         }
       }
     } catch (error) {
       console.error("❌ Messenger error:", error);
-      await sendMessengerReply(sender_psid, "⚠️ حصلت مشكلة. جرب تاني بعد شوية.", pageId);
+      try {
+        await sendMessengerReply(sender_psid, "⚠️ حصلت مشكلة. جرب تاني بعد شوية.", pageId);
+      } catch (e) {
+        // avoid crashing if send fails
+      }
     }
   }
 
