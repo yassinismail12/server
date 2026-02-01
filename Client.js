@@ -26,6 +26,10 @@ staffWhatsApp: {
 lastWebhookAt: { type: Date, default: null },
 lastWebhookType: { type: String, default: "" },
 lastWebhookPayload: { type: Object, default: null },
+// Client.js (mongoose)
+staffNumbers: { type: [String], default: [] }, // E.164: "+2010..."
+
+
 
     // ✅ Flexible file storage
     files: [

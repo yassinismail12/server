@@ -6,7 +6,9 @@ import { SYSTEM_PROMPT } from "./utils/systemPrompt.js";
 import { sendMessengerReply, sendMarkAsRead } from "./services/messenger.js";
 import { sendQuotaWarning } from "./sendQuotaWarning.js";
 import { buildStaffAlert } from "./utils/buildStaffAlert.js";
-import { notifyStaffWhatsApp } from "./services/twilio.js";
+import Order from "./Order.js";
+import { notifyClientStaffNewOrder } from "./utils/notifyClientStaffWhatsApp.js";
+
 import { MongoClient } from "mongodb";
 
 const router = express.Router();
@@ -216,6 +218,55 @@ router.get("/", async (req, res) => {
   console.warn("❌ Webhook verification failed");
   return res.sendStatus(403);
 });
+async function createOrderFlow({
+  pageId,
+  sender_psid,
+  userMessage,
+  channel = "messenger",
+}) {
+  const db = await connectDB();
+
+  // 1) Find client
+  const client = await db.collection("Clients").findOne({ pageId });
+  if (!client) throw new Error("Client not found");
+
+  // 2) Find customer (optional data)
+  const customer = await db.collection("Customers").findOne({
+    pageId,
+    psid: sender_psid,
+  });
+
+  const customerName = customer?.name || "Unknown";
+  const customerPhone = customer?.phone || "";
+
+  // 3) Create order
+  const order = await Order.create({
+    clientId: client._id,
+    channel,
+    customer: {
+      name: customerName,
+      phone: customerPhone,
+      externalUserId: sender_psid,
+    },
+    itemsText: userMessage,
+    notes: "Order requested via chat",
+    status: "new",
+  });
+
+  // 4) Notify staff on WhatsApp (Cloud API)
+  await notifyClientStaffNewOrder({
+    clientId: client._id,
+    payload: {
+      customerName,
+      customerPhone,
+      itemsText: userMessage,
+      notes: "Requested via Messenger",
+      orderId: String(order._id),
+    },
+  });
+
+  return order;
+}
 
 // ===== Messenger message handler =====
 router.post("/", async (req, res) => {
@@ -408,16 +459,6 @@ router.post("/", async (req, res) => {
 
             console.warn("👤 Human escalation triggered:", { pageId, psid: sender_psid });
 
-            try {
-              await notifyStaffWhatsApp({
-                to: clientDoc.staffWhatsApp,
-                message: `🚨 HUMAN ESCALATION 🚨\n\nUser PSID: ${sender_psid}\nLast message: "${userMessage}"`,
-                pageId,
-                psid: sender_psid,
-              });
-            } catch (err) {
-              console.error("❌ Failed to notify staff via WhatsApp:", err.message);
-            }
 
             await sendMessengerReply(
               sender_psid,
@@ -429,13 +470,44 @@ router.post("/", async (req, res) => {
           }
 
           // ===== Analytics counters =====
-          if (flags.order) {
-            await db.collection("Conversations").updateOne(
-              { pageId, userId: sender_psid, source: "messenger" },
-              { $inc: { orderRequestCount: 1 } },
-              { upsert: true }
-            );
-          }
+       // ===== ORDER REQUEST HANDLING =====
+if (flags.order) {
+  // analytics
+  await db.collection("Conversations").updateOne(
+    { pageId, userId: sender_psid, source: "messenger" },
+    { $inc: { orderRequestCount: 1 } },
+    { upsert: true }
+  );
+
+  try {
+    await createOrderFlow({
+      pageId,
+      sender_psid,
+      userMessage,
+      channel: "messenger",
+    });
+
+    // acknowledge customer
+    await sendMessengerReply(
+      sender_psid,
+      "✅ Your order request has been received.\nA staff member will contact you shortly.\n\nتم استلام طلبك وسيتم التواصل معك قريبًا.",
+      pageId
+    );
+
+    return; // stop normal bot reply
+  } catch (err) {
+    console.error("❌ Order flow failed:", err.message);
+
+    await sendMessengerReply(
+      sender_psid,
+      "⚠️ We couldn't process your order right now. Please try again.",
+      pageId
+    );
+
+    return;
+  }
+}
+
 
           if (flags.tour) {
             await db.collection("Conversations").updateOne(
@@ -484,7 +556,7 @@ router.post("/", async (req, res) => {
         const payload = webhook_event.postback.payload;
         const responses = {
           ICE_BREAKER_PROPERTIES:
-            "Sure! What type of property are you looking for and in which area?",
+            "Sure! What type of property are you looking for and in which area?", 
           ICE_BREAKER_BOOK:
             "You can book a visit by telling me the property you're interested in.",
           ICE_BREAKER_PAYMENT:

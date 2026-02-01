@@ -17,6 +17,8 @@ import User from "./Users.js";
 import jwt from "jsonwebtoken";
 import cookieParser from "cookie-parser";
 import Page from "./pages.js";
+import ordersRoute from "./routes/orders.js";
+
 
 
 import Product from "./Product.js"; // ✅ this registers the model
@@ -1516,7 +1518,7 @@ app.use("/webhook", messengerRoute);
 // other routes
 app.use("/api/chat", chatRoute);
 app.use("/instagram", instagramRoute);
-
+app.use("/api", ordersRoute);
 
 // ✅ MongoDB connection + start server only after DB connects
 const MONGODB_URI = process.env.MONGODB_URI;
