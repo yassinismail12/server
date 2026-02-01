@@ -225,14 +225,15 @@ async function createOrderFlow({
   channel = "messenger",
 }) {
   const db = await connectDB();
+  const pageIdStr = normalizePageId(pageId);
 
-  // 1) Find client
-  const client = await db.collection("Clients").findOne({ pageId });
-  if (!client) throw new Error("Client not found");
+  // 1) Find client (correct pageId type)
+  const client = await db.collection("Clients").findOne({ pageId: pageIdStr });
+  if (!client) throw new Error(`Client not found for pageId=${pageIdStr}`);
 
   // 2) Find customer (optional data)
   const customer = await db.collection("Customers").findOne({
-    pageId,
+    pageId: pageIdStr,
     psid: sender_psid,
   });
 
@@ -253,8 +254,20 @@ async function createOrderFlow({
     status: "new",
   });
 
+  console.log("🧾 Order created:", {
+    orderId: String(order._id),
+    clientId: String(client._id),
+    pageId: pageIdStr,
+  });
+
   // 4) Notify staff on WhatsApp (Cloud API)
-  await notifyClientStaffNewOrder({
+  // Log the staff fields you currently store so we know which one is populated
+  console.log("📲 Client staff fields:", {
+    staffNumbers: client.staffNumbers,
+    staffWhatsApp: client.staffWhatsApp,
+  });
+
+  const notifyResult = await notifyClientStaffNewOrder({
     clientId: client._id,
     payload: {
       customerName,
@@ -265,8 +278,11 @@ async function createOrderFlow({
     },
   });
 
+  console.log("✅ WhatsApp notify result:", notifyResult);
+
   return order;
 }
+
 
 // ===== Messenger message handler =====
 router.post("/", async (req, res) => {
