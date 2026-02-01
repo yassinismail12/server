@@ -6,7 +6,7 @@ import { SYSTEM_PROMPT } from "./utils/systemPrompt.js";
 import { sendMessengerReply, sendMarkAsRead } from "./services/messenger.js";
 import { sendQuotaWarning } from "./sendQuotaWarning.js";
 import { buildStaffAlert } from "./utils/buildStaffAlert.js";
-import Order from "./Order.js";
+import Order from "./order.js";
 import { notifyClientStaffNewOrder } from "./utils/notifyClientStaffWhatsApp.js";
 
 import { MongoClient } from "mongodb";
