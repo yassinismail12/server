@@ -269,7 +269,7 @@ async function createOrderFlow({
   const combinedNotes = [
     deliveryFromAi ? `Delivery Info: ${deliveryFromAi}` : null,
     notesFromAi ? `Notes: ${notesFromAi}` : "Notes: None",
-  ].filter(Boolean).join("\n");
+  ].filter(Boolean).join(" | ");
 
   // Create a fallback reference id (since you want to send first)
   const fallbackOrderId = `ORD-${Date.now()}`;
