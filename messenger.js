@@ -223,6 +223,13 @@ function extractLineValue(text, label) {
   const m = String(text || "").match(re);
   return m ? m[1].trim() : "";
 }
+function waSafeParam(text) {
+  return String(text || "")
+    .replace(/[\r\n\t]+/g, " ")     // no newlines/tabs
+    .replace(/\s{5,}/g, "    ")    // max 4 spaces in a row
+    .trim()
+    .slice(0, 1024);               // safe length guard (optional)
+}
 
 async function createOrderFlow({
   pageId,
@@ -268,16 +275,17 @@ async function createOrderFlow({
   const fallbackOrderId = `ORD-${Date.now()}`;
 
   // 3) ✅ SEND WHATSAPP FIRST
-  const notifyResult = await notifyClientStaffNewOrder({
-    clientId: client._id,
-    payload: {
-      customerName,
-      customerPhone,
-      itemsText,
-      notes: combinedNotes,
-      orderId: fallbackOrderId,
-    },
-  });
+ const notifyResult = await notifyClientStaffNewOrder({
+  clientId: client._id,
+  payload: {
+    customerName: waSafeParam(customerName),
+    customerPhone: waSafeParam(customerPhone),
+    itemsText: waSafeParam(itemsText),         // ✅ no newlines
+    notes: waSafeParam(combinedNotes),         // ✅ no newlines
+    orderId: waSafeParam(fallbackOrderId),
+  },
+});
+
 
   console.log("✅ WhatsApp notify result:", notifyResult);
 
