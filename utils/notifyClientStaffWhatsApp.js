@@ -2,6 +2,19 @@ import Client from "../Client.js";
 import { sendWhatsAppTemplate } from "../services/Whatsapp.js";
 
 /**
+ * WhatsApp template params cannot contain:
+ * - newlines (\n, \r)
+ * - tabs (\t)
+ * - more than 4 consecutive spaces
+ */
+function waSafeParam(value) {
+  return String(value ?? "")
+    .replace(/[\r\n\t]+/g, " ")   // remove newlines/tabs
+    .replace(/\s{5,}/g, "    ")  // max 4 consecutive spaces
+    .trim();
+}
+
+/**
  * Notify client staff about a new order via WhatsApp Cloud API
  */
 export async function notifyClientStaffNewOrder({ clientId, payload }) {
@@ -22,7 +35,7 @@ export async function notifyClientStaffNewOrder({ clientId, payload }) {
   }
 
   staffNumbers = staffNumbers
-    .map(n => String(n).trim())
+    .map((n) => String(n).trim())
     .filter(Boolean);
 
   console.log("📲 WhatsApp staff numbers resolved:", staffNumbers);
@@ -32,19 +45,24 @@ export async function notifyClientStaffNewOrder({ clientId, payload }) {
     return { ok: true, sent: 0, reason: "no staff numbers" };
   }
 
-  // 3) Prepare safe template values
-  const clientName = client.name || "Client";
-  const customerName = payload.customerName || "Unknown";
-  const customerPhone = payload.customerPhone || "N/A";
-  const items = payload.itemsText || "N/A";
-  const notes = payload.notes || "—";
-  const orderId = payload.orderId || "—";
+  // 3) Prepare SAFE template values (sanitize EVERYTHING)
+  const clientName = waSafeParam(client.name || "Client");
+  const customerName = waSafeParam(payload?.customerName || "Unknown");
+  const customerPhone = waSafeParam(payload?.customerPhone || "N/A");
+
+  // IMPORTANT: items/notes are most likely to contain newlines (AI summary)
+  const items = waSafeParam(payload?.itemsText || "N/A");
+  const notes = waSafeParam(payload?.notes || "—");
+
+  const orderId = waSafeParam(payload?.orderId || "—");
 
   // 4) Send WhatsApp messages
   let sent = 0;
   const results = [];
 
-  for (const to of staffNumbers) {
+  for (const toRaw of staffNumbers) {
+    const to = waSafeParam(toRaw);
+
     try {
       console.log("📤 Sending WhatsApp order alert to:", to);
 
@@ -52,14 +70,7 @@ export async function notifyClientStaffNewOrder({ clientId, payload }) {
         to,
         templateName: "new_order_alert",
         languageCode: "en",
-        bodyParams: [
-          clientName,
-          customerName,
-          customerPhone,
-          items,
-          notes,
-          orderId,
-        ],
+        bodyParams: [clientName, customerName, customerPhone, items, notes, orderId],
       });
 
       sent++;
