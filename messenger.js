@@ -221,7 +221,7 @@ router.get("/", async (req, res) => {
 async function createOrderFlow({
   pageId,
   sender_psid,
-  userMessage,
+  assistantMessage,
   channel = "messenger",
 }) {
   const db = await connectDB();
@@ -249,8 +249,9 @@ async function createOrderFlow({
       phone: customerPhone,
       externalUserId: sender_psid,
     },
-    itemsText: userMessage,
-    notes: "Order requested via chat",
+  itemsText: orderSummary,
+notes: "Confirmed by customer",
+
     status: "new",
   });
 
@@ -488,7 +489,6 @@ router.post("/", async (req, res) => {
           // ===== Analytics counters =====
        // ===== ORDER REQUEST HANDLING =====
 if (flags.order) {
-  // analytics
   await db.collection("Conversations").updateOne(
     { pageId, userId: sender_psid, source: "messenger" },
     { $inc: { orderRequestCount: 1 } },
@@ -499,18 +499,17 @@ if (flags.order) {
     await createOrderFlow({
       pageId,
       sender_psid,
-      userMessage,
+      orderSummary: assistantMessage, // ✅ FIX
       channel: "messenger",
     });
 
-    // acknowledge customer
     await sendMessengerReply(
       sender_psid,
       "✅ Your order request has been received.\nA staff member will contact you shortly.\n\nتم استلام طلبك وسيتم التواصل معك قريبًا.",
       pageId
     );
 
-    return; // stop normal bot reply
+    return;
   } catch (err) {
     console.error("❌ Order flow failed:", err.message);
 
@@ -523,6 +522,7 @@ if (flags.order) {
     return;
   }
 }
+
 
 
           if (flags.tour) {
