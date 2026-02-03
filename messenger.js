@@ -221,68 +221,84 @@ router.get("/", async (req, res) => {
 async function createOrderFlow({
   pageId,
   sender_psid,
-  assistantMessage,
+  orderSummaryText, // AI summary text
   channel = "messenger",
 }) {
   const db = await connectDB();
   const pageIdStr = normalizePageId(pageId);
 
-  // 1) Find client (correct pageId type)
+  // 1) Find client
   const client = await db.collection("Clients").findOne({ pageId: pageIdStr });
   if (!client) throw new Error(`Client not found for pageId=${pageIdStr}`);
 
-  // 2) Find customer (optional data)
+  // 2) Find customer (optional)
   const customer = await db.collection("Customers").findOne({
     pageId: pageIdStr,
     psid: sender_psid,
   });
 
-  const customerName = customer?.name || "Unknown";
-  const customerPhone = customer?.phone || "";
+  // Prefer AI summary values if present
+  const nameFromAi = extractLineValue(orderSummaryText, "Customer Name");
+  const phoneFromAi = extractLineValue(orderSummaryText, "Customer Phone");
+  const notesFromAi = extractLineValue(orderSummaryText, "Notes");
+  const deliveryFromAi = extractLineValue(orderSummaryText, "Delivery Info");
+  const itemsFromAi = extractLineValue(orderSummaryText, "Items");
+  const restaurantFromAi = extractLineValue(orderSummaryText, "Restaurant");
 
-  // 3) Create order
-  const order = await Order.create({
-    clientId: client._id,
-    channel,
-    customer: {
-      name: customerName,
-      phone: customerPhone,
-      externalUserId: sender_psid,
-    },
-  itemsText: orderSummary,
-notes: "Confirmed by customer",
+  const customerName = nameFromAi || customer?.name || "Unknown";
+  const customerPhone = phoneFromAi || customer?.phone || "N/A";
 
-    status: "new",
-  });
+  // WhatsApp template needs: items + notes separately
+  // {{4}} items
+  const itemsText = itemsFromAi || orderSummaryText;
 
-  console.log("🧾 Order created:", {
-    orderId: String(order._id),
-    clientId: String(client._id),
-    pageId: pageIdStr,
-  });
+  // {{5}} notes — include delivery info + notes together
+  const combinedNotes = [
+    deliveryFromAi ? `Delivery Info: ${deliveryFromAi}` : null,
+    notesFromAi ? `Notes: ${notesFromAi}` : "Notes: None",
+  ].filter(Boolean).join("\n");
 
-  // 4) Notify staff on WhatsApp (Cloud API)
-  // Log the staff fields you currently store so we know which one is populated
-  console.log("📲 Client staff fields:", {
-    staffNumbers: client.staffNumbers,
-    staffWhatsApp: client.staffWhatsApp,
-  });
+  // Create a fallback reference id (since you want to send first)
+  const fallbackOrderId = `ORD-${Date.now()}`;
 
+  // 3) ✅ SEND WHATSAPP FIRST
   const notifyResult = await notifyClientStaffNewOrder({
     clientId: client._id,
     payload: {
       customerName,
       customerPhone,
-      itemsText: userMessage,
-      notes: "Requested via Messenger",
-      orderId: String(order._id),
+      itemsText,
+      notes: combinedNotes,
+      orderId: fallbackOrderId,
     },
   });
 
   console.log("✅ WhatsApp notify result:", notifyResult);
 
-  return order;
+  // 4) Save order AFTER sending (best effort)
+  try {
+    const order = await Order.create({
+      clientId: client._id,
+      channel,
+      customer: {
+        name: customerName,
+        phone: customerPhone === "N/A" ? "" : customerPhone,
+        externalUserId: sender_psid,
+      },
+      itemsText: orderSummaryText,
+      notes: combinedNotes,
+      status: "new",
+    });
+
+    console.log("🧾 Order saved:", String(order._id));
+    return { order, notifyResult };
+  } catch (e) {
+    console.error("⚠️ Order save failed (WhatsApp already sent):", e.message);
+    return { order: null, notifyResult };
+  }
 }
+
+
 
 
 // ===== Messenger message handler =====
@@ -496,12 +512,13 @@ if (flags.order) {
   );
 
   try {
-    await createOrderFlow({
-      pageId,
-      sender_psid,
-      orderSummary: assistantMessage, // ✅ FIX
-      channel: "messenger",
-    });
+   await createOrderFlow({
+  pageId,
+  sender_psid,
+  orderSummaryText: assistantMessage, // ✅ THIS is the final summary from AI
+  channel: "messenger",
+});
+
 
     await sendMessengerReply(
       sender_psid,
