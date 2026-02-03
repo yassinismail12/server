@@ -51,7 +51,7 @@ export async function notifyClientStaffNewOrder({ clientId, payload }) {
       const r = await sendWhatsAppTemplate({
         to,
         templateName: "new_order_alert",
-        languageCode: "en_US",
+        languageCode: "en",
         bodyParams: [
           clientName,
           customerName,
