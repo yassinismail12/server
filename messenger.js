@@ -218,6 +218,12 @@ router.get("/", async (req, res) => {
   console.warn("❌ Webhook verification failed");
   return res.sendStatus(403);
 });
+function extractLineValue(text, label) {
+  const re = new RegExp(`^\\s*${label}\\s*:\\s*(.+)\\s*$`, "im");
+  const m = String(text || "").match(re);
+  return m ? m[1].trim() : "";
+}
+
 async function createOrderFlow({
   pageId,
   sender_psid,
