@@ -55,6 +55,13 @@ async function getClientDoc(pageId) {
     await clients.insertOne(client);
     console.log("✅ Client created for pageId:", pageIdStr);
   }
+console.log("📄 Client loaded:", {
+  pageId: pageIdStr,
+  hasPageToken: Boolean(client.PAGE_ACCESS_TOKEN),
+  tokenLength: client.PAGE_ACCESS_TOKEN
+    ? client.PAGE_ACCESS_TOKEN.length
+    : 0,
+});
 
   return client;
 }
@@ -177,12 +184,33 @@ async function saveCustomer(pageId, psid, userProfile) {
 
 // ===== Users =====
 async function getUserProfile(psid, pageAccessToken) {
-  const url = `https://graph.facebook.com/${psid}?fields=first_name,last_name&access_token=${pageAccessToken}`;
-  const res = await fetch(url);
-  if (!res.ok) {
+  console.log("🔍 getUserProfile called:", {
+    psid,
+    hasToken: Boolean(pageAccessToken),
+    tokenLength: pageAccessToken ? pageAccessToken.length : 0,
+  });
+
+  if (!pageAccessToken) {
+    console.warn("⚠️ No PAGE_ACCESS_TOKEN provided");
     return { first_name: "there" };
   }
-  return res.json();
+
+  const url = `https://graph.facebook.com/${psid}?fields=first_name,last_name&access_token=${pageAccessToken}`;
+  const res = await fetch(url);
+
+  if (!res.ok) {
+    const errorText = await res.text();
+    console.error("❌ Failed to fetch user profile:", {
+      status: res.status,
+      response: errorText,
+    });
+    return { first_name: "there" };
+  }
+
+  const data = await res.json();
+  console.log("✅ User profile fetched:", data);
+
+  return data;
 }
 
 // ===== Helpers =====
@@ -420,6 +448,12 @@ db.collection("Conversations").findOne({
           greeting = "";
 
           if (!convo || isNewDay(convo.lastInteraction)) {
+            console.log("👤 Fetching user profile:", {
+  pageId,
+  psid: sender_psid,
+  hasPageToken: Boolean(clientDoc.PAGE_ACCESS_TOKEN),
+});
+
             const userProfile = await getUserProfile(
               sender_psid,
               clientDoc.PAGE_ACCESS_TOKEN
