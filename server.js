@@ -1022,14 +1022,15 @@ app.get("/auth/facebook", async (req, res) => {
     const redirectUri = normalizeUrl(process.env.FACEBOOK_REDIRECT_URI);
     if (!redirectUri) return res.status(500).send("Missing FACEBOOK_REDIRECT_URI");
 
-    const fbAuthUrl =
-      `https://www.facebook.com/v20.0/dialog/oauth` +
-      `?client_id=${encodeURIComponent(process.env.FACEBOOK_APP_ID)}` +
-      `&redirect_uri=${encodeURIComponent(redirectUri)}` +
-      `&scope=${encodeURIComponent(
-        "pages_show_list,pages_read_engagement,pages_manage_metadata,pages_messaging"
-      )}` +
-      `&state=${encodeURIComponent(clientId)}`;
+   const fbAuthUrl =
+  `https://www.facebook.com/v20.0/dialog/oauth` +
+  `?client_id=${encodeURIComponent(process.env.FACEBOOK_APP_ID)}` +
+  `&redirect_uri=${encodeURIComponent(redirectUri)}` +
+  `&response_type=code` +
+  `&auth_type=rerequest` +
+  `&scope=${encodeURIComponent("pages_show_list,pages_manage_metadata")}` +
+  `&state=${encodeURIComponent(clientId)}`;
+
 
     console.log("🔁 OAuth START redirect_uri:", redirectUri);
     return res.redirect(fbAuthUrl);
