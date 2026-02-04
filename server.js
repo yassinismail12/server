@@ -1031,6 +1031,7 @@ const fbAuthUrl =
   `&config_id=${encodeURIComponent(process.env.FACEBOOK_LOGIN_CONFIG_ID)}` +
   `&business_id=1477713280210878` +
   `&state=${encodeURIComponent(clientId)}`;
+console.log("CONFIG_ID:", process.env.FACEBOOK_LOGIN_CONFIG_ID);
 
 
     console.log("🔁 OAuth START redirect_uri:", redirectUri);
