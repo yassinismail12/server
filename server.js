@@ -1029,7 +1029,6 @@ app.get("/auth/facebook", async (req, res) => {
   `&response_type=code` +
   `&auth_type=rerequest` +
   `&config_id=${encodeURIComponent(process.env.FACEBOOK_LOGIN_CONFIG_ID)}` +
-  `&scope=${encodeURIComponent("pages_show_list,pages_manage_metadata,pages_messaging")}` +
   `&state=${encodeURIComponent(clientId)}`;
 
 
