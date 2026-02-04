@@ -352,11 +352,13 @@ router.post("/", async (req, res) => {
 
         // Fetch existing conversation to check if human escalation is active
         const getFreshConvo = async () =>
-          db.collection("Conversations").findOne({
-            pageId,
-            userId: sender_psid,
-            source: "messenger",
-          });
+       
+
+db.collection("Conversations").findOne({
+  pageId: pageIdStr,
+  userId: sender_psid,
+  source: "messenger",
+});
 
         let convoCheck = await getFreshConvo();
 
