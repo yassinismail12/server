@@ -220,32 +220,35 @@ async function assertTokenMatchesPage(pageAccessToken, expectedPageId) {
 
 // ===== Users (Messenger profile fetch) =====
 async function getUserProfile(psid, pageAccessToken) {
-  console.log("🔍 getUserProfile called:", {
-    psid,
-    hasToken: Boolean(pageAccessToken),
-    tokenLength: pageAccessToken ? pageAccessToken.length : 0,
-  });
-
   if (!pageAccessToken) return { first_name: "there" };
 
   const url = `https://graph.facebook.com/v20.0/${psid}?fields=first_name,last_name&access_token=${pageAccessToken}`;
-
   const res = await fetch(url);
 
   if (!res.ok) {
-    const errorText = await res.text();
-    console.error("❌ Failed to fetch user profile:", {
+    let payload = {};
+    try {
+      payload = await res.json();
+    } catch {
+      const txt = await res.text();
+      console.error("❌ getUserProfile raw error:", txt);
+      return { first_name: "there" };
+    }
+
+    console.error("❌ getUserProfile error:", {
       status: res.status,
-      response: errorText,
-      urlHint: `/v20.0/${psid}?fields=first_name,last_name`,
+      message: payload?.error?.message,
+      code: payload?.error?.code,
+      subcode: payload?.error?.error_subcode,
+      fbtrace_id: payload?.error?.fbtrace_id,
     });
+
     return { first_name: "there" };
   }
 
-  const data = await res.json();
-  console.log("✅ User profile fetched:", data);
-  return data;
+  return res.json();
 }
+
 
 // ===== Webhook verification =====
 router.get("/", async (req, res) => {
