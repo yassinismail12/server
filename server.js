@@ -1028,7 +1028,7 @@ app.get("/auth/facebook", async (req, res) => {
   `&redirect_uri=${encodeURIComponent(redirectUri)}` +
   `&response_type=code` +
   `&auth_type=rerequest` +
-  `&scope=${encodeURIComponent("pages_show_list,pages_manage_metadata,pages_messaging")}` +
+  `&scope=${encodeURIComponent("pages_show_list,pages_manage_metadata")}` +
   `&state=${encodeURIComponent(clientId)}`;
 
 
