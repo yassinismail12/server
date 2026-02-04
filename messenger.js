@@ -147,22 +147,34 @@ async function saveCustomer(pageId, psid, userProfile) {
   const db = await connectDB();
   const pageIdStr = normalizePageId(pageId);
 
-  const fullName = `${userProfile.first_name || ""} ${userProfile.last_name || ""}`.trim();
+  const first = (userProfile?.first_name || "").trim();
+  const last = (userProfile?.last_name || "").trim();
+  const fullName = `${first} ${last}`.trim();
+
+  const update = {
+    pageId: pageIdStr,
+    psid,
+    lastInteraction: new Date(),
+    updatedAt: new Date(),
+  };
+
+  // ✅ Only set name if we really have one
+  if (fullName && fullName.toLowerCase() !== "there") {
+    update.name = fullName;
+  }
 
   await db.collection("Customers").updateOne(
     { pageId: pageIdStr, psid },
     {
-      $set: {
-        pageId: pageIdStr,
-        psid,
-        name: fullName || "Unknown",
-        lastInteraction: new Date(),
-        updatedAt: new Date(),
+      $set: update,
+      $setOnInsert: {
+        createdAt: new Date(),
       },
     },
     { upsert: true }
   );
 }
+
 
 // ===== Helpers =====
 function isNewDay(lastDate) {
@@ -479,26 +491,50 @@ router.post("/", async (req, res) => {
             greeting = "";
 
             // Greeting / name fetch once per day (best effort)
-            if (!convo || isNewDay(convo.lastInteraction)) {
-              console.log("👤 Fetching user profile:", {
-                pageId: pageIdStr,
-                psid: sender_psid,
-                hasPageToken: Boolean(clientDoc.PAGE_ACCESS_TOKEN),
-              });
+          // Greeting / name fetch (best effort)
+if (!convo || isNewDay(convo.lastInteraction)) {
+  // Try to reuse saved name first
+  const customer = await db.collection("Customers").findOne({
+    pageId: pageIdStr,
+    psid: sender_psid,
+  });
 
-              let userProfile = { first_name: "there" };
+  // Prefer saved name if we have it
+  const savedFirstName =
+    customer?.name && customer.name !== "Unknown"
+      ? customer.name.split(" ")[0]
+      : null;
 
-              // Only try profile fetch if tokenCheck ok
-              if (tokenCheck.ok) {
-                userProfile = await getUserProfile(sender_psid, clientDoc.PAGE_ACCESS_TOKEN);
-              }
+  let firstName = savedFirstName || "there";
+  let userProfile = null;
 
-              firstName = userProfile.first_name || "there";
-              await saveCustomer(pageIdStr, sender_psid, userProfile);
+  // Only try Graph if we don't already have a name saved
+  if (!savedFirstName && tokenCheck.ok) {
+    console.log("👤 Fetching user profile:", {
+      pageId: pageIdStr,
+      psid: sender_psid,
+      hasPageToken: Boolean(clientDoc.PAGE_ACCESS_TOKEN),
+    });
 
-              greeting = `Hi ${firstName}, good to see you today 👋`;
-              history.push({ role: "assistant", content: greeting, createdAt: new Date() });
-            }
+    userProfile = await getUserProfile(sender_psid, clientDoc.PAGE_ACCESS_TOKEN);
+
+    // If Graph returned a real name, use it
+    if (userProfile?.first_name && userProfile.first_name !== "there") {
+      firstName = userProfile.first_name;
+    }
+
+    // ✅ Save only if name exists (safe saveCustomer does this)
+    await saveCustomer(pageIdStr, sender_psid, userProfile);
+  }
+
+  const greeting =
+    firstName === "there"
+      ? "Hi 👋 good to see you today!"
+      : `Hi ${firstName}, good to see you today 👋`;
+
+  history.push({ role: "assistant", content: greeting, createdAt: new Date() });
+}
+
 
             history.push({ role: "user", content: userMessage, createdAt: new Date() });
 
