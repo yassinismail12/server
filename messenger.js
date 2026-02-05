@@ -1,48 +1,86 @@
 // messenger.js
 import express from "express";
 import fetch from "node-fetch";
+import { MongoClient } from "mongodb";
+
 import { getChatCompletion } from "./services/openai.js";
 import { SYSTEM_PROMPT } from "./utils/systemPrompt.js";
 import { sendMessengerReply, sendMarkAsRead } from "./services/messenger.js";
 import { sendQuotaWarning } from "./sendQuotaWarning.js";
-import { buildStaffAlert } from "./utils/buildStaffAlert.js";
 import Order from "./order.js";
 import { notifyClientStaffNewOrder } from "./utils/notifyClientStaffWhatsApp.js";
 
-import { MongoClient } from "mongodb";
-
 const router = express.Router();
+
 const mongoClient = new MongoClient(process.env.MONGODB_URI);
 const dbName = "Agent";
+let mongoConnected = false;
 
-// ===== Helper to normalize pageId =====
-function normalizePageId(id) {
-  return id.toString().trim();
+// ===============================
+// Logging helpers
+// ===============================
+function log(level, msg, meta = {}) {
+  const base = { level, msg, t: new Date().toISOString(), ...meta };
+  // keep console readable
+  if (level === "error") console.error("❌", msg, meta);
+  else if (level === "warn") console.warn("⚠️", msg, meta);
+  else console.log("ℹ️", msg, meta);
+  return base;
 }
 
-// ===== Typing Indicator =====
+async function logToDb(level, source, message, meta = {}) {
+  try {
+    const db = await connectDB();
+    await db.collection("Logs").insertOne({
+      level,
+      source,
+      message,
+      meta,
+      timestamp: new Date(),
+    });
+  } catch (e) {
+    // never crash because logging failed
+    console.warn("⚠️ Failed to write log to DB:", e.message);
+  }
+}
 
-// ===== DB Connection =====
+// ===============================
+// Normalizers
+// ===============================
+function normalizePageId(id) {
+  return String(id || "").trim();
+}
+
+function normalizePsid(id) {
+  return String(id || "").trim();
+}
+
+// ===============================
+// DB
+// ===============================
 async function connectDB() {
-  if (!mongoClient.topology?.isConnected()) {
-    console.log("🔗 Connecting to MongoDB...");
+  if (!mongoConnected) {
+    log("info", "Connecting to MongoDB...");
     await mongoClient.connect();
-    console.log("✅ MongoDB connected");
+    mongoConnected = true;
+    log("info", "MongoDB connected");
   }
   return mongoClient.db(dbName);
 }
 
-// ===== Clients =====
+// ===============================
+// Clients
+// ===============================
 async function getClientDoc(pageId) {
   const db = await connectDB();
   const clients = db.collection("Clients");
-
   const pageIdStr = normalizePageId(pageId);
 
   let client = await clients.findOne({ pageId: pageIdStr });
 
   if (!client) {
-    console.warn("⚠️ Client not found for pageId:", pageIdStr);
+    log("warn", "Client not found for pageId, creating placeholder", { pageId: pageIdStr });
+
     client = {
       pageId: pageIdStr,
       messageCount: 0,
@@ -51,9 +89,12 @@ async function getClientDoc(pageId) {
       VERIFY_TOKEN: null,
       PAGE_ACCESS_TOKEN: null,
       quotaWarningSent: false,
+      createdAt: new Date(),
+      updatedAt: new Date(),
     };
+
     await clients.insertOne(client);
-    console.log("✅ Client created for pageId:", pageIdStr);
+    log("info", "Client created for pageId", { pageId: pageIdStr });
   }
 
   return client;
@@ -62,75 +103,63 @@ async function getClientDoc(pageId) {
 async function incrementMessageCount(pageId) {
   const db = await connectDB();
   const clients = db.collection("Clients");
-
   const pageIdStr = normalizePageId(pageId);
 
   const updated = await clients.findOneAndUpdate(
     { pageId: pageIdStr },
     {
       $inc: { messageCount: 1 },
+      $set: { updatedAt: new Date() },
       $setOnInsert: {
         active: true,
         messageLimit: 1000,
         quotaWarningSent: false,
+        createdAt: new Date(),
       },
     },
-    {
-      upsert: true,
-      returnDocument: "after", // MongoDB >= 4.2
-    }
+    { upsert: true, returnDocument: "after" }
   );
 
-  // For some MongoDB versions, the returned value may be under `updated.value` or `updated.lastErrorObject`
-  const doc = updated.value || (await clients.findOne({ pageId: pageIdStr }));
+  const doc = updated?.value || (await clients.findOne({ pageId: pageIdStr }));
 
   if (!doc) {
-    console.error("❌ Still could not find or create client for pageId:", pageIdStr);
+    log("error", "Failed to increment or create client for pageId", { pageId: pageIdStr });
     throw new Error(`Failed to increment or create client for pageId: ${pageIdStr}`);
   }
 
   if (doc.messageCount > doc.messageLimit) {
-    console.warn("❌ Message limit reached for pageId:", pageIdStr);
-    return {
-      allowed: false,
-      messageCount: doc.messageCount,
-      messageLimit: doc.messageLimit,
-    };
+    log("warn", "Message limit reached for pageId", { pageId: pageIdStr, messageCount: doc.messageCount });
+    return { allowed: false, messageCount: doc.messageCount, messageLimit: doc.messageLimit };
   }
 
   const remaining = doc.messageLimit - doc.messageCount;
 
   if (remaining === 100 && !doc.quotaWarningSent) {
-    console.warn("⚠️ Only 100 messages left for pageId:", pageIdStr);
+    log("warn", "Only 100 messages left for pageId", { pageId: pageIdStr });
     await sendQuotaWarning(pageIdStr);
-    await clients.updateOne(
-      { pageId: pageIdStr },
-      { $set: { quotaWarningSent: true } }
-    );
+    await clients.updateOne({ pageId: pageIdStr }, { $set: { quotaWarningSent: true, updatedAt: new Date() } });
   }
 
-  return {
-    allowed: true,
-    messageCount: doc.messageCount,
-    messageLimit: doc.messageLimit,
-  };
+  return { allowed: true, messageCount: doc.messageCount, messageLimit: doc.messageLimit };
 }
 
-// ===== Conversation =====
+// ===============================
+// Conversation
+// ===============================
 async function getConversation(pageId, userId) {
   const db = await connectDB();
   const pageIdStr = normalizePageId(pageId);
-  return await db.collection("Conversations").findOne({ pageId: pageIdStr, userId });
+  return db.collection("Conversations").findOne({ pageId: pageIdStr, userId, source: "messenger" });
 }
 
 async function saveConversation(pageId, userId, history, lastInteraction) {
   const db = await connectDB();
   const pageIdStr = normalizePageId(pageId);
 
-  // 🔍 Lookup the client that owns this Messenger pageId
   const client = await db.collection("Clients").findOne({ pageId: pageIdStr });
   if (!client) {
-    console.error("❌ No client found for pageId:", pageIdStr);
+    log("error", "No client found for pageId while saving conversation", { pageId: pageIdStr });
+    await logToDb("error", "messenger", "No client found for pageId while saving conversation", { pageId: pageIdStr });
     return;
   }
 
@@ -156,10 +185,14 @@ async function saveConversation(pageId, userId, history, lastInteraction) {
   );
 }
 
+// ===============================
+// Customers
+// ===============================
 async function saveCustomer(pageId, psid, userProfile) {
   const db = await connectDB();
   const pageIdStr = normalizePageId(pageId);
   const fullName = `${userProfile.first_name || ""} ${userProfile.last_name || ""}`.trim();
+
   await db.collection("Customers").updateOne(
     { pageId: pageIdStr, psid },
     {
@@ -170,126 +203,140 @@ async function saveCustomer(pageId, psid, userProfile) {
         lastInteraction: new Date(),
         updatedAt: new Date(),
       },
+      $setOnInsert: { createdAt: new Date() },
     },
     { upsert: true }
   );
 }
 
-// ===== Users =====
-async function getUserProfile(psid, pageAccessToken) {
-  const url = `https://graph.facebook.com/${psid}?fields=first_name,last_name&access_token=${pageAccessToken}`;
-  const res = await fetch(url);
-  if (!res.ok) {
+// ===============================
+// User profile fetch (PSID)
+// ===============================
+async function getUserProfile(psid, pageAccessToken, meta = {}) {
+  const safePsid = normalizePsid(psid);
+
+  if (!pageAccessToken) {
+    log("warn", "PAGE_ACCESS_TOKEN missing; cannot fetch user profile", { ...meta });
+    await logToDb("warn", "graph", "PAGE_ACCESS_TOKEN missing; cannot fetch user profile", { ...meta });
     return { first_name: "there" };
   }
-  return res.json();
+
+  // NOTE: Using v20.0 explicitly; change if your app uses another version.
+  const url = new URL(`https://graph.facebook.com/v20.0/${safePsid}`);
+  url.searchParams.set("fields", "first_name,last_name");
+  url.searchParams.set("access_token", pageAccessToken);
+
+  let res;
+  try {
+    res = await fetch(url.toString());
+  } catch (e) {
+    log("error", "Graph fetch failed (network)", { ...meta, err: e.message });
+    await logToDb("error", "graph", "Graph fetch failed (network)", { ...meta, err: e.message });
+    return { first_name: "there" };
+  }
+
+  const text = await res.text().catch(() => "");
+
+  if (!res.ok) {
+    // This is the key log you need to debug PSID issues.
+    log("warn", "Graph profile fetch failed", {
+      ...meta,
+      status: res.status,
+      response: text?.slice(0, 1000),
+      psid: safePsid,
+    });
+
+    await logToDb("warn", "graph", "Graph profile fetch failed", {
+      ...meta,
+      status: res.status,
+      response: text?.slice(0, 2000),
+      psid: safePsid,
+    });
+
+    return { first_name: "there" };
+  }
+
+  try {
+    return JSON.parse(text);
+  } catch {
+    log("warn", "Graph profile fetch: non-JSON response", { ...meta, response: text?.slice(0, 500) });
+    return { first_name: "there" };
+  }
 }
 
-// ===== Helpers =====
+// ===============================
+// Helpers
+// ===============================
 function isNewDay(lastDate) {
   const today = new Date();
+  const d = lastDate ? new Date(lastDate) : null;
   return (
-    !lastDate ||
-    lastDate.getDate() !== today.getDate() ||
-    lastDate.getMonth() !== today.getMonth() ||
-    lastDate.getFullYear() !== today.getFullYear()
+    !d ||
+    d.getDate() !== today.getDate() ||
+    d.getMonth() !== today.getMonth() ||
+    d.getFullYear() !== today.getFullYear()
   );
 }
 
-// ===== Webhook verification =====
-router.get("/", async (req, res) => {
-  const mode = req.query["hub.mode"];
-  const token = req.query["hub.verify_token"];
-  const challenge = req.query["hub.challenge"];
-
-  if (!mode || !token) {
-    console.warn("❌ Webhook verification missing mode/token");
-    return res.sendStatus(403);
-  }
-
-  const db = await connectDB();
-  const client = await db.collection("Clients").findOne({ VERIFY_TOKEN: token });
-
-  if (mode === "subscribe" && client) {
-    console.log("✅ Webhook verified");
-    return res.status(200).send(challenge);
-  }
-
-  console.warn("❌ Webhook verification failed");
-  return res.sendStatus(403);
-});
 function extractLineValue(text, label) {
   const re = new RegExp(`^\\s*${label}\\s*:\\s*(.+)\\s*$`, "im");
   const m = String(text || "").match(re);
   return m ? m[1].trim() : "";
 }
+
 function waSafeParam(text) {
   return String(text || "")
-    .replace(/[\r\n\t]+/g, " ")     // no newlines/tabs
-    .replace(/\s{5,}/g, "    ")    // max 4 spaces in a row
+    .replace(/[\r\n\t]+/g, " ")
+    .replace(/\s{5,}/g, "    ")
     .trim()
-    .slice(0, 1024);               // safe length guard (optional)
+    .slice(0, 1024);
 }
 
-async function createOrderFlow({
-  pageId,
-  sender_psid,
-  orderSummaryText, // AI summary text
-  channel = "messenger",
-}) {
+// ===============================
+// Order flow
+// ===============================
+async function createOrderFlow({ pageId, sender_psid, orderSummaryText, channel = "messenger" }) {
   const db = await connectDB();
   const pageIdStr = normalizePageId(pageId);
 
-  // 1) Find client
   const client = await db.collection("Clients").findOne({ pageId: pageIdStr });
   if (!client) throw new Error(`Client not found for pageId=${pageIdStr}`);
 
-  // 2) Find customer (optional)
-  const customer = await db.collection("Customers").findOne({
-    pageId: pageIdStr,
-    psid: sender_psid,
-  });
+  const customer = await db.collection("Customers").findOne({ pageId: pageIdStr, psid: sender_psid });
 
-  // Prefer AI summary values if present
   const nameFromAi = extractLineValue(orderSummaryText, "Customer Name");
   const phoneFromAi = extractLineValue(orderSummaryText, "Customer Phone");
   const notesFromAi = extractLineValue(orderSummaryText, "Notes");
   const deliveryFromAi = extractLineValue(orderSummaryText, "Delivery Info");
   const itemsFromAi = extractLineValue(orderSummaryText, "Items");
-  const restaurantFromAi = extractLineValue(orderSummaryText, "Restaurant");
 
   const customerName = nameFromAi || customer?.name || "Unknown";
   const customerPhone = phoneFromAi || customer?.phone || "N/A";
 
-  // WhatsApp template needs: items + notes separately
-  // {{4}} items
   const itemsText = itemsFromAi || orderSummaryText;
 
-  // {{5}} notes — include delivery info + notes together
   const combinedNotes = [
     deliveryFromAi ? `Delivery Info: ${deliveryFromAi}` : null,
     notesFromAi ? `Notes: ${notesFromAi}` : "Notes: None",
-  ].filter(Boolean).join(" | ");
+  ]
+    .filter(Boolean)
+    .join(" | ");
 
-  // Create a fallback reference id (since you want to send first)
   const fallbackOrderId = `ORD-${Date.now()}`;
 
-  // 3) ✅ SEND WHATSAPP FIRST
- const notifyResult = await notifyClientStaffNewOrder({
-  clientId: client._id,
-  payload: {
-    customerName: waSafeParam(customerName),
-    customerPhone: waSafeParam(customerPhone),
-    itemsText: waSafeParam(itemsText),         // ✅ no newlines
-    notes: waSafeParam(combinedNotes),         // ✅ no newlines
-    orderId: waSafeParam(fallbackOrderId),
-  },
-});
+  const notifyResult = await notifyClientStaffNewOrder({
+    clientId: client._id,
+    payload: {
+      customerName: waSafeParam(customerName),
+      customerPhone: waSafeParam(customerPhone),
+      itemsText: waSafeParam(itemsText),
+      notes: waSafeParam(combinedNotes),
+      orderId: waSafeParam(fallbackOrderId),
+    },
+  });
 
+  log("info", "WhatsApp notify result", { pageId: pageIdStr, notifyResult });
 
-  console.log("✅ WhatsApp notify result:", notifyResult);
-
-  // 4) Save order AFTER sending (best effort)
   try {
     const order = await Order.create({
       clientId: client._id,
@@ -304,18 +351,43 @@ async function createOrderFlow({
       status: "new",
     });
 
-    console.log("🧾 Order saved:", String(order._id));
+    log("info", "Order saved", { pageId: pageIdStr, orderId: String(order._id) });
     return { order, notifyResult };
   } catch (e) {
-    console.error("⚠️ Order save failed (WhatsApp already sent):", e.message);
+    log("warn", "Order save failed (WhatsApp already sent)", { pageId: pageIdStr, err: e.message });
+    await logToDb("warn", "order", "Order save failed (WhatsApp already sent)", { pageId: pageIdStr, err: e.message });
     return { order: null, notifyResult };
   }
 }
 
+// ===============================
+// Webhook verification
+// ===============================
+router.get("/", async (req, res) => {
+  const mode = req.query["hub.mode"];
+  const token = req.query["hub.verify_token"];
+  const challenge = req.query["hub.challenge"];
 
+  if (!mode || !token) {
+    log("warn", "Webhook verification missing mode/token");
+    return res.sendStatus(403);
+  }
 
+  const db = await connectDB();
+  const client = await db.collection("Clients").findOne({ VERIFY_TOKEN: token });
 
-// ===== Messenger message handler =====
+  if (mode === "subscribe" && client) {
+    log("info", "Webhook verified", { pageId: client.pageId });
+    return res.status(200).send(challenge);
+  }
+
+  log("warn", "Webhook verification failed", { mode, tokenProvided: true });
+  return res.sendStatus(403);
+});
+
+// ===============================
+// Messenger webhook receiver
+// ===============================
 router.post("/", async (req, res) => {
   const body = req.body;
 
@@ -323,308 +395,299 @@ router.post("/", async (req, res) => {
     return res.sendStatus(404);
   }
 
-  for (const entry of body.entry) {
+  // respond fast
+  res.status(200).send("EVENT_RECEIVED");
+
+  for (const entry of body.entry || []) {
     const pageId = normalizePageId(entry.id);
-    const webhook_event = entry.messaging[0];
-    const sender_psid = webhook_event.sender.id;
 
-    try {
-      const clientDoc = await getClientDoc(pageId);
+    // IMPORTANT: there can be multiple events in entry.messaging
+    const events = entry.messaging || [];
+    for (const webhook_event of events) {
+      const sender_psid = normalizePsid(webhook_event?.sender?.id);
+      const recipient_page_id = normalizePageId(webhook_event?.recipient?.id);
 
-      if (clientDoc.active === false) {
-        // bot disabled for this page
-        continue;
+      const metaBase = {
+        pageId,
+        recipientPageId: recipient_page_id,
+        psid: sender_psid,
+        hasMessage: Boolean(webhook_event?.message),
+        hasPostback: Boolean(webhook_event?.postback),
+      };
+
+      // Key debug: token/PSID issues are often "pageId mismatch"
+      if (recipient_page_id && recipient_page_id !== pageId) {
+        log("warn", "PageId mismatch between entry.id and recipient.id", metaBase);
+        await logToDb("warn", "messenger", "PageId mismatch between entry.id and recipient.id", metaBase);
       }
 
-      // ===== Image / Attachment Handler =====
-      if (webhook_event.message?.attachments?.length > 0) {
-        await sendMessengerReply(
-          sender_psid,
-          "Could you describe what's in the image, or say the name of the item u are looking for so I can help you better?",
-          pageId
-        );
-        continue;
-      }
+      try {
+        const clientDoc = await getClientDoc(pageId);
 
-      if (webhook_event.message?.text) {
-        const userMessage = webhook_event.message.text;
-        const db = await connectDB();
+        if (clientDoc.active === false) continue;
 
-        // Fetch existing conversation to check if human escalation is active
-        const getFreshConvo = async () =>
-          db.collection("Conversations").findOne({
-            pageId,
-            userId: sender_psid,
-            source: "messenger",
-          });
-
-        let convoCheck = await getFreshConvo();
-
-        // ⏱ Auto-resume bot if timer expired
-        if (
-          convoCheck?.humanEscalation === true &&
-          convoCheck?.botResumeAt &&
-          new Date() >= new Date(convoCheck.botResumeAt)
-        ) {
-          await db.collection("Conversations").updateOne(
-            { pageId, userId: sender_psid, source: "messenger" },
-            {
-              $set: {
-                humanEscalation: false,
-                botResumeAt: null,
-                autoResumedAt: new Date(),
-              },
-            }
-          );
-
-          console.log("🤖 Bot auto-resumed (timer)");
-          convoCheck = await getFreshConvo();
+        if (!clientDoc.PAGE_ACCESS_TOKEN) {
+          log("warn", "Client has no PAGE_ACCESS_TOKEN", { ...metaBase, clientPageId: clientDoc.pageId });
+          await logToDb("warn", "messenger", "Client has no PAGE_ACCESS_TOKEN", { ...metaBase, clientPageId: clientDoc.pageId });
         }
 
-        // --- Resume bot command (customer) ---
-        if (userMessage.trim().toLowerCase() === "!bot") {
-          await db.collection("Conversations").updateOne(
-            { pageId, userId: sender_psid, source: "messenger" },
-            {
-              $set: {
-                humanEscalation: false,
-                botResumeAt: null,
-                resumedBy: "customer",
-                resumedAt: new Date(),
-              },
-            },
-            { upsert: true }
+        // ===== Attachment handler
+        if (webhook_event.message?.attachments?.length > 0) {
+          await sendMessengerReply(
+            sender_psid,
+            "Could you describe what's in the image, or say the name of the item u are looking for so I can help you better?",
+            pageId
           );
-
-          await sendMessengerReply(sender_psid, "✅ Bot is reactivated!", pageId);
-          continue; // command handled; skip AI
-        }
-
-        // --- If human escalation active → ignore bot AI reply ---
-        if (convoCheck?.humanEscalation === true) {
           continue;
         }
 
-        // ===== Robust Typing Handler =====
-        async function processMessageWithTyping() {
-          let convo, history, greeting, firstName;
-
-          // ===== AI + DB work =====
-          const finalSystemPrompt = await SYSTEM_PROMPT({ pageId });
-          convo = await getConversation(pageId, sender_psid);
-          history = convo?.history || [{ role: "system", content: finalSystemPrompt }];
-
-          firstName = "there";
-          greeting = "";
-
-          if (!convo || isNewDay(convo.lastInteraction)) {
-            const userProfile = await getUserProfile(
-              sender_psid,
-              clientDoc.PAGE_ACCESS_TOKEN
-            );
-            firstName = userProfile.first_name || "there";
-            await saveCustomer(pageId, sender_psid, userProfile);
-
-            greeting = `Hi ${firstName}, good to see you today 👋`;
-            history.push({
-              role: "assistant",
-              content: greeting,
-              createdAt: new Date(),
-            });
-          }
-
-          history.push({ role: "user", content: userMessage, createdAt: new Date() });
-
-          // ✅ Count ONLY when we actually use the bot (OpenAI call)
-          const usage = await incrementMessageCount(pageId);
-          if (!usage.allowed) {
-            await sendMessengerReply(sender_psid, "⚠️ Message limit reached.", pageId);
-            return;
-          }
-
-          // ===== Generate AI reply =====
-          let assistantMessage;
-          try {
-            assistantMessage = await getChatCompletion(history);
-          } catch (err) {
-            console.error("❌ OpenAI error:", err.message);
-
-            const db = await connectDB();
-            await db.collection("Logs").insertOne({
-              pageId,
-              psid: sender_psid,
-              level: "error",
-              source: "openai",
-              message: err.message,
-              timestamp: new Date(),
-            });
-
-            assistantMessage =
-              "⚠️ I'm having trouble right now. Please try again shortly.";
-          }
-
-          // ===== CONTROL TOKENS PARSING (FIX) =====
-          const flags = {
-            human: false,
-            tour: false,
-            order: false,
-          };
-
-          if (assistantMessage.includes("[Human_request]")) {
-            flags.human = true;
-            assistantMessage = assistantMessage.replace("[Human_request]", "").trim();
-          }
-
-          if (assistantMessage.includes("[ORDER_REQUEST]")) {
-            flags.order = true;
-            assistantMessage = assistantMessage.replace("[ORDER_REQUEST]", "").trim();
-          }
-
-          if (assistantMessage.includes("[TOUR_REQUEST]")) {
-            flags.tour = true;
-            assistantMessage = assistantMessage.replace("[TOUR_REQUEST]", "").trim();
-          }
-
+        // ===== Text message
+        if (webhook_event.message?.text) {
+          const userMessage = webhook_event.message.text;
           const db = await connectDB();
+          const pageIdStr = normalizePageId(pageId);
 
-          // ===== Human escalation =====
-          if (flags.human) {
-            const botResumeAt = new Date(Date.now() + 2 * 60 * 60 * 1000); // auto-unmute fallback
+          log("info", "Incoming message", { ...metaBase, textPreview: userMessage.slice(0, 120) });
 
+          const getFreshConvo = async () =>
+            db.collection("Conversations").findOne({
+              pageId: pageIdStr,
+              userId: sender_psid,
+              source: "messenger",
+            });
+
+          let convoCheck = await getFreshConvo();
+
+          // Auto-resume bot if timer expired
+          if (
+            convoCheck?.humanEscalation === true &&
+            convoCheck?.botResumeAt &&
+            new Date() >= new Date(convoCheck.botResumeAt)
+          ) {
             await db.collection("Conversations").updateOne(
-              { pageId, userId: sender_psid, source: "messenger" },
+              { pageId: pageIdStr, userId: sender_psid, source: "messenger" },
               {
                 $set: {
-                  humanEscalation: true,
-                  botResumeAt,
-                  humanEscalationStartedAt: new Date(),
+                  humanEscalation: false,
+                  botResumeAt: null,
+                  autoResumedAt: new Date(),
                 },
-                $inc: { humanRequestCount: 1 },
+              }
+            );
+
+            log("info", "Bot auto-resumed (timer)", metaBase);
+            convoCheck = await getFreshConvo();
+          }
+
+          // Resume bot command
+          if (userMessage.trim().toLowerCase() === "!bot") {
+            await db.collection("Conversations").updateOne(
+              { pageId: pageIdStr, userId: sender_psid, source: "messenger" },
+              {
+                $set: {
+                  humanEscalation: false,
+                  botResumeAt: null,
+                  resumedBy: "customer",
+                  resumedAt: new Date(),
+                },
               },
               { upsert: true }
             );
 
-            console.warn("👤 Human escalation triggered:", { pageId, psid: sender_psid });
-
-
-            await sendMessengerReply(
-              sender_psid,
-              "👤 A human agent will take over shortly.\nYou can type !bot anytime to return to the assistant.\n\nسيقوم أحد موظفي الدعم بالرد عليك قريبًا.",
-              pageId
-            );
-
-            return;
+            await sendMessengerReply(sender_psid, "✅ Bot is reactivated!", pageId);
+            continue;
           }
 
-          // ===== Analytics counters =====
-       // ===== ORDER REQUEST HANDLING =====
-if (flags.order) {
-  await db.collection("Conversations").updateOne(
-    { pageId, userId: sender_psid, source: "messenger" },
-    { $inc: { orderRequestCount: 1 } },
-    { upsert: true }
-  );
-
-  try {
-   await createOrderFlow({
-  pageId,
-  sender_psid,
-  orderSummaryText: assistantMessage, // ✅ THIS is the final summary from AI
-  channel: "messenger",
-});
-
-
-    await sendMessengerReply(
-      sender_psid,
-      "✅ Your order request has been received.\nA staff member will contact you shortly.\n\nتم استلام طلبك وسيتم التواصل معك قريبًا.",
-      pageId
-    );
-
-    return;
-  } catch (err) {
-    console.error("❌ Order flow failed:", err.message);
-
-    await sendMessengerReply(
-      sender_psid,
-      "⚠️ We couldn't process your order right now. Please try again.",
-      pageId
-    );
-
-    return;
-  }
-}
-
-
-
-          if (flags.tour) {
-            await db.collection("Conversations").updateOne(
-              { pageId, userId: sender_psid, source: "messenger" },
-              { $inc: { tourRequestCount: 1 } },
-              { upsert: true }
-            );
+          // If human escalation active → ignore bot
+          if (convoCheck?.humanEscalation === true) {
+            log("info", "Human escalation active; bot ignoring message", metaBase);
+            continue;
           }
 
-          // ===== Save conversation (CLEAN) =====
-          history.push({
-            role: "assistant",
-            content: assistantMessage,
-            createdAt: new Date(),
-          });
-          await saveConversation(pageId, sender_psid, history, new Date());
+          async function processMessageWithTyping() {
+            let convo, history, greeting, firstName;
 
-          let combinedMessage = assistantMessage;
-          if (greeting) combinedMessage = `${greeting}\n\n${assistantMessage}`;
+            const finalSystemPrompt = await SYSTEM_PROMPT({ pageId });
+            convo = await getConversation(pageId, sender_psid);
+            history = convo?.history || [{ role: "system", content: finalSystemPrompt }];
 
-          // ===== Send reply =====
-          await sendMessengerReply(sender_psid, combinedMessage, pageId);
-        }
+            firstName = "there";
+            greeting = "";
 
-        // ===== Show mark_seen while processing =====
-        await sendMarkAsRead(sender_psid, pageId);
-        await new Promise((resolve) => setTimeout(resolve, 1200));
-        await processMessageWithTyping().catch(async (err) => {
-          console.error("❌ Processing error:", err.message);
+            // If new day, try to fetch profile (this is where your PSID fetch was failing)
+            if (!convo || isNewDay(convo.lastInteraction)) {
+              const userProfile = await getUserProfile(sender_psid, clientDoc.PAGE_ACCESS_TOKEN, {
+                ...metaBase,
+                clientPageId: clientDoc.pageId,
+              });
 
-          const db = await connectDB();
-          await db.collection("Logs").insertOne({
-            pageId,
-            psid: sender_psid,
-            level: "error",
-            source: "messenger",
-            message: err.message,
-            timestamp: new Date(),
-          });
+              firstName = userProfile.first_name || "there";
+              await saveCustomer(pageId, sender_psid, userProfile);
 
-          await sendMessengerReply(sender_psid, "⚠️ حصلت مشكلة. جرب تاني بعد شوية.", pageId);
-        });
-      }
+              greeting = `Hi ${firstName}, good to see you today 👋`;
 
-      if (webhook_event.postback?.payload) {
-        const payload = webhook_event.postback.payload;
-        const responses = {
-          ICE_BREAKER_PROPERTIES:
-            "Sure! What type of property are you looking for and in which area?", 
-          ICE_BREAKER_BOOK:
-            "You can book a visit by telling me the property you're interested in.",
-          ICE_BREAKER_PAYMENT:
-            "Yes! We offer several payment plans. What’s your budget or preferred duration?",
-        };
-        if (responses[payload]) {
+              // IMPORTANT: Avoid double-sending greeting:
+              // - We'll send greeting + assistant reply as one message
+              // - We do NOT push greeting as a separate assistant turn to history
+              // If you want the model to "see" greeting in history, you can add it back.
+            }
+
+            history.push({ role: "user", content: userMessage, createdAt: new Date() });
+
+            const usage = await incrementMessageCount(pageId);
+            if (!usage.allowed) {
+              await sendMessengerReply(sender_psid, "⚠️ Message limit reached.", pageId);
+              return;
+            }
+
+            let assistantMessage;
+            try {
+              assistantMessage = await getChatCompletion(history);
+            } catch (err) {
+              log("error", "OpenAI error", { ...metaBase, err: err.message });
+              await logToDb("error", "openai", err.message, metaBase);
+              assistantMessage = "⚠️ I'm having trouble right now. Please try again shortly.";
+            }
+
+            // Control tokens parsing
+            const flags = { human: false, tour: false, order: false };
+
+            if (assistantMessage.includes("[Human_request]")) {
+              flags.human = true;
+              assistantMessage = assistantMessage.replace("[Human_request]", "").trim();
+            }
+            if (assistantMessage.includes("[ORDER_REQUEST]")) {
+              flags.order = true;
+              assistantMessage = assistantMessage.replace("[ORDER_REQUEST]", "").trim();
+            }
+            if (assistantMessage.includes("[TOUR_REQUEST]")) {
+              flags.tour = true;
+              assistantMessage = assistantMessage.replace("[TOUR_REQUEST]", "").trim();
+            }
+
+            // Human escalation
+            if (flags.human) {
+              const botResumeAt = new Date(Date.now() + 2 * 60 * 60 * 1000);
+
+              await db.collection("Conversations").updateOne(
+                { pageId: pageIdStr, userId: sender_psid, source: "messenger" },
+                {
+                  $set: {
+                    humanEscalation: true,
+                    botResumeAt,
+                    humanEscalationStartedAt: new Date(),
+                  },
+                  $inc: { humanRequestCount: 1 },
+                },
+                { upsert: true }
+              );
+
+              log("warn", "Human escalation triggered", metaBase);
+
+              await sendMessengerReply(
+                sender_psid,
+                "👤 A human agent will take over shortly.\nYou can type !bot anytime to return to the assistant.\n\nسيقوم أحد موظفي الدعم بالرد عليك قريبًا.",
+                pageId
+              );
+              return;
+            }
+
+            // Order handling
+            if (flags.order) {
+              await db.collection("Conversations").updateOne(
+                { pageId: pageIdStr, userId: sender_psid, source: "messenger" },
+                { $inc: { orderRequestCount: 1 } },
+                { upsert: true }
+              );
+
+              try {
+                await createOrderFlow({
+                  pageId,
+                  sender_psid,
+                  orderSummaryText: assistantMessage,
+                  channel: "messenger",
+                });
+
+                await sendMessengerReply(
+                  sender_psid,
+                  "✅ Your order request has been received.\nA staff member will contact you shortly.\n\nتم استلام طلبك وسيتم التواصل معك قريبًا.",
+                  pageId
+                );
+                return;
+              } catch (err) {
+                log("error", "Order flow failed", { ...metaBase, err: err.message });
+                await logToDb("error", "order", "Order flow failed", { ...metaBase, err: err.message });
+
+                await sendMessengerReply(
+                  sender_psid,
+                  "⚠️ We couldn't process your order right now. Please try again.",
+                  pageId
+                );
+                return;
+              }
+            }
+
+            // Tour counter
+            if (flags.tour) {
+              await db.collection("Conversations").updateOne(
+                { pageId: pageIdStr, userId: sender_psid, source: "messenger" },
+                { $inc: { tourRequestCount: 1 } },
+                { upsert: true }
+              );
+            }
+
+            // Save conversation (clean)
+            history.push({ role: "assistant", content: assistantMessage, createdAt: new Date() });
+            await saveConversation(pageId, sender_psid, history, new Date());
+
+            // Combine greeting (only for user-facing message)
+            const combinedMessage = greeting ? `${greeting}\n\n${assistantMessage}` : assistantMessage;
+
+            // Send reply
+            await sendMessengerReply(sender_psid, combinedMessage, pageId);
+
+            log("info", "Reply sent", { ...metaBase, replyPreview: combinedMessage.slice(0, 120) });
+          }
+
+          // mark as read while processing
           await sendMarkAsRead(sender_psid, pageId);
-          await sendMessengerReply(sender_psid, responses[payload], pageId);
+          await new Promise((resolve) => setTimeout(resolve, 1200));
+
+          await processMessageWithTyping().catch(async (err) => {
+            log("error", "Processing error", { ...metaBase, err: err.message });
+            await logToDb("error", "messenger", "Processing error", { ...metaBase, err: err.message });
+
+            try {
+              await sendMessengerReply(sender_psid, "⚠️ حصلت مشكلة. جرب تاني بعد شوية.", pageId);
+            } catch {}
+          });
         }
-      }
-    } catch (error) {
-      console.error("❌ Messenger error:", error);
-      try {
-        await sendMessengerReply(sender_psid, "⚠️ حصلت مشكلة. جرب تاني بعد شوية.", pageId);
-      } catch (e) {
-        // avoid crashing if send fails
+
+        // ===== Postbacks
+        if (webhook_event.postback?.payload) {
+          const payload = webhook_event.postback.payload;
+
+          const responses = {
+            ICE_BREAKER_PROPERTIES: "Sure! What type of property are you looking for and in which area?",
+            ICE_BREAKER_BOOK: "You can book a visit by telling me the property you're interested in.",
+            ICE_BREAKER_PAYMENT: "Yes! We offer several payment plans. What’s your budget or preferred duration?",
+          };
+
+          if (responses[payload]) {
+            await sendMarkAsRead(sender_psid, pageId);
+            await sendMessengerReply(sender_psid, responses[payload], pageId);
+          }
+        }
+      } catch (error) {
+        log("error", "Messenger handler error", { ...metaBase, err: error.message });
+        await logToDb("error", "messenger", "Messenger handler error", { ...metaBase, err: error.message });
+
+        try {
+          await sendMessengerReply(sender_psid, "⚠️ حصلت مشكلة. جرب تاني بعد شوية.", pageId);
+        } catch {}
       }
     }
   }
-
-  res.status(200).send("EVENT_RECEIVED");
 });
 
 export default router;
