@@ -168,6 +168,7 @@ async function saveCustomer(igId, psid, userProfile) {
   );
 }
 
+
 // ===== Users =====
 // ✅ IMPORTANT: fetching IG user profile can use igAccessToken (IGAA) OR page token.
 // We'll pass the token we have (page token) and fall back gracefully.
@@ -222,6 +223,37 @@ router.get("/", async (req, res) => {
   } else {
     console.warn("❌ IG Webhook verification failed");
     res.sendStatus(403);
+  }
+});
+// TEMP: hard-coded IG send test
+router.get("/ig-test-send", async (req, res) => {
+  const PAGE_TOKEN = process.env.PAGE_ACCESS_TOKEN; // EAA...
+  const BUSINESS_IG_ID = "17841477149668525"; // your IG business id
+  const RECIPIENT_ID = "3690249421280708";   // sender id from webhook
+
+  const message = "✅ Hard-coded test message from app";
+
+  const url = `https://graph.facebook.com/v21.0/${BUSINESS_IG_ID}/messages?access_token=${encodeURIComponent(PAGE_TOKEN)}`;
+
+  const payload = {
+    recipient: { id: RECIPIENT_ID },
+    message: { text: message },
+  };
+
+  try {
+    const r = await fetch(url, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(payload),
+    });
+
+    const data = await r.json();
+
+    console.log("IG TEST SEND RESULT:", data);
+    res.json({ ok: r.ok, data });
+  } catch (e) {
+    console.error("IG TEST SEND ERROR:", e);
+    res.status(500).json({ error: e.message });
   }
 });
 
