@@ -47,6 +47,34 @@ function isNewDay(lastDate) {
   );
 }
 
+function buildSystemPromptFromClient(client) {
+  const base = client.systemPrompt || "You are a helpful assistant.";
+  const faqs = client.faqs ? `\n\nFAQs:\n${client.faqs}` : "";
+  const listings = client.listingsData ? `\n\nListings:\n${client.listingsData}` : "";
+  const plans = client.paymentPlans ? `\n\nPayment Plans:\n${client.paymentPlans}` : "";
+  return `${base}${faqs}${listings}${plans}`.trim();
+}
+
+function parseSourceChoice(text) {
+  const t = String(text || "").trim().toLowerCase();
+  // customize this to your business
+  if (["1", "sales", "sell", "buy", "rent"].includes(t)) return "sales";
+  if (["2", "support", "help"].includes(t)) return "support";
+  if (["3", "order", "orders", "شراء", "طلب"].includes(t)) return "order";
+  return "";
+}
+
+function sourceMenuText() {
+  return (
+    "Hi 👋\n" +
+    "Please choose what you need:\n\n" +
+    "1) Sales / Properties\n" +
+    "2) Support\n" +
+    "3) Order\n\n" +
+    "Reply with 1, 2, or 3."
+  );
+}
+
 // ===============================
 // Clients
 // ===============================
@@ -77,7 +105,7 @@ async function touchClientWebhook(clientMongoId, payload) {
 }
 
 // ===============================
-// Conversations (KEYED BY clientId, not pageId)
+// Conversations (stored with source: "whatsapp")
 // ===============================
 async function getConversation(clientId, userId) {
   const db = await connectDB();
@@ -88,7 +116,18 @@ async function getConversation(clientId, userId) {
   });
 }
 
-async function saveConversation(clientId, userId, history, lastInteraction) {
+async function upsertConversation({
+  clientId,
+  userId,
+  history,
+  lastInteraction,
+  lastMessage,
+  lastMessageAt,
+  lastDirection,
+  awaitSource,
+  sourceChoice,
+  meta = {},
+}) {
   const db = await connectDB();
   await db.collection("Conversations").updateOne(
     { clientId: String(clientId), userId, source: "whatsapp" },
@@ -96,9 +135,16 @@ async function saveConversation(clientId, userId, history, lastInteraction) {
       $set: {
         clientId: String(clientId),
         userId,
-        source: "whatsapp",
+        source: "whatsapp", // ✅ dashboard filter key
+        sourceLabel: "WhatsApp",
         history,
         lastInteraction,
+        lastMessage: lastMessage || "",
+        lastMessageAt: lastMessageAt || lastInteraction,
+        lastDirection: lastDirection || "",
+        awaitSource: Boolean(awaitSource),
+        sourceChoice: sourceChoice || "",
+        meta: { ...(meta || {}) },
         updatedAt: new Date(),
       },
       $setOnInsert: {
@@ -108,22 +154,6 @@ async function saveConversation(clientId, userId, history, lastInteraction) {
     },
     { upsert: true }
   );
-}
-
-// ===============================
-// System prompt for WhatsApp (use client doc)
-// ===============================
-function buildSystemPromptFromClient(client) {
-  // Pick whichever you actually use in production:
-  // - client.systemPrompt
-  // - client.faqs, client.listingsData, etc.
-  // - client.files[] (find name === "systemPrompt" etc.)
-  const base = client.systemPrompt || "You are a helpful assistant.";
-  const faqs = client.faqs ? `\n\nFAQs:\n${client.faqs}` : "";
-  const listings = client.listingsData ? `\n\nListings:\n${client.listingsData}` : "";
-  const plans = client.paymentPlans ? `\n\nPayment Plans:\n${client.paymentPlans}` : "";
-
-  return `${base}${faqs}${listings}${plans}`.trim();
 }
 
 // ===============================
@@ -175,10 +205,12 @@ router.post("/", async (req, res) => {
           meta: value?.metadata || null,
         });
 
+        // ignore delivery/read statuses
         const messages = value?.messages || [];
         if (!messages.length) continue;
 
         const staffDigits = (client.staffNumbers || []).map(normalizePhoneDigits);
+        const clientAwaitSource = Boolean(client.awaitSource); // ✅ put this in Mongo if you want
 
         for (const msg of messages) {
           const fromDigits = normalizePhoneDigits(msg?.from);
@@ -192,19 +224,94 @@ router.post("/", async (req, res) => {
           }
 
           const convo = await getConversation(client.clientId, fromDigits);
+
+          // if human escalation is ON, ignore bot
           if (convo?.humanEscalation === true) {
             log("info", "Human escalation active; ignoring", { from: fromDigits, clientId: client.clientId });
             continue;
           }
 
-          const systemPrompt = buildSystemPromptFromClient(client);
+          // greeting / timestamps
+          const inboundAt = new Date();
+          const inboundPreview = text.slice(0, 200);
 
+          // default history (system prompt)
+          const systemPrompt = buildSystemPromptFromClient(client);
           let history = convo?.history || [{ role: "system", content: systemPrompt }];
 
+          // ====== AWAIT SOURCE MODE ======
+          // If client.awaitSource is true AND convo has no sourceChoice yet:
+          const sourceChoiceExisting = convo?.sourceChoice || "";
+          const needsChoice = clientAwaitSource && !sourceChoiceExisting;
+
+          if (needsChoice) {
+            // user picked a choice?
+            const picked = parseSourceChoice(text);
+
+            if (!picked) {
+              // send menu again (once per day or first message)
+              const shouldSendMenu =
+                !convo || isNewDay(convo.lastInteraction) || convo?.awaitSource !== true;
+
+              // save convo state with awaitSource=true
+              history.push({ role: "user", content: text, createdAt: inboundAt });
+
+              await upsertConversation({
+                clientId: client.clientId,
+                userId: fromDigits,
+                history,
+                lastInteraction: inboundAt,
+                lastMessage: inboundPreview,
+                lastMessageAt: inboundAt,
+                lastDirection: "in",
+                awaitSource: true,
+                sourceChoice: "",
+                meta: { phoneNumberId },
+              });
+
+              if (shouldSendMenu) {
+                await sendWhatsAppText({
+                  phoneNumberId,
+                  to: fromDigits,
+                  text: sourceMenuText(),
+                });
+              }
+
+              log("info", "Awaiting source choice", { from: fromDigits, clientId: client.clientId });
+              continue;
+            }
+
+            // user chose a source → store it and proceed normally
+            history.push({ role: "user", content: text, createdAt: inboundAt });
+
+            await upsertConversation({
+              clientId: client.clientId,
+              userId: fromDigits,
+              history,
+              lastInteraction: inboundAt,
+              lastMessage: inboundPreview,
+              lastMessageAt: inboundAt,
+              lastDirection: "in",
+              awaitSource: false,
+              sourceChoice: picked,
+              meta: { phoneNumberId },
+            });
+
+            await sendWhatsAppText({
+              phoneNumberId,
+              to: fromDigits,
+              text: `✅ Got it. You selected: ${picked}.\nHow can I help you?`,
+            });
+
+            log("info", "Source choice selected", { from: fromDigits, picked, clientId: client.clientId });
+            continue;
+          }
+
+          // ====== NORMAL BOT FLOW ======
           let greeting = "";
           if (!convo || isNewDay(convo.lastInteraction)) greeting = "Hi 👋";
 
-          history.push({ role: "user", content: text, createdAt: new Date() });
+          history.push({ role: "user", content: text, createdAt: inboundAt });
 
           let assistantMessage;
           try {
@@ -214,13 +321,27 @@ router.post("/", async (req, res) => {
             assistantMessage = "⚠️ I'm having trouble right now. Please try again shortly.";
           }
 
-          history.push({ role: "assistant", content: assistantMessage, createdAt: new Date() });
-          await saveConversation(client.clientId, fromDigits, history, new Date());
-
           const combined = greeting ? `${greeting}\n\n${assistantMessage}` : assistantMessage;
 
+          // persist assistant turn
+          const outboundAt = new Date();
+          history.push({ role: "assistant", content: assistantMessage, createdAt: outboundAt });
+
+          await upsertConversation({
+            clientId: client.clientId,
+            userId: fromDigits,
+            history,
+            lastInteraction: outboundAt,
+            lastMessage: inboundPreview, // show last customer text in inbox list
+            lastMessageAt: inboundAt,
+            lastDirection: "in",
+            awaitSource: false,
+            sourceChoice: convo?.sourceChoice || "",
+            meta: { phoneNumberId },
+          });
+
           await sendWhatsAppText({
-            phoneNumberId, // reply from the same number
+            phoneNumberId,
             to: fromDigits,
             text: combined,
           });
