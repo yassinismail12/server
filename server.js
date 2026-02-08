@@ -18,7 +18,7 @@ import jwt from "jsonwebtoken";
 import cookieParser from "cookie-parser";
 import Page from "./pages.js";
 import ordersRoute from "./routes/orders.js";
-
+import whatsappRoute from "./whatsapp.js";
 
 
 import Product from "./Product.js"; // ✅ this registers the model
@@ -1522,6 +1522,7 @@ app.use("/webhook", messengerRoute);
 // other routes
 app.use("/api/chat", chatRoute);
 app.use("/instagram", instagramRoute);
+app.use("/whatsapp", whatsappRoute);
 app.use("/api", ordersRoute);
 
 // ✅ MongoDB connection + start server only after DB connects

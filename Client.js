@@ -29,6 +29,8 @@ lastWebhookPayload: { type: Object, default: null },
 // Client.js (mongoose)
 staffNumbers: { type: [String], default: [] }, // E.164: "+2010..."
 
+whatsappPhoneNumberId: { type: String, default: "" }, // metadata.phone_number_id
+whatsappBusinessNumber: { type: String, default: "" }, // optional "+2011..."
 
 
     // ✅ Flexible file storage
