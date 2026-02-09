@@ -19,6 +19,8 @@ import cookieParser from "cookie-parser";
 import Page from "./pages.js";
 import ordersRoute from "./routes/orders.js";
 import whatsappRoute from "./whatsapp.js";
+import knowledgeRoute from "./routes/knowledge.js";
+
 
 
 import Product from "./Product.js"; // ✅ this registers the model
@@ -1524,7 +1526,7 @@ app.use("/api/chat", chatRoute);
 app.use("/instagram", instagramRoute);
 app.use("/whatsapp", whatsappRoute);
 app.use("/api", ordersRoute);
-
+app.use("/api/knowledge", knowledgeRoute);
 // ✅ MongoDB connection + start server only after DB connects
 const MONGODB_URI = process.env.MONGODB_URI;
 
