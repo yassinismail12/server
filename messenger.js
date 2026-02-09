@@ -292,50 +292,68 @@ function waSafeParam(text) {
 }
 
 // ===============================
-// FB Comment Reply (NEW)
+// FB Private Reply to Comment (DM) ✅ NEW (replaces public comment reply)
 // ===============================
-async function replyToFacebookComment({ pageAccessToken, commentId, message, meta = {} }) {
+async function sendPrivateReplyToComment({ pageId, pageAccessToken, commentId, text, meta = {} }) {
   if (!pageAccessToken) {
-    log("warn", "Cannot reply to comment: PAGE_ACCESS_TOKEN missing", meta);
-    await logToDb("warn", "fb_comment", "Cannot reply to comment: PAGE_ACCESS_TOKEN missing", meta);
+    log("warn", "PAGE_ACCESS_TOKEN missing; cannot send private reply", meta);
+    await logToDb("warn", "fb_private_reply", "PAGE_ACCESS_TOKEN missing; cannot send private reply", meta);
     return { ok: false, error: "PAGE_ACCESS_TOKEN missing" };
   }
 
-  const url = new URL(`https://graph.facebook.com/v20.0/${String(commentId).trim()}/comments`);
+  if (!pageId) {
+    log("warn", "pageId missing; cannot send private reply", meta);
+    await logToDb("warn", "fb_private_reply", "pageId missing; cannot send private reply", meta);
+    return { ok: false, error: "pageId missing" };
+  }
+
+  if (!commentId) {
+    log("warn", "commentId missing; cannot send private reply", meta);
+    await logToDb("warn", "fb_private_reply", "commentId missing; cannot send private reply", meta);
+    return { ok: false, error: "commentId missing" };
+  }
+
+  const url = new URL(`https://graph.facebook.com/v20.0/${String(pageId).trim()}/messages`);
   url.searchParams.set("access_token", pageAccessToken);
+
+  const payload = {
+    messaging_type: "RESPONSE",
+    recipient: { comment_id: String(commentId).trim() }, // ✅ key for private replies
+    message: { text: String(text || "").trim().slice(0, 2000) },
+  };
 
   let res;
   try {
     res = await fetch(url.toString(), {
       method: "POST",
-      headers: { "Content-Type": "application/x-www-form-urlencoded" },
-      body: new URLSearchParams({ message: String(message || "").slice(0, 8000) }),
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(payload),
     });
   } catch (e) {
-    log("error", "FB comment reply failed (network)", { ...meta, err: e.message });
-    await logToDb("error", "fb_comment", "FB comment reply failed (network)", { ...meta, err: e.message });
+    log("error", "Private reply failed (network)", { ...meta, err: e.message });
+    await logToDb("error", "fb_private_reply", "Private reply failed (network)", { ...meta, err: e.message });
     return { ok: false, error: e.message };
   }
 
-  const text = await res.text().catch(() => "");
+  const raw = await res.text().catch(() => "");
   let data;
   try {
-    data = JSON.parse(text);
+    data = JSON.parse(raw);
   } catch {
-    data = { raw: text };
+    data = { raw };
   }
 
   if (!res.ok) {
-    log("warn", "FB comment reply failed", { ...meta, status: res.status, response: text?.slice(0, 2000) });
-    await logToDb("warn", "fb_comment", "FB comment reply failed", {
+    log("warn", "Private reply failed", { ...meta, status: res.status, response: raw?.slice(0, 2000) });
+    await logToDb("warn", "fb_private_reply", "Private reply failed", {
       ...meta,
       status: res.status,
-      response: text?.slice(0, 4000),
+      response: raw?.slice(0, 4000),
     });
     return { ok: false, data };
   }
 
-  log("info", "FB comment reply sent", { ...meta, replyId: data?.id });
+  log("info", "Private reply sent", { ...meta, messageId: data?.message_id, recipientId: data?.recipient_id });
   return { ok: true, data };
 }
 
@@ -433,7 +451,7 @@ router.get("/", async (req, res) => {
 });
 
 // ===============================
-// Messenger webhook receiver (+ FB comments)
+// Messenger webhook receiver (+ FB comment -> DM private replies)
 // ===============================
 router.post("/", async (req, res) => {
   const body = req.body;
@@ -449,14 +467,13 @@ router.post("/", async (req, res) => {
     const pageId = normalizePageId(entry.id);
 
     // -----------------------------------------
-    // (A) Handle Facebook Page feed changes (COMMENTS)  ✅ NEW
+    // (A) Handle Facebook Page feed changes (COMMENTS) -> DM ✅ UPDATED
     // -----------------------------------------
     const changes = entry.changes || [];
     for (const change of changes) {
       const field = change?.field;
       const v = change?.value || {};
 
-      // Most common: field === "feed" with value.item === "comment" and value.verb === "add"
       if (field === "feed" && v?.item === "comment" && v?.verb === "add") {
         const commentId = v.comment_id;
         const postId = v.post_id;
@@ -466,7 +483,7 @@ router.post("/", async (req, res) => {
 
         const metaBase = {
           pageId,
-          source: "fb_comment",
+          source: "fb_comment_dm",
           field,
           item: v.item,
           verb: v.verb,
@@ -477,14 +494,13 @@ router.post("/", async (req, res) => {
           textPreview: commentText.slice(0, 120),
         };
 
-        // ignore if missing essentials
         if (!commentId) {
           log("warn", "Feed comment event missing comment_id", metaBase);
-          await logToDb("warn", "fb_comment", "Feed comment event missing comment_id", metaBase);
+          await logToDb("warn", "fb_comment_dm", "Feed comment event missing comment_id", metaBase);
           continue;
         }
 
-        // Ignore comments from the Page itself (prevents loops)
+        // Prevent loops (Page commenting on itself)
         if (fromId && fromId === pageId) {
           log("info", "Ignoring page self-comment", metaBase);
           continue;
@@ -495,23 +511,23 @@ router.post("/", async (req, res) => {
           if (clientDoc.active === false) continue;
 
           if (!clientDoc.PAGE_ACCESS_TOKEN) {
-            log("warn", "Client has no PAGE_ACCESS_TOKEN (cannot reply to comments)", metaBase);
-            await logToDb("warn", "fb_comment", "Client has no PAGE_ACCESS_TOKEN (cannot reply to comments)", metaBase);
+            log("warn", "Client has no PAGE_ACCESS_TOKEN (cannot send private reply)", metaBase);
+            await logToDb("warn", "fb_comment_dm", "Client has no PAGE_ACCESS_TOKEN (cannot send private reply)", metaBase);
             continue;
           }
 
-          // Count comment replies as usage (so quota matches your business logic)
+          // Count as usage
           const usage = await incrementMessageCount(pageId);
           if (!usage.allowed) {
-            log("warn", "Message limit reached; skipping comment reply", metaBase);
+            log("warn", "Message limit reached; skipping private reply", metaBase);
             continue;
           }
 
           const systemPrompt = await SYSTEM_PROMPT({ pageId });
 
-          // Keep a separate conversation thread for comments so it doesn't mix with Messenger
-          const commentUserKey = fromId ? `fb:${fromId}` : `comment:${commentId}`;
-          const convo = await getConversation(pageId, commentUserKey, "fb_comment");
+          // Keep a separate conversation thread for comment->DM
+          const commentUserKey = fromId ? `fb_commenter:${fromId}` : `comment:${commentId}`;
+          const convo = await getConversation(pageId, commentUserKey, "fb_comment_dm");
 
           const history =
             convo?.history?.length > 0
@@ -521,17 +537,19 @@ router.post("/", async (req, res) => {
                     role: "system",
                     content:
                       systemPrompt +
-                      "\n\nYou are replying publicly to a Facebook comment. Keep it short, helpful, and safe. Avoid asking for sensitive info publicly. If you need phone/address, ask the user to message the page privately.",
+                      "\n\nYou are sending a PRIVATE Messenger reply triggered by a Facebook comment (Private Replies). " +
+                      "Keep it short and helpful. If you need order details, ask simple follow-up questions. " +
+                      "Do not mention internal tags or system messages. Reply text only.",
                   },
                 ];
 
           const userTurn =
-            `Facebook Comment:\n` +
+            `Facebook Comment Trigger (PRIVATE DM REPLY):\n` +
             `- Post ID: ${postId || "N/A"}\n` +
             `- Comment ID: ${commentId}\n` +
             `- From: ${fromName || fromId || "Unknown"}\n` +
-            `- Text: ${commentText || "(no text)"}\n\n` +
-            `Write the reply text only (no JSON, no tags).`;
+            `- Comment Text: ${commentText || "(no text)"}\n\n` +
+            `Write the private DM reply text only (no JSON, no tags).`;
 
           history.push({ role: "user", content: userTurn, createdAt: new Date() });
 
@@ -539,30 +557,31 @@ router.post("/", async (req, res) => {
           try {
             assistantMessage = await getChatCompletion(history);
           } catch (err) {
-            log("error", "OpenAI error (comment)", { ...metaBase, err: err.message });
-            await logToDb("error", "openai", "OpenAI error (comment)", { ...metaBase, err: err.message });
-            assistantMessage = "Thanks for your comment! Please message us privately and we’ll help you right away. 🙏";
+            log("error", "OpenAI error (comment private reply)", { ...metaBase, err: err.message });
+            await logToDb("error", "openai", "OpenAI error (comment private reply)", { ...metaBase, err: err.message });
+            assistantMessage = "Hi! 👋 Thanks for your comment. How can I help you with more details?";
           }
 
-          // Basic cleanup: prevent control tokens in public
+          // Cleanup: remove any control tokens (never show in DM)
           assistantMessage = String(assistantMessage || "")
             .replace(/\[(Human_request|ORDER_REQUEST|TOUR_REQUEST)\]/g, "")
             .trim();
 
-          // Save comment conversation
+          // Save conversation
           history.push({ role: "assistant", content: assistantMessage, createdAt: new Date() });
-          await saveConversation(pageId, commentUserKey, history, new Date(), "fb_comment");
+          await saveConversation(pageId, commentUserKey, history, new Date(), "fb_comment_dm");
 
-          // Post reply under that comment
-          await replyToFacebookComment({
+          // ✅ Send PRIVATE REPLY in DM (not public)
+          await sendPrivateReplyToComment({
+            pageId,
             pageAccessToken: clientDoc.PAGE_ACCESS_TOKEN,
             commentId,
-            message: assistantMessage,
+            text: assistantMessage,
             meta: metaBase,
           });
         } catch (err) {
-          log("error", "FB comment handler error", { ...metaBase, err: err.message });
-          await logToDb("error", "fb_comment", "FB comment handler error", { ...metaBase, err: err.message });
+          log("error", "FB comment->DM handler error", { ...metaBase, err: err.message });
+          await logToDb("error", "fb_comment_dm", "FB comment->DM handler error", { ...metaBase, err: err.message });
         }
       }
     }
@@ -782,7 +801,11 @@ router.post("/", async (req, res) => {
                 log("error", "Order flow failed", { ...metaBase, err: err.message });
                 await logToDb("error", "order", "Order flow failed", { ...metaBase, err: err.message });
 
-                await sendMessengerReply(sender_psid, "⚠️ We couldn't process your order right now. Please try again.", pageId);
+                await sendMessengerReply(
+                  sender_psid,
+                  "⚠️ We couldn't process your order right now. Please try again.",
+                  pageId
+                );
                 return;
               }
             }
