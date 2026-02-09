@@ -21,7 +21,6 @@ let mongoConnected = false;
 // ===============================
 function log(level, msg, meta = {}) {
   const base = { level, msg, t: new Date().toISOString(), ...meta };
-  // keep console readable
   if (level === "error") console.error("❌", msg, meta);
   else if (level === "warn") console.warn("⚠️", msg, meta);
   else console.log("ℹ️", msg, meta);
@@ -39,7 +38,6 @@ async function logToDb(level, source, message, meta = {}) {
       timestamp: new Date(),
     });
   } catch (e) {
-    // never crash because logging failed
     console.warn("⚠️ Failed to write log to DB:", e.message);
   }
 }
@@ -50,7 +48,6 @@ async function logToDb(level, source, message, meta = {}) {
 function normalizePageId(id) {
   return String(id || "").trim();
 }
-
 function normalizePsid(id) {
   return String(id || "").trim();
 }
@@ -128,7 +125,10 @@ async function incrementMessageCount(pageId) {
   }
 
   if (doc.messageCount > doc.messageLimit) {
-    log("warn", "Message limit reached for pageId", { pageId: pageIdStr, messageCount: doc.messageCount });
+    log("warn", "Message limit reached for pageId", {
+      pageId: pageIdStr,
+      messageCount: doc.messageCount,
+    });
     return { allowed: false, messageCount: doc.messageCount, messageLimit: doc.messageLimit };
   }
 
@@ -146,31 +146,32 @@ async function incrementMessageCount(pageId) {
 // ===============================
 // Conversation
 // ===============================
-async function getConversation(pageId, userId) {
+async function getConversation(pageId, userId, source = "messenger") {
   const db = await connectDB();
   const pageIdStr = normalizePageId(pageId);
-  return db.collection("Conversations").findOne({ pageId: pageIdStr, userId, source: "messenger" });
+  return db.collection("Conversations").findOne({ pageId: pageIdStr, userId, source });
 }
 
-async function saveConversation(pageId, userId, history, lastInteraction) {
+async function saveConversation(pageId, userId, history, lastInteraction, source = "messenger") {
   const db = await connectDB();
   const pageIdStr = normalizePageId(pageId);
 
   const client = await db.collection("Clients").findOne({ pageId: pageIdStr });
   if (!client) {
     log("error", "No client found for pageId while saving conversation", { pageId: pageIdStr });
-    await logToDb("error", "messenger", "No client found for pageId while saving conversation", { pageId: pageIdStr });
+    await logToDb("error", source, "No client found for pageId while saving conversation", { pageId: pageIdStr });
     return;
   }
 
   await db.collection("Conversations").updateOne(
-    { pageId: pageIdStr, userId, source: "messenger" },
+    { pageId: pageIdStr, userId, source },
     {
       $set: {
         pageId: pageIdStr,
         clientId: client.clientId,
         history,
         lastInteraction,
+        source,
         updatedAt: new Date(),
       },
       $setOnInsert: {
@@ -221,7 +222,6 @@ async function getUserProfile(psid, pageAccessToken, meta = {}) {
     return { first_name: "there" };
   }
 
-  // NOTE: Using v20.0 explicitly; change if your app uses another version.
   const url = new URL(`https://graph.facebook.com/v20.0/${safePsid}`);
   url.searchParams.set("fields", "first_name,last_name");
   url.searchParams.set("access_token", pageAccessToken);
@@ -238,7 +238,6 @@ async function getUserProfile(psid, pageAccessToken, meta = {}) {
   const text = await res.text().catch(() => "");
 
   if (!res.ok) {
-    // This is the key log you need to debug PSID issues.
     log("warn", "Graph profile fetch failed", {
       ...meta,
       status: res.status,
@@ -290,6 +289,54 @@ function waSafeParam(text) {
     .replace(/\s{5,}/g, "    ")
     .trim()
     .slice(0, 1024);
+}
+
+// ===============================
+// FB Comment Reply (NEW)
+// ===============================
+async function replyToFacebookComment({ pageAccessToken, commentId, message, meta = {} }) {
+  if (!pageAccessToken) {
+    log("warn", "Cannot reply to comment: PAGE_ACCESS_TOKEN missing", meta);
+    await logToDb("warn", "fb_comment", "Cannot reply to comment: PAGE_ACCESS_TOKEN missing", meta);
+    return { ok: false, error: "PAGE_ACCESS_TOKEN missing" };
+  }
+
+  const url = new URL(`https://graph.facebook.com/v20.0/${String(commentId).trim()}/comments`);
+  url.searchParams.set("access_token", pageAccessToken);
+
+  let res;
+  try {
+    res = await fetch(url.toString(), {
+      method: "POST",
+      headers: { "Content-Type": "application/x-www-form-urlencoded" },
+      body: new URLSearchParams({ message: String(message || "").slice(0, 8000) }),
+    });
+  } catch (e) {
+    log("error", "FB comment reply failed (network)", { ...meta, err: e.message });
+    await logToDb("error", "fb_comment", "FB comment reply failed (network)", { ...meta, err: e.message });
+    return { ok: false, error: e.message };
+  }
+
+  const text = await res.text().catch(() => "");
+  let data;
+  try {
+    data = JSON.parse(text);
+  } catch {
+    data = { raw: text };
+  }
+
+  if (!res.ok) {
+    log("warn", "FB comment reply failed", { ...meta, status: res.status, response: text?.slice(0, 2000) });
+    await logToDb("warn", "fb_comment", "FB comment reply failed", {
+      ...meta,
+      status: res.status,
+      response: text?.slice(0, 4000),
+    });
+    return { ok: false, data };
+  }
+
+  log("info", "FB comment reply sent", { ...meta, replyId: data?.id });
+  return { ok: true, data };
 }
 
 // ===============================
@@ -386,7 +433,7 @@ router.get("/", async (req, res) => {
 });
 
 // ===============================
-// Messenger webhook receiver
+// Messenger webhook receiver (+ FB comments)
 // ===============================
 router.post("/", async (req, res) => {
   const body = req.body;
@@ -401,7 +448,128 @@ router.post("/", async (req, res) => {
   for (const entry of body.entry || []) {
     const pageId = normalizePageId(entry.id);
 
-    // IMPORTANT: there can be multiple events in entry.messaging
+    // -----------------------------------------
+    // (A) Handle Facebook Page feed changes (COMMENTS)  ✅ NEW
+    // -----------------------------------------
+    const changes = entry.changes || [];
+    for (const change of changes) {
+      const field = change?.field;
+      const v = change?.value || {};
+
+      // Most common: field === "feed" with value.item === "comment" and value.verb === "add"
+      if (field === "feed" && v?.item === "comment" && v?.verb === "add") {
+        const commentId = v.comment_id;
+        const postId = v.post_id;
+        const commentText = v.message || "";
+        const fromId = v.from?.id ? String(v.from.id).trim() : "";
+        const fromName = v.from?.name ? String(v.from.name).trim() : "";
+
+        const metaBase = {
+          pageId,
+          source: "fb_comment",
+          field,
+          item: v.item,
+          verb: v.verb,
+          commentId,
+          postId,
+          fromId,
+          fromName,
+          textPreview: commentText.slice(0, 120),
+        };
+
+        // ignore if missing essentials
+        if (!commentId) {
+          log("warn", "Feed comment event missing comment_id", metaBase);
+          await logToDb("warn", "fb_comment", "Feed comment event missing comment_id", metaBase);
+          continue;
+        }
+
+        // Ignore comments from the Page itself (prevents loops)
+        if (fromId && fromId === pageId) {
+          log("info", "Ignoring page self-comment", metaBase);
+          continue;
+        }
+
+        try {
+          const clientDoc = await getClientDoc(pageId);
+          if (clientDoc.active === false) continue;
+
+          if (!clientDoc.PAGE_ACCESS_TOKEN) {
+            log("warn", "Client has no PAGE_ACCESS_TOKEN (cannot reply to comments)", metaBase);
+            await logToDb("warn", "fb_comment", "Client has no PAGE_ACCESS_TOKEN (cannot reply to comments)", metaBase);
+            continue;
+          }
+
+          // Count comment replies as usage (so quota matches your business logic)
+          const usage = await incrementMessageCount(pageId);
+          if (!usage.allowed) {
+            log("warn", "Message limit reached; skipping comment reply", metaBase);
+            continue;
+          }
+
+          const systemPrompt = await SYSTEM_PROMPT({ pageId });
+
+          // Keep a separate conversation thread for comments so it doesn't mix with Messenger
+          const commentUserKey = fromId ? `fb:${fromId}` : `comment:${commentId}`;
+          const convo = await getConversation(pageId, commentUserKey, "fb_comment");
+
+          const history =
+            convo?.history?.length > 0
+              ? convo.history
+              : [
+                  {
+                    role: "system",
+                    content:
+                      systemPrompt +
+                      "\n\nYou are replying publicly to a Facebook comment. Keep it short, helpful, and safe. Avoid asking for sensitive info publicly. If you need phone/address, ask the user to message the page privately.",
+                  },
+                ];
+
+          const userTurn =
+            `Facebook Comment:\n` +
+            `- Post ID: ${postId || "N/A"}\n` +
+            `- Comment ID: ${commentId}\n` +
+            `- From: ${fromName || fromId || "Unknown"}\n` +
+            `- Text: ${commentText || "(no text)"}\n\n` +
+            `Write the reply text only (no JSON, no tags).`;
+
+          history.push({ role: "user", content: userTurn, createdAt: new Date() });
+
+          let assistantMessage = "";
+          try {
+            assistantMessage = await getChatCompletion(history);
+          } catch (err) {
+            log("error", "OpenAI error (comment)", { ...metaBase, err: err.message });
+            await logToDb("error", "openai", "OpenAI error (comment)", { ...metaBase, err: err.message });
+            assistantMessage = "Thanks for your comment! Please message us privately and we’ll help you right away. 🙏";
+          }
+
+          // Basic cleanup: prevent control tokens in public
+          assistantMessage = String(assistantMessage || "")
+            .replace(/\[(Human_request|ORDER_REQUEST|TOUR_REQUEST)\]/g, "")
+            .trim();
+
+          // Save comment conversation
+          history.push({ role: "assistant", content: assistantMessage, createdAt: new Date() });
+          await saveConversation(pageId, commentUserKey, history, new Date(), "fb_comment");
+
+          // Post reply under that comment
+          await replyToFacebookComment({
+            pageAccessToken: clientDoc.PAGE_ACCESS_TOKEN,
+            commentId,
+            message: assistantMessage,
+            meta: metaBase,
+          });
+        } catch (err) {
+          log("error", "FB comment handler error", { ...metaBase, err: err.message });
+          await logToDb("error", "fb_comment", "FB comment handler error", { ...metaBase, err: err.message });
+        }
+      }
+    }
+
+    // -----------------------------------------
+    // (B) Handle Messenger messages (your existing logic)
+    // -----------------------------------------
     const events = entry.messaging || [];
     for (const webhook_event of events) {
       const sender_psid = normalizePsid(webhook_event?.sender?.id);
@@ -415,7 +583,6 @@ router.post("/", async (req, res) => {
         hasPostback: Boolean(webhook_event?.postback),
       };
 
-      // Key debug: token/PSID issues are often "pageId mismatch"
       if (recipient_page_id && recipient_page_id !== pageId) {
         log("warn", "PageId mismatch between entry.id and recipient.id", metaBase);
         await logToDb("warn", "messenger", "PageId mismatch between entry.id and recipient.id", metaBase);
@@ -428,7 +595,10 @@ router.post("/", async (req, res) => {
 
         if (!clientDoc.PAGE_ACCESS_TOKEN) {
           log("warn", "Client has no PAGE_ACCESS_TOKEN", { ...metaBase, clientPageId: clientDoc.pageId });
-          await logToDb("warn", "messenger", "Client has no PAGE_ACCESS_TOKEN", { ...metaBase, clientPageId: clientDoc.pageId });
+          await logToDb("warn", "messenger", "Client has no PAGE_ACCESS_TOKEN", {
+            ...metaBase,
+            clientPageId: clientDoc.pageId,
+          });
         }
 
         // ===== Attachment handler
@@ -508,13 +678,13 @@ router.post("/", async (req, res) => {
             let convo, history, greeting, firstName;
 
             const finalSystemPrompt = await SYSTEM_PROMPT({ pageId });
-            convo = await getConversation(pageId, sender_psid);
+            convo = await getConversation(pageId, sender_psid, "messenger");
             history = convo?.history || [{ role: "system", content: finalSystemPrompt }];
 
             firstName = "there";
             greeting = "";
 
-            // If new day, try to fetch profile (this is where your PSID fetch was failing)
+            // If new day, try to fetch profile
             if (!convo || isNewDay(convo.lastInteraction)) {
               const userProfile = await getUserProfile(sender_psid, clientDoc.PAGE_ACCESS_TOKEN, {
                 ...metaBase,
@@ -525,11 +695,6 @@ router.post("/", async (req, res) => {
               await saveCustomer(pageId, sender_psid, userProfile);
 
               greeting = `Hi ${firstName}, good to see you today 👋`;
-
-              // IMPORTANT: Avoid double-sending greeting:
-              // - We'll send greeting + assistant reply as one message
-              // - We do NOT push greeting as a separate assistant turn to history
-              // If you want the model to "see" greeting in history, you can add it back.
             }
 
             history.push({ role: "user", content: userMessage, createdAt: new Date() });
@@ -549,7 +714,6 @@ router.post("/", async (req, res) => {
               assistantMessage = "⚠️ I'm having trouble right now. Please try again shortly.";
             }
 
-            // Control tokens parsing
             const flags = { human: false, tour: false, order: false };
 
             if (assistantMessage.includes("[Human_request]")) {
@@ -618,11 +782,7 @@ router.post("/", async (req, res) => {
                 log("error", "Order flow failed", { ...metaBase, err: err.message });
                 await logToDb("error", "order", "Order flow failed", { ...metaBase, err: err.message });
 
-                await sendMessengerReply(
-                  sender_psid,
-                  "⚠️ We couldn't process your order right now. Please try again.",
-                  pageId
-                );
+                await sendMessengerReply(sender_psid, "⚠️ We couldn't process your order right now. Please try again.", pageId);
                 return;
               }
             }
@@ -636,20 +796,17 @@ router.post("/", async (req, res) => {
               );
             }
 
-            // Save conversation (clean)
+            // Save conversation
             history.push({ role: "assistant", content: assistantMessage, createdAt: new Date() });
-            await saveConversation(pageId, sender_psid, history, new Date());
+            await saveConversation(pageId, sender_psid, history, new Date(), "messenger");
 
-            // Combine greeting (only for user-facing message)
             const combinedMessage = greeting ? `${greeting}\n\n${assistantMessage}` : assistantMessage;
 
-            // Send reply
             await sendMessengerReply(sender_psid, combinedMessage, pageId);
 
             log("info", "Reply sent", { ...metaBase, replyPreview: combinedMessage.slice(0, 120) });
           }
 
-          // mark as read while processing
           await sendMarkAsRead(sender_psid, pageId);
           await new Promise((resolve) => setTimeout(resolve, 1200));
 
