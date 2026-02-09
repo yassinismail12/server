@@ -1,21 +1,24 @@
 import { MongoClient } from "mongodb";
+import { ensureIndexes } from "./createIndexes.js"; // adjust path if needed
 
 const uri = process.env.MONGODB_URI || "your-mongodb-uri-here";
 const client = new MongoClient(uri);
-const dbName = "Agent"; // your database name
+const dbName = "Agent";
 
 let db;
 
 // Connect to the MongoDB database (only once)
 export async function connectToDB() {
-    if (!db) {
-        await client.connect();
-        db = client.db(dbName);
-        console.log("✅ Connected to MongoDB");
-    }
-    return db;
-}
+  if (!db) {
+    await client.connect();
+    db = client.db(dbName);
+    console.log("✅ Connected to MongoDB");
 
+    // ✅ add this (safe to run many times)
+    await ensureIndexes(db);
+  }
+  return db;
+}
 // Fetch a client from the 'Clients' collection using clientId
 export async function getClientById(clientId) {
     const db = await connectToDB();

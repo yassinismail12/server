@@ -2,6 +2,8 @@
 import express from "express";
 import fetch from "node-fetch";
 import { MongoClient } from "mongodb";
+import { retrieveChunks } from "./services/retrieval.js";
+import { buildChatMessages } from "./services/promptBuilder.js";
 
 import { getChatCompletion } from "./services/openai.js";
 import { SYSTEM_PROMPT } from "./utils/systemPrompt.js";
@@ -693,142 +695,300 @@ router.post("/", async (req, res) => {
             continue;
           }
 
-          async function processMessageWithTyping() {
-            let convo, history, greeting, firstName;
+      // ===============================
+// (NEW) Retrieval + Prompt Building Helpers
+// Put these near the bottom of messenger.js (or in separate files and import them)
+// ===============================
 
-            const finalSystemPrompt = await SYSTEM_PROMPT({ pageId });
-            convo = await getConversation(pageId, sender_psid, "messenger");
-            history = convo?.history || [{ role: "system", content: finalSystemPrompt }];
+function buildDataBlock(groupedChunks, sectionsOrder) {
+  const safe = groupedChunks || {};
+  const order = Array.isArray(sectionsOrder) && sectionsOrder.length ? sectionsOrder : ["menu", "offers", "hours"];
 
-            firstName = "there";
-            greeting = "";
+  return order
+    .map((section) => {
+      const arr = Array.isArray(safe[section]) ? safe[section] : [];
+      const body = arr.length ? arr.map((x) => x.text).join("\n") : "No relevant data found.";
+      return `${String(section).toUpperCase()}\n\n${body}`;
+    })
+    .join("\n\n");
+}
 
-            // If new day, try to fetch profile
-            if (!convo || isNewDay(convo.lastInteraction)) {
-              const userProfile = await getUserProfile(sender_psid, clientDoc.PAGE_ACCESS_TOKEN, {
-                ...metaBase,
-                clientPageId: clientDoc.pageId,
-              });
+/**
+ * Retrieve relevant chunks for the user message.
+ * Uses MongoDB $text search on knowledge_chunks.text
+ *
+ * REQUIREMENTS (Mongo):
+ *  db.knowledge_chunks.createIndex({ text: "text" })
+ *  db.knowledge_chunks.createIndex({ clientId: 1, botType: 1, section: 1 })
+ */
+async function retrieveChunks({ db, clientId, botType = "default", userText }) {
+  const chunksCol = db.collection("knowledge_chunks");
 
-              firstName = userProfile.first_name || "there";
-              await saveCustomer(pageId, sender_psid, userProfile);
+  // Section caps (tune per bot)
+  const capsBySection = {
+    menu: 15,
+    offers: 6,
+    hours: 1,
+    faqs: 6,
+    listings: 8,
+    paymentPlans: 4,
+  };
 
-              greeting = `Hi ${firstName}, good to see you today 👋`;
-            }
+  // $text search (best-effort)
+  let results = [];
+  try {
+    results = await chunksCol
+      .find(
+        { clientId, botType, $text: { $search: String(userText || "").slice(0, 300) } },
+        { projection: { score: { $meta: "textScore" }, section: 1, text: 1 } }
+      )
+      .sort({ score: { $meta: "textScore" } })
+      .limit(40)
+      .toArray();
+  } catch (e) {
+    // If text index is missing or $text fails, fallback to empty results
+    results = [];
+  }
 
-            history.push({ role: "user", content: userMessage, createdAt: new Date() });
+  // Group + cap
+  const grouped = {};
+  for (const r of results) {
+    const section = r.section || "unknown";
+    grouped[section] ||= [];
+    const cap = capsBySection[section] ?? 6;
+    if (grouped[section].length < cap) grouped[section].push({ text: r.text });
+  }
 
-            const usage = await incrementMessageCount(pageId);
-            if (!usage.allowed) {
-              await sendMessengerReply(sender_psid, "⚠️ Message limit reached.", pageId);
-              return;
-            }
+  // Always include hours if your bot uses it and it wasn’t matched
+  if (!grouped.hours) {
+    const hours = await chunksCol.findOne({ clientId, botType, section: "hours" }, { projection: { text: 1 } });
+    if (hours?.text) grouped.hours = [{ text: hours.text }];
+  }
 
-            let assistantMessage;
-            try {
-              assistantMessage = await getChatCompletion(history);
-            } catch (err) {
-              log("error", "OpenAI error", { ...metaBase, err: err.message });
-              await logToDb("error", "openai", err.message, metaBase);
-              assistantMessage = "⚠️ I'm having trouble right now. Please try again shortly.";
-            }
+  return grouped;
+}
 
-            const flags = { human: false, tour: false, order: false };
+/**
+ * Build messages for OpenAI WITHOUT saving injected data into conversation history.
+ * - rulesPrompt: your fixed rules (SYSTEM_PROMPT should be RULES ONLY)
+ * - compactHistory: last few real conversation turns (no data injected)
+ * - groupedChunks: retrieved slices of data for this request
+ * - userText: the new incoming user message
+ */
+function buildChatMessages({ rulesPrompt, compactHistory, groupedChunks, userText, sectionsOrder }) {
+  const dataBlock = buildDataBlock(groupedChunks, sectionsOrder);
 
-            if (assistantMessage.includes("[Human_request]")) {
-              flags.human = true;
-              assistantMessage = assistantMessage.replace("[Human_request]", "").trim();
-            }
-            if (assistantMessage.includes("[ORDER_REQUEST]")) {
-              flags.order = true;
-              assistantMessage = assistantMessage.replace("[ORDER_REQUEST]", "").trim();
-            }
-            if (assistantMessage.includes("[TOUR_REQUEST]")) {
-              flags.tour = true;
-              assistantMessage = assistantMessage.replace("[TOUR_REQUEST]", "").trim();
-            }
+  // Keep memory small (last 12 turns max)
+  const trimmed = Array.isArray(compactHistory) ? compactHistory.slice(-12) : [];
 
-            // Human escalation
-            if (flags.human) {
-              const botResumeAt = new Date(Date.now() + 2 * 60 * 60 * 1000);
+  return [
+    { role: "system", content: String(rulesPrompt || "") },
+    ...trimmed.map((m) => ({ role: m.role, content: String(m.content || "") })),
+    { role: "user", content: `${dataBlock}\n\nUser message:\n${String(userText || "")}` },
+  ];
+}
 
-              await db.collection("Conversations").updateOne(
-                { pageId: pageIdStr, userId: sender_psid, source: "messenger" },
-                {
-                  $set: {
-                    humanEscalation: true,
-                    botResumeAt,
-                    humanEscalationStartedAt: new Date(),
-                  },
-                  $inc: { humanRequestCount: 1 },
-                },
-                { upsert: true }
-              );
+// ===============================
+// (UPDATED) processMessageWithTyping()
+// Replace your current processMessageWithTyping() with THIS WHOLE function
+// ===============================
+async function processMessageWithTyping() {
+  let convo, greeting, firstName;
 
-              log("warn", "Human escalation triggered", metaBase);
+  const db = await connectDB();
+  const pageIdStr = normalizePageId(pageId);
 
-              await sendMessengerReply(
-                sender_psid,
-                "👤 A human agent will take over shortly.\nYou can type !bot anytime to return to the assistant.\n\nسيقوم أحد موظفي الدعم بالرد عليك قريبًا.",
-                pageId
-              );
-              return;
-            }
+  // ✅ RULES ONLY (IMPORTANT): SYSTEM_PROMPT must NOT append huge datasets anymore
+  const rulesPrompt = await SYSTEM_PROMPT({ pageId });
 
-            // Order handling
-            if (flags.order) {
-              await db.collection("Conversations").updateOne(
-                { pageId: pageIdStr, userId: sender_psid, source: "messenger" },
-                { $inc: { orderRequestCount: 1 } },
-                { upsert: true }
-              );
+  // Pull client doc once (for tokens + bot config + clientId)
+  const clientDocFresh = await db.collection("Clients").findOne({ pageId: pageIdStr });
 
-              try {
-                await createOrderFlow({
-                  pageId,
-                  sender_psid,
-                  orderSummaryText: assistantMessage,
-                  channel: "messenger",
-                });
+  const clientId =
+    (clientDocFresh && (clientDocFresh.clientId || String(clientDocFresh._id || ""))) || pageIdStr;
 
-                await sendMessengerReply(
-                  sender_psid,
-                  "✅ Your order request has been received.\nA staff member will contact you shortly.\n\nتم استلام طلبك وسيتم التواصل معك قريبًا.",
-                  pageId
-                );
-                return;
-              } catch (err) {
-                log("error", "Order flow failed", { ...metaBase, err: err.message });
-                await logToDb("error", "order", "Order flow failed", { ...metaBase, err: err.message });
+  // Optional: store per-client what bot it is + which sections to inject
+  // Fallback defaults:
+  const botType = clientDocFresh?.botType || "default";
 
-                await sendMessengerReply(
-                  sender_psid,
-                  "⚠️ We couldn't process your order right now. Please try again.",
-                  pageId
-                );
-                return;
-              }
-            }
+  // For a restaurant bot:
+  // const sectionsOrder = clientDocFresh?.sectionsOrder || ["menu", "offers", "hours"];
+  // For real estate bot:
+  // const sectionsOrder = clientDocFresh?.sectionsOrder || ["listings", "paymentPlans", "faqs"];
+  const sectionsOrder = clientDocFresh?.sectionsOrder || ["menu", "offers", "hours"];
 
-            // Tour counter
-            if (flags.tour) {
-              await db.collection("Conversations").updateOne(
-                { pageId: pageIdStr, userId: sender_psid, source: "messenger" },
-                { $inc: { tourRequestCount: 1 } },
-                { upsert: true }
-              );
-            }
+  // Load conversation (compact history only)
+  convo = await getConversation(pageId, sender_psid, "messenger");
+  const compactHistory = Array.isArray(convo?.history) ? convo.history : [];
 
-            // Save conversation
-            history.push({ role: "assistant", content: assistantMessage, createdAt: new Date() });
-            await saveConversation(pageId, sender_psid, history, new Date(), "messenger");
+  firstName = "there";
+  greeting = "";
 
-            const combinedMessage = greeting ? `${greeting}\n\n${assistantMessage}` : assistantMessage;
+  // Greeting / profile fetch (your original logic)
+  if (!convo || isNewDay(convo.lastInteraction)) {
+    const userProfile = await getUserProfile(sender_psid, clientDocFresh?.PAGE_ACCESS_TOKEN, {
+      ...metaBase,
+      clientPageId: clientDocFresh?.pageId,
+    });
 
-            await sendMessengerReply(sender_psid, combinedMessage, pageId);
+    firstName = userProfile.first_name || "there";
+    await saveCustomer(pageId, sender_psid, userProfile);
 
-            log("info", "Reply sent", { ...metaBase, replyPreview: combinedMessage.slice(0, 120) });
-          }
+    greeting = `Hi ${firstName}, good to see you today 👋`;
+  }
+
+  // Usage check first (same as you had)
+  const usage = await incrementMessageCount(pageId);
+  if (!usage.allowed) {
+    await sendMessengerReply(sender_psid, "⚠️ Message limit reached.", pageId);
+    return;
+  }
+
+  // ✅ Retrieve only relevant slices of data for THIS message
+  let grouped = {};
+  try {
+    grouped = await retrieveChunks({
+      db,
+      clientId,
+      botType,
+      userText: userMessage,
+    });
+  } catch (e) {
+    grouped = {};
+  }
+
+  // ✅ Build messages for OpenAI (rules + compact history + runtime data injection)
+  const messagesForOpenAI = buildChatMessages({
+    rulesPrompt,
+    compactHistory,
+    groupedChunks: grouped,
+    userText: userMessage,
+    sectionsOrder,
+  });
+
+  let assistantMessage;
+  try {
+    assistantMessage = await getChatCompletion(messagesForOpenAI);
+  } catch (err) {
+    log("error", "OpenAI error", { ...metaBase, err: err.message });
+    await logToDb("error", "openai", err.message, metaBase);
+    assistantMessage = "⚠️ I'm having trouble right now. Please try again shortly.";
+  }
+
+  // Flags (same as you had)
+  const flags = { human: false, tour: false, order: false };
+
+  if (assistantMessage.includes("[Human_request]")) {
+    flags.human = true;
+    assistantMessage = assistantMessage.replace("[Human_request]", "").trim();
+  }
+  if (assistantMessage.includes("[ORDER_REQUEST]")) {
+    flags.order = true;
+    assistantMessage = assistantMessage.replace("[ORDER_REQUEST]", "").trim();
+  }
+  if (assistantMessage.includes("[TOUR_REQUEST]")) {
+    flags.tour = true;
+    assistantMessage = assistantMessage.replace("[TOUR_REQUEST]", "").trim();
+  }
+
+  // Human escalation (same behavior)
+  if (flags.human) {
+    const botResumeAt = new Date(Date.now() + 2 * 60 * 60 * 1000);
+
+    await db.collection("Conversations").updateOne(
+      { pageId: pageIdStr, userId: sender_psid, source: "messenger" },
+      {
+        $set: {
+          humanEscalation: true,
+          botResumeAt,
+          humanEscalationStartedAt: new Date(),
+        },
+        $inc: { humanRequestCount: 1 },
+      },
+      { upsert: true }
+    );
+
+    log("warn", "Human escalation triggered", metaBase);
+
+    await sendMessengerReply(
+      sender_psid,
+      "👤 A human agent will take over shortly.\nYou can type !bot anytime to return to the assistant.\n\nسيقوم أحد موظفي الدعم بالرد عليك قريبًا.",
+      pageId
+    );
+
+    // Save compact convo (ONLY real turns, no injected data)
+    compactHistory.push({ role: "user", content: userMessage, createdAt: new Date() });
+    compactHistory.push({ role: "assistant", content: assistantMessage, createdAt: new Date() });
+    await saveConversation(pageId, sender_psid, compactHistory, new Date(), "messenger");
+
+    return;
+  }
+
+  // Order handling (same behavior)
+  if (flags.order) {
+    await db.collection("Conversations").updateOne(
+      { pageId: pageIdStr, userId: sender_psid, source: "messenger" },
+      { $inc: { orderRequestCount: 1 } },
+      { upsert: true }
+    );
+
+    try {
+      await createOrderFlow({
+        pageId,
+        sender_psid,
+        orderSummaryText: assistantMessage,
+        channel: "messenger",
+      });
+
+      await sendMessengerReply(
+        sender_psid,
+        "✅ Your order request has been received.\nA staff member will contact you shortly.\n\nتم استلام طلبك وسيتم التواصل معك قريبًا.",
+        pageId
+      );
+
+      // Save compact convo (ONLY real turns)
+      compactHistory.push({ role: "user", content: userMessage, createdAt: new Date() });
+      compactHistory.push({ role: "assistant", content: assistantMessage, createdAt: new Date() });
+      await saveConversation(pageId, sender_psid, compactHistory, new Date(), "messenger");
+
+      return;
+    } catch (err) {
+      log("error", "Order flow failed", { ...metaBase, err: err.message });
+      await logToDb("error", "order", "Order flow failed", { ...metaBase, err: err.message });
+
+      await sendMessengerReply(sender_psid, "⚠️ We couldn't process your order right now. Please try again.", pageId);
+
+      // Save compact convo (ONLY real turns)
+      compactHistory.push({ role: "user", content: userMessage, createdAt: new Date() });
+      compactHistory.push({ role: "assistant", content: assistantMessage, createdAt: new Date() });
+      await saveConversation(pageId, sender_psid, compactHistory, new Date(), "messenger");
+
+      return;
+    }
+  }
+
+  // Tour counter (same as you had)
+  if (flags.tour) {
+    await db.collection("Conversations").updateOne(
+      { pageId: pageIdStr, userId: sender_psid, source: "messenger" },
+      { $inc: { tourRequestCount: 1 } },
+      { upsert: true }
+    );
+  }
+
+  // Save conversation (ONLY real turns)
+  compactHistory.push({ role: "user", content: userMessage, createdAt: new Date() });
+  compactHistory.push({ role: "assistant", content: assistantMessage, createdAt: new Date() });
+  await saveConversation(pageId, sender_psid, compactHistory, new Date(), "messenger");
+
+  // Final reply (same as you had)
+  const combinedMessage = greeting ? `${greeting}\n\n${assistantMessage}` : assistantMessage;
+
+  await sendMessengerReply(sender_psid, combinedMessage, pageId);
+
+  log("info", "Reply sent", { ...metaBase, replyPreview: combinedMessage.slice(0, 120) });
+}
+
 
           await sendMarkAsRead(sender_psid, pageId);
           await new Promise((resolve) => setTimeout(resolve, 1200));
