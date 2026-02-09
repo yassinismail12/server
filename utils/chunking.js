@@ -1,18 +1,3 @@
-// src/utils/chunking.js
-
-/**
- * Split text by lines (used as the base for menus, lists, etc.)
- */
-function splitByLines(text) {
-  return String(text || "")
-    .split(/\r?\n/)
-    .map(s => s.trim())
-    .filter(Boolean);
-}
-
-/**
- * Split text by blank blocks (good for FAQs, paragraphs, listings)
- */
 function splitByBlankBlocks(text) {
   return String(text || "")
     .split(/\n\s*\n+/)
@@ -20,57 +5,30 @@ function splitByBlankBlocks(text) {
     .filter(Boolean);
 }
 
-/**
- * Group an array of strings into bundles (prevents too many chunks)
- */
-function bundle(items, bundleSize) {
+function bundle(items, n) {
   const out = [];
-  for (let i = 0; i < items.length; i += bundleSize) {
-    out.push(items.slice(i, i + bundleSize).join("\n"));
-  }
+  for (let i = 0; i < items.length; i += n) out.push(items.slice(i, i + n).join("\n\n"));
   return out;
 }
 
-/**
- * Main chunking dispatcher
- * - NEVER alters text content
- * - ONLY groups text mechanically
- */
 export function chunkSection(sectionName, text) {
   const t = String(text || "").trim();
   if (!t) return [];
 
   switch (sectionName) {
-    case "menu": {
-      // Menu: many short lines → bundle
-      const lines = splitByLines(t);
-      return bundle(lines, 30); // 30 items per chunk
-    }
-
-    case "offers": {
-      const lines = splitByLines(t);
-      return bundle(lines, 10);
-    }
-
-    case "faqs": {
-      const blocks = splitByBlankBlocks(t);
-      return bundle(blocks, 8);
-    }
-
     case "listings": {
-      const blocks = splitByBlankBlocks(t);
-      return bundle(blocks, 8);
+      const listings = splitByBlankBlocks(t);     // ✅ 1 listing = 1 block
+      return bundle(listings, 8);                 // ✅ 8 listings per chunk
     }
-
     case "paymentPlans": {
       const blocks = splitByBlankBlocks(t);
       return bundle(blocks, 3);
     }
-
-    case "hours":
-    case "location":
+    case "faqs": {
+      const faqs = splitByBlankBlocks(t);
+      return bundle(faqs, 8);
+    }
     default:
-      // Small, critical info → keep intact
       return [t];
   }
 }
