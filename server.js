@@ -1383,28 +1383,7 @@ app.get("/api/webhooks/last/:clientId", async (req, res) => {
 // Meta webhook verification
 // ------------------------------
 // Meta webhook verification (keep this)
-app.get("/webhook", (req, res) => {
-  const VERIFY_TOKEN = process.env.META_VERIFY_TOKEN;
 
-  const mode = req.query["hub.mode"];
-  const token = req.query["hub.verify_token"];
-  const challenge = req.query["hub.challenge"];
-
-  console.log("🧪 Webhook VERIFY hit:", {
-    mode,
-    tokenReceived: token,
-    expected: VERIFY_TOKEN ? "[set]" : "[missing]",
-    hasChallenge: Boolean(challenge),
-  });
-
-  if (mode === "subscribe" && token === VERIFY_TOKEN) {
-    console.log("✅ Webhook verified");
-    return res.status(200).send(challenge);
-  }
-
-  console.warn("❌ Webhook verification failed");
-  return res.sendStatus(403);
-});
 
 // ✅ first: save/log payload (no response here)
 

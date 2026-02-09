@@ -55,6 +55,9 @@ function normalizePageId(id) {
 function normalizePsid(id) {
   return String(id || "").trim();
 }
+function normalizeToken(t) {
+  return String(t || "").trim();
+}
 
 // ===============================
 // DB
@@ -133,38 +136,26 @@ async function markProcessed(pageId, eventKey, meta = {}) {
 }
 
 // ===============================
-// Clients
+// Clients (NO auto-create from webhook)
 // ===============================
 function newClientId() {
   return crypto.randomUUID();
 }
 
-async function getClientDoc(pageId) {
+/**
+ * Fetch client by pageId.
+ * ✅ DOES NOT create placeholder clients.
+ * ✅ Ensures clientId exists (backfills) if client is found.
+ */
+async function getClientByPageId(pageId) {
   const db = await connectDB();
   const clients = db.collection("Clients");
   const pageIdStr = normalizePageId(pageId);
 
-  let client = await clients.findOne({ pageId: pageIdStr });
+  const client = await clients.findOne({ pageId: pageIdStr });
+  if (!client) return null;
 
-  if (!client) {
-    log("warn", "Client not found for pageId, creating placeholder", { pageId: pageIdStr });
-
-    client = {
-      pageId: pageIdStr,
-      clientId: newClientId(), // ✅ ALWAYS have clientId
-      messageCount: 0,
-      messageLimit: 1000,
-      active: true,
-      VERIFY_TOKEN: null,
-      PAGE_ACCESS_TOKEN: null,
-      quotaWarningSent: false,
-      createdAt: new Date(),
-      updatedAt: new Date(),
-    };
-
-    await clients.insertOne(client);
-    log("info", "Client created for pageId", { pageId: pageIdStr, clientId: client.clientId });
-  } else if (!client.clientId) {
+  if (!client.clientId) {
     const cid = newClientId();
     await clients.updateOne(
       { pageId: pageIdStr },
@@ -177,50 +168,47 @@ async function getClientDoc(pageId) {
   return client;
 }
 
-async function incrementMessageCount(pageId) {
+/**
+ * Increment usage for an existing client.
+ * ✅ Does NOT upsert/create new clients.
+ */
+async function incrementMessageCountForClient(pageId) {
   const db = await connectDB();
   const clients = db.collection("Clients");
   const pageIdStr = normalizePageId(pageId);
 
-  const updated = await clients.findOneAndUpdate(
+  // Increment only if client exists
+  const updateRes = await clients.updateOne(
     { pageId: pageIdStr },
-    {
-      $inc: { messageCount: 1 },
-      $set: { updatedAt: new Date() },
-      $setOnInsert: {
-        clientId: newClientId(), // ✅ ALWAYS have clientId
-        active: true,
-        messageLimit: 1000,
-        quotaWarningSent: false,
-        createdAt: new Date(),
-      },
-    },
-    { upsert: true, returnDocument: "after" }
+    { $inc: { messageCount: 1 }, $set: { updatedAt: new Date() } }
   );
 
-  const doc = updated?.value || (await clients.findOne({ pageId: pageIdStr }));
-
-  if (!doc) {
-    log("error", "Failed to increment or create client for pageId", { pageId: pageIdStr });
-    throw new Error(`Failed to increment or create client for pageId: ${pageIdStr}`);
+  if (!updateRes.matchedCount) {
+    log("warn", "incrementMessageCount: client not found; skipping", { pageId: pageIdStr });
+    return { allowed: false, reason: "client_not_found" };
   }
 
-  // Backfill clientId if missing (older docs)
+  const doc = await clients.findOne({ pageId: pageIdStr });
+  if (!doc) return { allowed: false, reason: "client_not_found" };
+
   if (!doc.clientId) {
     const cid = newClientId();
-    await clients.updateOne({ pageId: pageIdStr }, { $set: { clientId: cid, updatedAt: new Date() } });
+    await clients.updateOne(
+      { pageId: pageIdStr },
+      { $set: { clientId: cid, updatedAt: new Date() } }
+    );
     doc.clientId = cid;
   }
 
-  if (doc.messageCount > doc.messageLimit) {
-    log("warn", "Message limit reached for pageId", {
-      pageId: pageIdStr,
-      messageCount: doc.messageCount,
-    });
-    return { allowed: false, messageCount: doc.messageCount, messageLimit: doc.messageLimit };
+  const messageLimit = doc.messageLimit ?? 1000;
+  const messageCount = doc.messageCount ?? 0;
+
+  if (messageCount > messageLimit) {
+    log("warn", "Message limit reached for pageId", { pageId: pageIdStr, messageCount, messageLimit });
+    return { allowed: false, messageCount, messageLimit, reason: "quota_exceeded" };
   }
 
-  const remaining = doc.messageLimit - doc.messageCount;
+  const remaining = messageLimit - messageCount;
 
   if (remaining === 100 && !doc.quotaWarningSent) {
     log("warn", "Only 100 messages left for pageId", { pageId: pageIdStr });
@@ -231,7 +219,7 @@ async function incrementMessageCount(pageId) {
     );
   }
 
-  return { allowed: true, messageCount: doc.messageCount, messageLimit: doc.messageLimit };
+  return { allowed: true, messageCount, messageLimit };
 }
 
 // ===============================
@@ -249,8 +237,8 @@ async function saveConversation(pageId, userId, history, lastInteraction, source
 
   const client = await db.collection("Clients").findOne({ pageId: pageIdStr });
   if (!client) {
-    log("error", "No client found for pageId while saving conversation", { pageId: pageIdStr });
-    await logToDb("error", source, "No client found for pageId while saving conversation", { pageId: pageIdStr });
+    log("warn", "saveConversation: client not found; skipping", { pageId: pageIdStr });
+    await logToDb("warn", source, "saveConversation: client not found; skipping", { pageId: pageIdStr });
     return;
   }
 
@@ -269,7 +257,7 @@ async function saveConversation(pageId, userId, history, lastInteraction, source
     {
       $set: {
         pageId: pageIdStr,
-        clientId, // ✅ clientId only (no _id)
+        clientId, // ✅ clientId only
         history,
         lastInteraction,
         source,
@@ -464,11 +452,11 @@ async function createOrderFlow({ pageId, sender_psid, orderSummaryText, channel 
 }
 
 // ===============================
-// Webhook verification
+// Webhook verification (DB VERIFY_TOKEN)
 // ===============================
 router.get("/", async (req, res) => {
   const mode = req.query["hub.mode"];
-  const token = req.query["hub.verify_token"];
+  const token = normalizeToken(req.query["hub.verify_token"]);
   const challenge = req.query["hub.challenge"];
 
   if (!mode || !token) {
@@ -480,7 +468,7 @@ router.get("/", async (req, res) => {
   const client = await db.collection("Clients").findOne({ VERIFY_TOKEN: token });
 
   if (mode === "subscribe" && client) {
-    log("info", "Webhook verified", { pageId: client.pageId });
+    log("info", "Webhook verified", { pageId: client.pageId, clientId: client.clientId });
     return res.status(200).send(challenge);
   }
 
@@ -504,13 +492,21 @@ router.post("/", async (req, res) => {
   for (const entry of body.entry || []) {
     const pageId = normalizePageId(entry.id);
 
+    // ✅ Only process events for onboarded clients (NO auto-create)
+    const clientForEntry = await getClientByPageId(pageId);
+    if (!clientForEntry) {
+      log("warn", "Webhook event for unknown pageId; ignoring", { pageId });
+      await logToDb("warn", "messenger", "Webhook event for unknown pageId; ignoring", { pageId });
+      continue;
+    }
+    if (clientForEntry.active === false) continue;
+
     // Track webhook freshness (best effort)
     try {
       const db = await connectDB();
       await db.collection("Clients").updateOne(
         { pageId },
-        { $set: { lastWebhookAt: new Date(), updatedAt: new Date() } },
-        { upsert: true }
+        { $set: { lastWebhookAt: new Date(), updatedAt: new Date() } }
       );
     } catch {}
 
@@ -541,7 +537,9 @@ router.post("/", async (req, res) => {
       await markProcessed(pageId, eventKey, metaBase);
 
       try {
-        const clientDoc = await getClientDoc(pageId);
+        // refresh client doc (ensure latest token/settings)
+        const clientDoc = await getClientByPageId(pageId);
+        if (!clientDoc) continue;
         if (clientDoc.active === false) continue;
 
         if (!clientDoc.PAGE_ACCESS_TOKEN) {
@@ -630,24 +628,15 @@ router.post("/", async (req, res) => {
           // ===============================
           async function processMessageWithTyping() {
             const db = await connectDB();
-            const pageIdStr = normalizePageId(pageId);
 
             // ✅ RULES ONLY (SYSTEM_PROMPT should be rules, not huge datasets)
             const rulesPrompt = await SYSTEM_PROMPT({ pageId });
 
             // Pull fresh client doc once
-            const clientDocFresh = await db.collection("Clients").findOne({ pageId: pageIdStr });
+            const clientDocFresh = await getClientByPageId(pageIdStr);
             if (!clientDocFresh) {
               await sendMessengerReply(sender_psid, "⚠️ Setup issue: client not found.", pageId);
               return;
-            }
-            if (!clientDocFresh.clientId) {
-              const cid = newClientId();
-              await db.collection("Clients").updateOne(
-                { pageId: pageIdStr },
-                { $set: { clientId: cid, updatedAt: new Date() } }
-              );
-              clientDocFresh.clientId = cid;
             }
 
             const clientId = clientDocFresh.clientId; // ✅ MUST be clientId (string)
@@ -673,9 +662,10 @@ router.post("/", async (req, res) => {
               greeting = `Hi ${firstName}, good to see you today 👋`;
             }
 
-            // Usage check
-            const usage = await incrementMessageCount(pageId);
+            // ✅ Usage check (NO upsert/create)
+            const usage = await incrementMessageCountForClient(pageId);
             if (!usage.allowed) {
+              if (usage.reason === "client_not_found") return; // silently ignore unknown clients
               await sendMessengerReply(sender_psid, "⚠️ Message limit reached.", pageId);
               return;
             }
@@ -790,7 +780,11 @@ router.post("/", async (req, res) => {
                 log("error", "Order flow failed", { ...metaBase, err: err.message });
                 await logToDb("error", "order", "Order flow failed", { ...metaBase, err: err.message });
 
-                await sendMessengerReply(sender_psid, "⚠️ We couldn't process your order right now. Please try again.", pageId);
+                await sendMessengerReply(
+                  sender_psid,
+                  "⚠️ We couldn't process your order right now. Please try again.",
+                  pageId
+                );
 
                 compactHistory.push({ role: "user", content: userMessage, createdAt: new Date() });
                 compactHistory.push({ role: "assistant", content: assistantMessage, createdAt: new Date() });
