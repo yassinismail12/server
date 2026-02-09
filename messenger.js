@@ -2,6 +2,8 @@
 import express from "express";
 import fetch from "node-fetch";
 import { MongoClient } from "mongodb";
+import crypto from "crypto";
+
 import { retrieveChunks } from "./services/retrieval.js";
 import { buildChatMessages } from "./services/promptBuilder.js";
 
@@ -57,19 +59,86 @@ function normalizePsid(id) {
 // ===============================
 // DB
 // ===============================
+async function ensureIndexes(db) {
+  try {
+    // Idempotency store: unique (pageId + eventKey) + TTL
+    const col = db.collection("ProcessedEvents");
+    await col.createIndex({ pageId: 1, eventKey: 1 }, { unique: true });
+    await col.createIndex({ createdAt: 1 }, { expireAfterSeconds: 60 * 60 * 24 }); // 24h
+  } catch (e) {
+    // non-fatal
+    console.warn("⚠️ ensureIndexes failed:", e.message);
+  }
+}
+
 async function connectDB() {
   if (!mongoConnected) {
     log("info", "Connecting to MongoDB...");
     await mongoClient.connect();
     mongoConnected = true;
     log("info", "MongoDB connected");
+
+    // Best-effort index creation
+    try {
+      const db = mongoClient.db(dbName);
+      await ensureIndexes(db);
+    } catch {}
   }
   return mongoClient.db(dbName);
 }
 
 // ===============================
+// Idempotency (Meta retries webhooks)
+// ===============================
+function buildEventKey(webhook_event) {
+  const mid =
+    webhook_event?.message?.mid ||
+    webhook_event?.postback?.mid ||
+    webhook_event?.delivery?.mids?.[0];
+
+  if (mid) return `mid:${String(mid).trim()}`;
+
+  // fallback for text-only events without mid (rare)
+  const sender = webhook_event?.sender?.id ? String(webhook_event.sender.id).trim() : "";
+  const ts = webhook_event?.timestamp ? String(webhook_event.timestamp).trim() : "";
+  const text = webhook_event?.message?.text ? String(webhook_event.message.text).slice(0, 80) : "";
+  if (sender && ts) return `fallback:${sender}:${ts}:${text}`;
+
+  return "";
+}
+
+async function wasProcessed(pageId, eventKey) {
+  if (!eventKey) return false;
+  const db = await connectDB();
+  const existing = await db.collection("ProcessedEvents").findOne({
+    pageId: normalizePageId(pageId),
+    eventKey: String(eventKey),
+  });
+  return Boolean(existing);
+}
+
+async function markProcessed(pageId, eventKey, meta = {}) {
+  if (!eventKey) return;
+  const db = await connectDB();
+  try {
+    await db.collection("ProcessedEvents").insertOne({
+      pageId: normalizePageId(pageId),
+      eventKey: String(eventKey),
+      createdAt: new Date(),
+      meta,
+    });
+  } catch (e) {
+    // ignore duplicate key errors
+  }
+}
+
+// ===============================
 // Clients
 // ===============================
+function newClientId() {
+  return crypto.randomUUID();
+}
+
 async function getClientDoc(pageId) {
   const db = await connectDB();
   const clients = db.collection("Clients");
@@ -82,6 +151,7 @@ async function getClientDoc(pageId) {
 
     client = {
       pageId: pageIdStr,
+      clientId: newClientId(), // ✅ ALWAYS have clientId
       messageCount: 0,
       messageLimit: 1000,
       active: true,
@@ -93,7 +163,15 @@ async function getClientDoc(pageId) {
     };
 
     await clients.insertOne(client);
-    log("info", "Client created for pageId", { pageId: pageIdStr });
+    log("info", "Client created for pageId", { pageId: pageIdStr, clientId: client.clientId });
+  } else if (!client.clientId) {
+    const cid = newClientId();
+    await clients.updateOne(
+      { pageId: pageIdStr },
+      { $set: { clientId: cid, updatedAt: new Date() } }
+    );
+    client.clientId = cid;
+    log("warn", "Client missing clientId; backfilled", { pageId: pageIdStr, clientId: cid });
   }
 
   return client;
@@ -110,6 +188,7 @@ async function incrementMessageCount(pageId) {
       $inc: { messageCount: 1 },
       $set: { updatedAt: new Date() },
       $setOnInsert: {
+        clientId: newClientId(), // ✅ ALWAYS have clientId
         active: true,
         messageLimit: 1000,
         quotaWarningSent: false,
@@ -126,6 +205,13 @@ async function incrementMessageCount(pageId) {
     throw new Error(`Failed to increment or create client for pageId: ${pageIdStr}`);
   }
 
+  // Backfill clientId if missing (older docs)
+  if (!doc.clientId) {
+    const cid = newClientId();
+    await clients.updateOne({ pageId: pageIdStr }, { $set: { clientId: cid, updatedAt: new Date() } });
+    doc.clientId = cid;
+  }
+
   if (doc.messageCount > doc.messageLimit) {
     log("warn", "Message limit reached for pageId", {
       pageId: pageIdStr,
@@ -139,7 +225,10 @@ async function incrementMessageCount(pageId) {
   if (remaining === 100 && !doc.quotaWarningSent) {
     log("warn", "Only 100 messages left for pageId", { pageId: pageIdStr });
     await sendQuotaWarning(pageIdStr);
-    await clients.updateOne({ pageId: pageIdStr }, { $set: { quotaWarningSent: true, updatedAt: new Date() } });
+    await clients.updateOne(
+      { pageId: pageIdStr },
+      { $set: { quotaWarningSent: true, updatedAt: new Date() } }
+    );
   }
 
   return { allowed: true, messageCount: doc.messageCount, messageLimit: doc.messageLimit };
@@ -165,12 +254,22 @@ async function saveConversation(pageId, userId, history, lastInteraction, source
     return;
   }
 
+  // Ensure clientId exists
+  let clientId = client.clientId;
+  if (!clientId) {
+    clientId = newClientId();
+    await db.collection("Clients").updateOne(
+      { pageId: pageIdStr },
+      { $set: { clientId, updatedAt: new Date() } }
+    );
+  }
+
   await db.collection("Conversations").updateOne(
     { pageId: pageIdStr, userId, source },
     {
       $set: {
         pageId: pageIdStr,
-        clientId: client.clientId,
+        clientId, // ✅ clientId only (no _id)
         history,
         lastInteraction,
         source,
@@ -294,72 +393,6 @@ function waSafeParam(text) {
 }
 
 // ===============================
-// FB Private Reply to Comment (DM) ✅ NEW (replaces public comment reply)
-// ===============================
-async function sendPrivateReplyToComment({ pageId, pageAccessToken, commentId, text, meta = {} }) {
-  if (!pageAccessToken) {
-    log("warn", "PAGE_ACCESS_TOKEN missing; cannot send private reply", meta);
-    await logToDb("warn", "fb_private_reply", "PAGE_ACCESS_TOKEN missing; cannot send private reply", meta);
-    return { ok: false, error: "PAGE_ACCESS_TOKEN missing" };
-  }
-
-  if (!pageId) {
-    log("warn", "pageId missing; cannot send private reply", meta);
-    await logToDb("warn", "fb_private_reply", "pageId missing; cannot send private reply", meta);
-    return { ok: false, error: "pageId missing" };
-  }
-
-  if (!commentId) {
-    log("warn", "commentId missing; cannot send private reply", meta);
-    await logToDb("warn", "fb_private_reply", "commentId missing; cannot send private reply", meta);
-    return { ok: false, error: "commentId missing" };
-  }
-
-  const url = new URL(`https://graph.facebook.com/v20.0/${String(pageId).trim()}/messages`);
-  url.searchParams.set("access_token", pageAccessToken);
-
-  const payload = {
-    messaging_type: "RESPONSE",
-    recipient: { comment_id: String(commentId).trim() }, // ✅ key for private replies
-    message: { text: String(text || "").trim().slice(0, 2000) },
-  };
-
-  let res;
-  try {
-    res = await fetch(url.toString(), {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(payload),
-    });
-  } catch (e) {
-    log("error", "Private reply failed (network)", { ...meta, err: e.message });
-    await logToDb("error", "fb_private_reply", "Private reply failed (network)", { ...meta, err: e.message });
-    return { ok: false, error: e.message };
-  }
-
-  const raw = await res.text().catch(() => "");
-  let data;
-  try {
-    data = JSON.parse(raw);
-  } catch {
-    data = { raw };
-  }
-
-  if (!res.ok) {
-    log("warn", "Private reply failed", { ...meta, status: res.status, response: raw?.slice(0, 2000) });
-    await logToDb("warn", "fb_private_reply", "Private reply failed", {
-      ...meta,
-      status: res.status,
-      response: raw?.slice(0, 4000),
-    });
-    return { ok: false, data };
-  }
-
-  log("info", "Private reply sent", { ...meta, messageId: data?.message_id, recipientId: data?.recipient_id });
-  return { ok: true, data };
-}
-
-// ===============================
 // Order flow
 // ===============================
 async function createOrderFlow({ pageId, sender_psid, orderSummaryText, channel = "messenger" }) {
@@ -392,7 +425,7 @@ async function createOrderFlow({ pageId, sender_psid, orderSummaryText, channel 
   const fallbackOrderId = `ORD-${Date.now()}`;
 
   const notifyResult = await notifyClientStaffNewOrder({
-    clientId: client._id,
+    clientId: client.clientId, // ✅ clientId only
     payload: {
       customerName: waSafeParam(customerName),
       customerPhone: waSafeParam(customerPhone),
@@ -406,7 +439,7 @@ async function createOrderFlow({ pageId, sender_psid, orderSummaryText, channel 
 
   try {
     const order = await Order.create({
-      clientId: client._id,
+      clientId: client.clientId, // ✅ clientId only
       channel,
       customer: {
         name: customerName,
@@ -422,7 +455,10 @@ async function createOrderFlow({ pageId, sender_psid, orderSummaryText, channel 
     return { order, notifyResult };
   } catch (e) {
     log("warn", "Order save failed (WhatsApp already sent)", { pageId: pageIdStr, err: e.message });
-    await logToDb("warn", "order", "Order save failed (WhatsApp already sent)", { pageId: pageIdStr, err: e.message });
+    await logToDb("warn", "order", "Order save failed (WhatsApp already sent)", {
+      pageId: pageIdStr,
+      err: e.message,
+    });
     return { order: null, notifyResult };
   }
 }
@@ -453,7 +489,7 @@ router.get("/", async (req, res) => {
 });
 
 // ===============================
-// Messenger webhook receiver (+ FB comment -> DM private replies)
+// Messenger webhook receiver (MESSAGES ONLY — NO COMMENT HANDLING)
 // ===============================
 router.post("/", async (req, res) => {
   const body = req.body;
@@ -468,129 +504,16 @@ router.post("/", async (req, res) => {
   for (const entry of body.entry || []) {
     const pageId = normalizePageId(entry.id);
 
-    // -----------------------------------------
-    // (A) Handle Facebook Page feed changes (COMMENTS) -> DM ✅ UPDATED
-    // -----------------------------------------
-    const changes = entry.changes || [];
-    for (const change of changes) {
-      const field = change?.field;
-      const v = change?.value || {};
+    // Track webhook freshness (best effort)
+    try {
+      const db = await connectDB();
+      await db.collection("Clients").updateOne(
+        { pageId },
+        { $set: { lastWebhookAt: new Date(), updatedAt: new Date() } },
+        { upsert: true }
+      );
+    } catch {}
 
-      if (field === "feed" && v?.item === "comment" && v?.verb === "add") {
-        const commentId = v.comment_id;
-        const postId = v.post_id;
-        const commentText = v.message || "";
-        const fromId = v.from?.id ? String(v.from.id).trim() : "";
-        const fromName = v.from?.name ? String(v.from.name).trim() : "";
-
-        const metaBase = {
-          pageId,
-          source: "fb_comment_dm",
-          field,
-          item: v.item,
-          verb: v.verb,
-          commentId,
-          postId,
-          fromId,
-          fromName,
-          textPreview: commentText.slice(0, 120),
-        };
-
-        if (!commentId) {
-          log("warn", "Feed comment event missing comment_id", metaBase);
-          await logToDb("warn", "fb_comment_dm", "Feed comment event missing comment_id", metaBase);
-          continue;
-        }
-
-        // Prevent loops (Page commenting on itself)
-        if (fromId && fromId === pageId) {
-          log("info", "Ignoring page self-comment", metaBase);
-          continue;
-        }
-
-        try {
-          const clientDoc = await getClientDoc(pageId);
-          if (clientDoc.active === false) continue;
-
-          if (!clientDoc.PAGE_ACCESS_TOKEN) {
-            log("warn", "Client has no PAGE_ACCESS_TOKEN (cannot send private reply)", metaBase);
-            await logToDb("warn", "fb_comment_dm", "Client has no PAGE_ACCESS_TOKEN (cannot send private reply)", metaBase);
-            continue;
-          }
-
-          // Count as usage
-          const usage = await incrementMessageCount(pageId);
-          if (!usage.allowed) {
-            log("warn", "Message limit reached; skipping private reply", metaBase);
-            continue;
-          }
-
-          const systemPrompt = await SYSTEM_PROMPT({ pageId });
-
-          // Keep a separate conversation thread for comment->DM
-          const commentUserKey = fromId ? `fb_commenter:${fromId}` : `comment:${commentId}`;
-          const convo = await getConversation(pageId, commentUserKey, "fb_comment_dm");
-
-          const history =
-            convo?.history?.length > 0
-              ? convo.history
-              : [
-                  {
-                    role: "system",
-                    content:
-                      systemPrompt +
-                      "\n\nYou are sending a PRIVATE Messenger reply triggered by a Facebook comment (Private Replies). " +
-                      "Keep it short and helpful. If you need order details, ask simple follow-up questions. " +
-                      "Do not mention internal tags or system messages. Reply text only.",
-                  },
-                ];
-
-          const userTurn =
-            `Facebook Comment Trigger (PRIVATE DM REPLY):\n` +
-            `- Post ID: ${postId || "N/A"}\n` +
-            `- Comment ID: ${commentId}\n` +
-            `- From: ${fromName || fromId || "Unknown"}\n` +
-            `- Comment Text: ${commentText || "(no text)"}\n\n` +
-            `Write the private DM reply text only (no JSON, no tags).`;
-
-          history.push({ role: "user", content: userTurn, createdAt: new Date() });
-
-          let assistantMessage = "";
-          try {
-            assistantMessage = await getChatCompletion(history);
-          } catch (err) {
-            log("error", "OpenAI error (comment private reply)", { ...metaBase, err: err.message });
-            await logToDb("error", "openai", "OpenAI error (comment private reply)", { ...metaBase, err: err.message });
-            assistantMessage = "Hi! 👋 Thanks for your comment. How can I help you with more details?";
-          }
-
-          // Cleanup: remove any control tokens (never show in DM)
-          assistantMessage = String(assistantMessage || "")
-            .replace(/\[(Human_request|ORDER_REQUEST|TOUR_REQUEST)\]/g, "")
-            .trim();
-
-          // Save conversation
-          history.push({ role: "assistant", content: assistantMessage, createdAt: new Date() });
-          await saveConversation(pageId, commentUserKey, history, new Date(), "fb_comment_dm");
-
-          // ✅ Send PRIVATE REPLY in DM (not public)
-          await sendPrivateReplyToComment({
-            pageId,
-            pageAccessToken: clientDoc.PAGE_ACCESS_TOKEN,
-            commentId,
-            text: assistantMessage,
-            meta: metaBase,
-          });
-        } catch (err) {
-          log("error", "FB comment->DM handler error", { ...metaBase, err: err.message });
-          await logToDb("error", "fb_comment_dm", "FB comment->DM handler error", { ...metaBase, err: err.message });
-        }
-      }
-    }
-
-    // -----------------------------------------
-    // (B) Handle Messenger messages (your existing logic)
-    // -----------------------------------------
     const events = entry.messaging || [];
     for (const webhook_event of events) {
       const sender_psid = normalizePsid(webhook_event?.sender?.id);
@@ -609,9 +532,16 @@ router.post("/", async (req, res) => {
         await logToDb("warn", "messenger", "PageId mismatch between entry.id and recipient.id", metaBase);
       }
 
+      // ✅ Idempotency
+      const eventKey = buildEventKey(webhook_event);
+      if (eventKey && (await wasProcessed(pageId, eventKey))) {
+        log("info", "Skipping duplicate webhook event", { ...metaBase, eventKey });
+        continue;
+      }
+      await markProcessed(pageId, eventKey, metaBase);
+
       try {
         const clientDoc = await getClientDoc(pageId);
-
         if (clientDoc.active === false) continue;
 
         if (!clientDoc.PAGE_ACCESS_TOKEN) {
@@ -695,300 +625,199 @@ router.post("/", async (req, res) => {
             continue;
           }
 
-      // ===============================
-// (NEW) Retrieval + Prompt Building Helpers
-// Put these near the bottom of messenger.js (or in separate files and import them)
-// ===============================
+          // ===============================
+          // Main processing (retrieval + runtime injection)
+          // ===============================
+          async function processMessageWithTyping() {
+            const db = await connectDB();
+            const pageIdStr = normalizePageId(pageId);
 
-function buildDataBlock(groupedChunks, sectionsOrder) {
-  const safe = groupedChunks || {};
-  const order = Array.isArray(sectionsOrder) && sectionsOrder.length ? sectionsOrder : ["menu", "offers", "hours"];
+            // ✅ RULES ONLY (SYSTEM_PROMPT should be rules, not huge datasets)
+            const rulesPrompt = await SYSTEM_PROMPT({ pageId });
 
-  return order
-    .map((section) => {
-      const arr = Array.isArray(safe[section]) ? safe[section] : [];
-      const body = arr.length ? arr.map((x) => x.text).join("\n") : "No relevant data found.";
-      return `${String(section).toUpperCase()}\n\n${body}`;
-    })
-    .join("\n\n");
-}
+            // Pull fresh client doc once
+            const clientDocFresh = await db.collection("Clients").findOne({ pageId: pageIdStr });
+            if (!clientDocFresh) {
+              await sendMessengerReply(sender_psid, "⚠️ Setup issue: client not found.", pageId);
+              return;
+            }
+            if (!clientDocFresh.clientId) {
+              const cid = newClientId();
+              await db.collection("Clients").updateOne(
+                { pageId: pageIdStr },
+                { $set: { clientId: cid, updatedAt: new Date() } }
+              );
+              clientDocFresh.clientId = cid;
+            }
 
-/**
- * Retrieve relevant chunks for the user message.
- * Uses MongoDB $text search on knowledge_chunks.text
- *
- * REQUIREMENTS (Mongo):
- *  db.knowledge_chunks.createIndex({ text: "text" })
- *  db.knowledge_chunks.createIndex({ clientId: 1, botType: 1, section: 1 })
- */
-async function retrieveChunks({ db, clientId, botType = "default", userText }) {
-  const chunksCol = db.collection("knowledge_chunks");
+            const clientId = clientDocFresh.clientId; // ✅ MUST be clientId (string)
+            const botType = clientDocFresh?.botType || "default";
+            const sectionsOrder = clientDocFresh?.sectionsOrder || ["menu", "offers", "hours"];
 
-  // Section caps (tune per bot)
-  const capsBySection = {
-    menu: 15,
-    offers: 6,
-    hours: 1,
-    faqs: 6,
-    listings: 8,
-    paymentPlans: 4,
-  };
+            // Load conversation (compact history only)
+            const convo = await getConversation(pageId, sender_psid, "messenger");
+            const compactHistory = Array.isArray(convo?.history) ? convo.history : [];
 
-  // $text search (best-effort)
-  let results = [];
-  try {
-    results = await chunksCol
-      .find(
-        { clientId, botType, $text: { $search: String(userText || "").slice(0, 300) } },
-        { projection: { score: { $meta: "textScore" }, section: 1, text: 1 } }
-      )
-      .sort({ score: { $meta: "textScore" } })
-      .limit(40)
-      .toArray();
-  } catch (e) {
-    // If text index is missing or $text fails, fallback to empty results
-    results = [];
-  }
+            let firstName = "there";
+            let greeting = "";
 
-  // Group + cap
-  const grouped = {};
-  for (const r of results) {
-    const section = r.section || "unknown";
-    grouped[section] ||= [];
-    const cap = capsBySection[section] ?? 6;
-    if (grouped[section].length < cap) grouped[section].push({ text: r.text });
-  }
+            if (!convo || isNewDay(convo.lastInteraction)) {
+              const userProfile = await getUserProfile(sender_psid, clientDocFresh?.PAGE_ACCESS_TOKEN, {
+                ...metaBase,
+                clientPageId: clientDocFresh?.pageId,
+              });
 
-  // Always include hours if your bot uses it and it wasn’t matched
-  if (!grouped.hours) {
-    const hours = await chunksCol.findOne({ clientId, botType, section: "hours" }, { projection: { text: 1 } });
-    if (hours?.text) grouped.hours = [{ text: hours.text }];
-  }
+              firstName = userProfile.first_name || "there";
+              await saveCustomer(pageId, sender_psid, userProfile);
 
-  return grouped;
-}
+              greeting = `Hi ${firstName}, good to see you today 👋`;
+            }
 
-/**
- * Build messages for OpenAI WITHOUT saving injected data into conversation history.
- * - rulesPrompt: your fixed rules (SYSTEM_PROMPT should be RULES ONLY)
- * - compactHistory: last few real conversation turns (no data injected)
- * - groupedChunks: retrieved slices of data for this request
- * - userText: the new incoming user message
- */
-function buildChatMessages({ rulesPrompt, compactHistory, groupedChunks, userText, sectionsOrder }) {
-  const dataBlock = buildDataBlock(groupedChunks, sectionsOrder);
+            // Usage check
+            const usage = await incrementMessageCount(pageId);
+            if (!usage.allowed) {
+              await sendMessengerReply(sender_psid, "⚠️ Message limit reached.", pageId);
+              return;
+            }
 
-  // Keep memory small (last 12 turns max)
-  const trimmed = Array.isArray(compactHistory) ? compactHistory.slice(-12) : [];
+            // ✅ Retrieve only relevant slices of data for THIS message
+            let grouped = {};
+            try {
+              grouped = await retrieveChunks({
+                db,
+                clientId,
+                botType,
+                userText: userMessage,
+              });
+            } catch (e) {
+              grouped = {};
+              log("warn", "retrieveChunks failed", { ...metaBase, err: e.message });
+              await logToDb("warn", "retrieval", "retrieveChunks failed", { ...metaBase, err: e.message });
+            }
 
-  return [
-    { role: "system", content: String(rulesPrompt || "") },
-    ...trimmed.map((m) => ({ role: m.role, content: String(m.content || "") })),
-    { role: "user", content: `${dataBlock}\n\nUser message:\n${String(userText || "")}` },
-  ];
-}
+            // ✅ Build messages (rules + compact history + runtime data injection)
+            const messagesForOpenAI = buildChatMessages({
+              rulesPrompt,
+              compactHistory,
+              groupedChunks: grouped,
+              userText: userMessage,
+              sectionsOrder,
+            });
 
-// ===============================
-// (UPDATED) processMessageWithTyping()
-// Replace your current processMessageWithTyping() with THIS WHOLE function
-// ===============================
-async function processMessageWithTyping() {
-  let convo, greeting, firstName;
+            let assistantMessage;
+            try {
+              assistantMessage = await getChatCompletion(messagesForOpenAI);
+            } catch (err) {
+              log("error", "OpenAI error", { ...metaBase, err: err.message });
+              await logToDb("error", "openai", err.message, metaBase);
+              assistantMessage = "⚠️ I'm having trouble right now. Please try again shortly.";
+            }
 
-  const db = await connectDB();
-  const pageIdStr = normalizePageId(pageId);
+            // Flags
+            const flags = { human: false, tour: false, order: false };
 
-  // ✅ RULES ONLY (IMPORTANT): SYSTEM_PROMPT must NOT append huge datasets anymore
-  const rulesPrompt = await SYSTEM_PROMPT({ pageId });
+            if (assistantMessage.includes("[Human_request]")) {
+              flags.human = true;
+              assistantMessage = assistantMessage.replace("[Human_request]", "").trim();
+            }
+            if (assistantMessage.includes("[ORDER_REQUEST]")) {
+              flags.order = true;
+              assistantMessage = assistantMessage.replace("[ORDER_REQUEST]", "").trim();
+            }
+            if (assistantMessage.includes("[TOUR_REQUEST]")) {
+              flags.tour = true;
+              assistantMessage = assistantMessage.replace("[TOUR_REQUEST]", "").trim();
+            }
 
-  // Pull client doc once (for tokens + bot config + clientId)
-  const clientDocFresh = await db.collection("Clients").findOne({ pageId: pageIdStr });
+            // Human escalation
+            if (flags.human) {
+              const botResumeAt = new Date(Date.now() + 2 * 60 * 60 * 1000);
 
-  const clientId =
-    (clientDocFresh && (clientDocFresh.clientId || String(clientDocFresh._id || ""))) || pageIdStr;
+              await db.collection("Conversations").updateOne(
+                { pageId: pageIdStr, userId: sender_psid, source: "messenger" },
+                {
+                  $set: {
+                    humanEscalation: true,
+                    botResumeAt,
+                    humanEscalationStartedAt: new Date(),
+                  },
+                  $inc: { humanRequestCount: 1 },
+                },
+                { upsert: true }
+              );
 
-  // Optional: store per-client what bot it is + which sections to inject
-  // Fallback defaults:
-  const botType = clientDocFresh?.botType || "default";
+              log("warn", "Human escalation triggered", metaBase);
 
-  // For a restaurant bot:
-  // const sectionsOrder = clientDocFresh?.sectionsOrder || ["menu", "offers", "hours"];
-  // For real estate bot:
-  // const sectionsOrder = clientDocFresh?.sectionsOrder || ["listings", "paymentPlans", "faqs"];
-  const sectionsOrder = clientDocFresh?.sectionsOrder || ["menu", "offers", "hours"];
+              await sendMessengerReply(
+                sender_psid,
+                "👤 A human agent will take over shortly.\nYou can type !bot anytime to return to the assistant.\n\nسيقوم أحد موظفي الدعم بالرد عليك قريبًا.",
+                pageId
+              );
 
-  // Load conversation (compact history only)
-  convo = await getConversation(pageId, sender_psid, "messenger");
-  const compactHistory = Array.isArray(convo?.history) ? convo.history : [];
+              compactHistory.push({ role: "user", content: userMessage, createdAt: new Date() });
+              compactHistory.push({ role: "assistant", content: assistantMessage, createdAt: new Date() });
+              await saveConversation(pageId, sender_psid, compactHistory, new Date(), "messenger");
+              return;
+            }
 
-  firstName = "there";
-  greeting = "";
+            // Order handling
+            if (flags.order) {
+              await db.collection("Conversations").updateOne(
+                { pageId: pageIdStr, userId: sender_psid, source: "messenger" },
+                { $inc: { orderRequestCount: 1 } },
+                { upsert: true }
+              );
 
-  // Greeting / profile fetch (your original logic)
-  if (!convo || isNewDay(convo.lastInteraction)) {
-    const userProfile = await getUserProfile(sender_psid, clientDocFresh?.PAGE_ACCESS_TOKEN, {
-      ...metaBase,
-      clientPageId: clientDocFresh?.pageId,
-    });
+              try {
+                await createOrderFlow({
+                  pageId,
+                  sender_psid,
+                  orderSummaryText: assistantMessage,
+                  channel: "messenger",
+                });
 
-    firstName = userProfile.first_name || "there";
-    await saveCustomer(pageId, sender_psid, userProfile);
+                await sendMessengerReply(
+                  sender_psid,
+                  "✅ Your order request has been received.\nA staff member will contact you shortly.\n\nتم استلام طلبك وسيتم التواصل معك قريبًا.",
+                  pageId
+                );
 
-    greeting = `Hi ${firstName}, good to see you today 👋`;
-  }
+                compactHistory.push({ role: "user", content: userMessage, createdAt: new Date() });
+                compactHistory.push({ role: "assistant", content: assistantMessage, createdAt: new Date() });
+                await saveConversation(pageId, sender_psid, compactHistory, new Date(), "messenger");
+                return;
+              } catch (err) {
+                log("error", "Order flow failed", { ...metaBase, err: err.message });
+                await logToDb("error", "order", "Order flow failed", { ...metaBase, err: err.message });
 
-  // Usage check first (same as you had)
-  const usage = await incrementMessageCount(pageId);
-  if (!usage.allowed) {
-    await sendMessengerReply(sender_psid, "⚠️ Message limit reached.", pageId);
-    return;
-  }
+                await sendMessengerReply(sender_psid, "⚠️ We couldn't process your order right now. Please try again.", pageId);
 
-  // ✅ Retrieve only relevant slices of data for THIS message
-  let grouped = {};
-  try {
-    grouped = await retrieveChunks({
-      db,
-      clientId,
-      botType,
-      userText: userMessage,
-    });
-  } catch (e) {
-    grouped = {};
-  }
+                compactHistory.push({ role: "user", content: userMessage, createdAt: new Date() });
+                compactHistory.push({ role: "assistant", content: assistantMessage, createdAt: new Date() });
+                await saveConversation(pageId, sender_psid, compactHistory, new Date(), "messenger");
+                return;
+              }
+            }
 
-  // ✅ Build messages for OpenAI (rules + compact history + runtime data injection)
-  const messagesForOpenAI = buildChatMessages({
-    rulesPrompt,
-    compactHistory,
-    groupedChunks: grouped,
-    userText: userMessage,
-    sectionsOrder,
-  });
+            // Tour counter
+            if (flags.tour) {
+              await db.collection("Conversations").updateOne(
+                { pageId: pageIdStr, userId: sender_psid, source: "messenger" },
+                { $inc: { tourRequestCount: 1 } },
+                { upsert: true }
+              );
+            }
 
-  let assistantMessage;
-  try {
-    assistantMessage = await getChatCompletion(messagesForOpenAI);
-  } catch (err) {
-    log("error", "OpenAI error", { ...metaBase, err: err.message });
-    await logToDb("error", "openai", err.message, metaBase);
-    assistantMessage = "⚠️ I'm having trouble right now. Please try again shortly.";
-  }
+            // Save conversation (ONLY real turns)
+            compactHistory.push({ role: "user", content: userMessage, createdAt: new Date() });
+            compactHistory.push({ role: "assistant", content: assistantMessage, createdAt: new Date() });
+            await saveConversation(pageId, sender_psid, compactHistory, new Date(), "messenger");
 
-  // Flags (same as you had)
-  const flags = { human: false, tour: false, order: false };
+            const combinedMessage = greeting ? `${greeting}\n\n${assistantMessage}` : assistantMessage;
 
-  if (assistantMessage.includes("[Human_request]")) {
-    flags.human = true;
-    assistantMessage = assistantMessage.replace("[Human_request]", "").trim();
-  }
-  if (assistantMessage.includes("[ORDER_REQUEST]")) {
-    flags.order = true;
-    assistantMessage = assistantMessage.replace("[ORDER_REQUEST]", "").trim();
-  }
-  if (assistantMessage.includes("[TOUR_REQUEST]")) {
-    flags.tour = true;
-    assistantMessage = assistantMessage.replace("[TOUR_REQUEST]", "").trim();
-  }
-
-  // Human escalation (same behavior)
-  if (flags.human) {
-    const botResumeAt = new Date(Date.now() + 2 * 60 * 60 * 1000);
-
-    await db.collection("Conversations").updateOne(
-      { pageId: pageIdStr, userId: sender_psid, source: "messenger" },
-      {
-        $set: {
-          humanEscalation: true,
-          botResumeAt,
-          humanEscalationStartedAt: new Date(),
-        },
-        $inc: { humanRequestCount: 1 },
-      },
-      { upsert: true }
-    );
-
-    log("warn", "Human escalation triggered", metaBase);
-
-    await sendMessengerReply(
-      sender_psid,
-      "👤 A human agent will take over shortly.\nYou can type !bot anytime to return to the assistant.\n\nسيقوم أحد موظفي الدعم بالرد عليك قريبًا.",
-      pageId
-    );
-
-    // Save compact convo (ONLY real turns, no injected data)
-    compactHistory.push({ role: "user", content: userMessage, createdAt: new Date() });
-    compactHistory.push({ role: "assistant", content: assistantMessage, createdAt: new Date() });
-    await saveConversation(pageId, sender_psid, compactHistory, new Date(), "messenger");
-
-    return;
-  }
-
-  // Order handling (same behavior)
-  if (flags.order) {
-    await db.collection("Conversations").updateOne(
-      { pageId: pageIdStr, userId: sender_psid, source: "messenger" },
-      { $inc: { orderRequestCount: 1 } },
-      { upsert: true }
-    );
-
-    try {
-      await createOrderFlow({
-        pageId,
-        sender_psid,
-        orderSummaryText: assistantMessage,
-        channel: "messenger",
-      });
-
-      await sendMessengerReply(
-        sender_psid,
-        "✅ Your order request has been received.\nA staff member will contact you shortly.\n\nتم استلام طلبك وسيتم التواصل معك قريبًا.",
-        pageId
-      );
-
-      // Save compact convo (ONLY real turns)
-      compactHistory.push({ role: "user", content: userMessage, createdAt: new Date() });
-      compactHistory.push({ role: "assistant", content: assistantMessage, createdAt: new Date() });
-      await saveConversation(pageId, sender_psid, compactHistory, new Date(), "messenger");
-
-      return;
-    } catch (err) {
-      log("error", "Order flow failed", { ...metaBase, err: err.message });
-      await logToDb("error", "order", "Order flow failed", { ...metaBase, err: err.message });
-
-      await sendMessengerReply(sender_psid, "⚠️ We couldn't process your order right now. Please try again.", pageId);
-
-      // Save compact convo (ONLY real turns)
-      compactHistory.push({ role: "user", content: userMessage, createdAt: new Date() });
-      compactHistory.push({ role: "assistant", content: assistantMessage, createdAt: new Date() });
-      await saveConversation(pageId, sender_psid, compactHistory, new Date(), "messenger");
-
-      return;
-    }
-  }
-
-  // Tour counter (same as you had)
-  if (flags.tour) {
-    await db.collection("Conversations").updateOne(
-      { pageId: pageIdStr, userId: sender_psid, source: "messenger" },
-      { $inc: { tourRequestCount: 1 } },
-      { upsert: true }
-    );
-  }
-
-  // Save conversation (ONLY real turns)
-  compactHistory.push({ role: "user", content: userMessage, createdAt: new Date() });
-  compactHistory.push({ role: "assistant", content: assistantMessage, createdAt: new Date() });
-  await saveConversation(pageId, sender_psid, compactHistory, new Date(), "messenger");
-
-  // Final reply (same as you had)
-  const combinedMessage = greeting ? `${greeting}\n\n${assistantMessage}` : assistantMessage;
-
-  await sendMessengerReply(sender_psid, combinedMessage, pageId);
-
-  log("info", "Reply sent", { ...metaBase, replyPreview: combinedMessage.slice(0, 120) });
-}
-
+            await sendMessengerReply(sender_psid, combinedMessage, pageId);
+            log("info", "Reply sent", { ...metaBase, replyPreview: combinedMessage.slice(0, 120) });
+          }
 
           await sendMarkAsRead(sender_psid, pageId);
           await new Promise((resolve) => setTimeout(resolve, 1200));
