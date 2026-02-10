@@ -6,6 +6,8 @@ import cors from "cors";
 import Conversation from "./conversations.js";
 import multer from "multer";
 import path from "path";
+import ProcessedEvent from "./ProcessedEvent.js";
+
 import fs from "fs";
 import chatRoute from "./web.js";
 import messengerRoute from "./messenger.js";
@@ -653,7 +655,7 @@ app.get("/api/stats", verifyToken, async (req, res) => {
         email: c.email || "",
         used,
         clientId: c.clientId || "",
-        pageId: c.pageId || 0,
+        pageId: c.pageId || "",
         igId: c.igId || "",
         quota,
         remaining,
