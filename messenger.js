@@ -686,13 +686,13 @@ router.post("/", async (req, res) => {
             }
 
             // ✅ Build messages (rules + compact history + runtime data injection)
-            const messagesForOpenAI = buildChatMessages({
-              rulesPrompt,
-              compactHistory,
-              groupedChunks: grouped,
-              userText: userMessage,
-              sectionsOrder,
-            });
+         const { messages: messagesForOpenAI, meta } = buildChatMessages({
+  rulesPrompt,
+  groupedChunks: grouped,
+  userText: userMessage,
+  sectionsOrder,
+});
+
 
             let assistantMessage;
             try {
