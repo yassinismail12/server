@@ -1,12 +1,18 @@
+// services/retrieval.js
 import KnowledgeChunk from "../KnowledgeChunk.js";
 
+function normalizeText(x) {
+  return String(x || "").trim();
+}
+
 export async function retrieveChunks({ clientId, botType = "default", userText }) {
+  const query = normalizeText(userText);
+  if (!clientId || !query) return {};
+
   const raw = await KnowledgeChunk.find(
-    { clientId, botType, $text: { $search: userText } },
+    { clientId, botType, $text: { $search: query } },
     { score: { $meta: "textScore" }, section: 1, text: 1 }
   )
-    // NOTE: some setups are ambiguous with $meta sorting direction.
-    // We'll guarantee order with a JS sort after.
     .limit(50)
     .lean();
 
@@ -14,7 +20,7 @@ export async function retrieveChunks({ clientId, botType = "default", userText }
   const results = raw
     .sort((a, b) => (b.score || 0) - (a.score || 0))
     // ✅ Optional: drop low-quality matches (tune threshold)
-    .filter(r => (r.score || 0) >= 1)
+    .filter((r) => (r.score || 0) >= 1)
     // ✅ final limit
     .slice(0, 30);
 
@@ -28,7 +34,7 @@ export async function retrieveChunks({ clientId, botType = "default", userText }
     if (grouped[s].length < (caps[s] ?? 6)) grouped[s].push(r);
   }
 
-  // ✅ Always include hours if exists (good)
+  // ✅ Always include hours if exists
   if (!grouped.hours) {
     const hours = await KnowledgeChunk.findOne({ clientId, botType, section: "hours" }).lean();
     if (hours) grouped.hours = [hours];

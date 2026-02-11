@@ -1,8 +1,10 @@
+// whatsapp.js  ✅ QUEUE VERSION (FAST ACK + enqueue jobs)
+
 import express from "express";
 import { MongoClient } from "mongodb";
+import crypto from "crypto";
 
-import { getChatCompletion } from "./services/openai.js";
-import { sendWhatsAppText } from "./services/whatsappText.js";
+import { enqueueMessageJob } from "./services/queue.js";
 
 const router = express.Router();
 
@@ -36,45 +38,6 @@ function normalizePhoneDigits(p) {
   return String(p || "").trim().replace(/[^\d]/g, "");
 }
 
-function isNewDay(lastDate) {
-  const today = new Date();
-  const d = lastDate ? new Date(lastDate) : null;
-  return (
-    !d ||
-    d.getDate() !== today.getDate() ||
-    d.getMonth() !== today.getMonth() ||
-    d.getFullYear() !== today.getFullYear()
-  );
-}
-
-function buildSystemPromptFromClient(client) {
-  const base = client.systemPrompt || "You are a helpful assistant.";
-  const faqs = client.faqs ? `\n\nFAQs:\n${client.faqs}` : "";
-  const listings = client.listingsData ? `\n\nListings:\n${client.listingsData}` : "";
-  const plans = client.paymentPlans ? `\n\nPayment Plans:\n${client.paymentPlans}` : "";
-  return `${base}${faqs}${listings}${plans}`.trim();
-}
-
-function parseSourceChoice(text) {
-  const t = String(text || "").trim().toLowerCase();
-  // customize this to your business
-  if (["1", "sales", "sell", "buy", "rent"].includes(t)) return "sales";
-  if (["2", "support", "help"].includes(t)) return "support";
-  if (["3", "order", "orders", "شراء", "طلب"].includes(t)) return "order";
-  return "";
-}
-
-function sourceMenuText() {
-  return (
-    "Hi 👋\n" +
-    "Please choose what you need:\n\n" +
-    "1) Sales / Properties\n" +
-    "2) Support\n" +
-    "3) Order\n\n" +
-    "Reply with 1, 2, or 3."
-  );
-}
-
 // ===============================
 // Clients
 // ===============================
@@ -96,64 +59,13 @@ async function touchClientWebhook(clientMongoId, payload) {
           lastWebhookAt: new Date(),
           lastWebhookType: "whatsapp",
           lastWebhookPayload: payload,
+          updatedAt: new Date(),
         },
       }
     );
   } catch (e) {
     log("warn", "Failed to update lastWebhook fields", { err: e.message });
   }
-}
-
-// ===============================
-// Conversations (stored with source: "whatsapp")
-// ===============================
-async function getConversation(clientId, userId) {
-  const db = await connectDB();
-  return db.collection("Conversations").findOne({
-    clientId: String(clientId),
-    userId,
-    source: "whatsapp",
-  });
-}
-
-async function upsertConversation({
-  clientId,
-  userId,
-  history,
-  lastInteraction,
-  lastMessage,
-  lastMessageAt,
-  lastDirection,
-  awaitSource,
-  sourceChoice,
-  meta = {},
-}) {
-  const db = await connectDB();
-  await db.collection("Conversations").updateOne(
-    { clientId: String(clientId), userId, source: "whatsapp" },
-    {
-      $set: {
-        clientId: String(clientId),
-        userId,
-        source: "whatsapp", // ✅ dashboard filter key
-        sourceLabel: "WhatsApp",
-        history,
-        lastInteraction,
-        lastMessage: lastMessage || "",
-        lastMessageAt: lastMessageAt || lastInteraction,
-        lastDirection: lastDirection || "",
-        awaitSource: Boolean(awaitSource),
-        sourceChoice: sourceChoice || "",
-        meta: { ...(meta || {}) },
-        updatedAt: new Date(),
-      },
-      $setOnInsert: {
-        humanEscalation: false,
-        createdAt: new Date(),
-      },
-    },
-    { upsert: true }
-  );
 }
 
 // ===============================
@@ -174,9 +86,10 @@ router.get("/", (req, res) => {
 });
 
 // ===============================
-// WhatsApp webhook receiver
+// WhatsApp webhook receiver (FAST ACK + QUEUE)
 // ===============================
 router.post("/", async (req, res) => {
+  // ✅ respond immediately
   res.sendStatus(200);
 
   try {
@@ -205,12 +118,11 @@ router.post("/", async (req, res) => {
           meta: value?.metadata || null,
         });
 
-        // ignore delivery/read statuses
+        // ignore delivery/read statuses (no messages array)
         const messages = value?.messages || [];
         if (!messages.length) continue;
 
         const staffDigits = (client.staffNumbers || []).map(normalizePhoneDigits);
-        const clientAwaitSource = Boolean(client.awaitSource); // ✅ put this in Mongo if you want
 
         for (const msg of messages) {
           const fromDigits = normalizePhoneDigits(msg?.from);
@@ -223,135 +135,35 @@ router.post("/", async (req, res) => {
             continue;
           }
 
-          const convo = await getConversation(client.clientId, fromDigits);
+          // Use WhatsApp message id (wamid...) for dedupe if present
+          const msgId = String(msg?.id || "").trim();
+          const eventKey =
+            msgId
+              ? `whatsapp:${phoneNumberId}:${msgId}`
+              : `whatsapp:${phoneNumberId}:${Date.now()}:${crypto.randomUUID()}`;
 
-          // if human escalation is ON, ignore bot
-          if (convo?.humanEscalation === true) {
-            log("info", "Human escalation active; ignoring", { from: fromDigits, clientId: client.clientId });
-            continue;
-          }
-
-          // greeting / timestamps
-          const inboundAt = new Date();
-          const inboundPreview = text.slice(0, 200);
-
-          // default history (system prompt)
-          const systemPrompt = buildSystemPromptFromClient(client);
-          let history = convo?.history || [{ role: "system", content: systemPrompt }];
-
-          // ====== AWAIT SOURCE MODE ======
-          // If client.awaitSource is true AND convo has no sourceChoice yet:
-          const sourceChoiceExisting = convo?.sourceChoice || "";
-          const needsChoice = clientAwaitSource && !sourceChoiceExisting;
-
-          if (needsChoice) {
-            // user picked a choice?
-            const picked = parseSourceChoice(text);
-
-            if (!picked) {
-              // send menu again (once per day or first message)
-              const shouldSendMenu =
-                !convo || isNewDay(convo.lastInteraction) || convo?.awaitSource !== true;
-
-              // save convo state with awaitSource=true
-              history.push({ role: "user", content: text, createdAt: inboundAt });
-
-              await upsertConversation({
-                clientId: client.clientId,
-                userId: fromDigits,
-                history,
-                lastInteraction: inboundAt,
-                lastMessage: inboundPreview,
-                lastMessageAt: inboundAt,
-                lastDirection: "in",
-                awaitSource: true,
-                sourceChoice: "",
-                meta: { phoneNumberId },
-              });
-
-              if (shouldSendMenu) {
-                await sendWhatsAppText({
-                  phoneNumberId,
-                  to: fromDigits,
-                  text: sourceMenuText(),
-                });
-              }
-
-              log("info", "Awaiting source choice", { from: fromDigits, clientId: client.clientId });
-              continue;
-            }
-
-            // user chose a source → store it and proceed normally
-            history.push({ role: "user", content: text, createdAt: inboundAt });
-
-            await upsertConversation({
-              clientId: client.clientId,
-              userId: fromDigits,
-              history,
-              lastInteraction: inboundAt,
-              lastMessage: inboundPreview,
-              lastMessageAt: inboundAt,
-              lastDirection: "in",
-              awaitSource: false,
-              sourceChoice: picked,
-              meta: { phoneNumberId },
-            });
-
-            await sendWhatsAppText({
-              phoneNumberId,
-              to: fromDigits,
-              text: `✅ Got it. You selected: ${picked}.\nHow can I help you?`,
-            });
-
-            log("info", "Source choice selected", { from: fromDigits, picked, clientId: client.clientId });
-            continue;
-          }
-
-          // ====== NORMAL BOT FLOW ======
-          let greeting = "";
-          if (!convo || isNewDay(convo.lastInteraction)) greeting = "Hi 👋";
-
-          history.push({ role: "user", content: text, createdAt: inboundAt });
-
-          let assistantMessage;
-          try {
-            assistantMessage = await getChatCompletion(history);
-          } catch (err) {
-            log("error", "OpenAI error", { err: err.message, clientId: client.clientId, from: fromDigits });
-            assistantMessage = "⚠️ I'm having trouble right now. Please try again shortly.";
-          }
-
-          const combined = greeting ? `${greeting}\n\n${assistantMessage}` : assistantMessage;
-
-          // persist assistant turn
-          const outboundAt = new Date();
-          history.push({ role: "assistant", content: assistantMessage, createdAt: outboundAt });
-
-          await upsertConversation({
+          const payload = {
+            channel: "whatsapp",
             clientId: client.clientId,
-            userId: fromDigits,
-            history,
-            lastInteraction: outboundAt,
-            lastMessage: inboundPreview, // show last customer text in inbox list
-            lastMessageAt: inboundAt,
-            lastDirection: "in",
-            awaitSource: false,
-            sourceChoice: convo?.sourceChoice || "",
-            meta: { phoneNumberId },
-          });
+            phoneNumberId: String(phoneNumberId),
+            waFrom: fromDigits,
+            text: String(text),
+            eventKey,
+            receivedAt: new Date().toISOString(),
+          };
 
-          await sendWhatsAppText({
-            phoneNumberId,
-            to: fromDigits,
-            text: combined,
-          });
-
-          log("info", "WhatsApp reply sent", {
+          log("info", "Incoming WhatsApp message (queued)", {
             clientId: client.clientId,
             phoneNumberId,
-            to: fromDigits,
-            preview: combined.slice(0, 80),
+            from: fromDigits,
+            eventKey,
+            preview: String(text).slice(0, 120),
           });
+
+          const enq = await enqueueMessageJob(payload);
+          if (!enq.ok) {
+            log("error", "Failed to enqueue WhatsApp job", { clientId: client.clientId, eventKey, error: enq.error });
+          }
         }
       }
     }

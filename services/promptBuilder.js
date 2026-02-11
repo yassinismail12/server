@@ -1,8 +1,8 @@
-// promptBuilder.js
+// services/promptBuilder.js
 
 function estimateTokens(str = "") {
-  // Very practical approximation:
-  // English ~ 4 chars/token, Arabic can be a bit different but this is fine for budget warnings.
+  // Practical approximation:
+  // English ~ 4 chars/token. Arabic varies but fine for budgeting.
   return Math.ceil(String(str).length / 4);
 }
 
@@ -20,8 +20,8 @@ function hardTrimToTokenBudget(text, budgetTokens) {
  */
 export function buildDataBlockBudgeted(groupedChunks, sectionsOrder, opts = {}) {
   const {
-    maxDataTokens = 2500,     // how much of the prompt is allowed for KB chunks
-    perChunkMaxTokens = 300,  // cap any single chunk so one chunk can't blow budget
+    maxDataTokens = 2500,
+    perChunkMaxTokens = 300,
     includeEmptySections = false,
   } = opts;
 
@@ -44,22 +44,18 @@ export function buildDataBlockBudgeted(groupedChunks, sectionsOrder, opts = {}) 
       continue;
     }
 
-    // Start section
     const header = `${section.toUpperCase()}\n\n`;
     let sectionText = "";
-    let headerCost = estimateTokens(header);
+    const headerCost = estimateTokens(header);
 
-    // If we can't even afford the header, stop completely
     if (usedTokens + headerCost >= maxDataTokens) break;
 
-    // Add chunks under this section until budget
     for (const item of items) {
       if (usedTokens + headerCost >= maxDataTokens) break;
 
       let chunkText = String(item?.text || "").trim();
       if (!chunkText) continue;
 
-      // Cap per chunk
       const chunkTokens = estimateTokens(chunkText);
       if (chunkTokens > perChunkMaxTokens) {
         chunkText = hardTrimToTokenBudget(chunkText, perChunkMaxTokens);
@@ -68,22 +64,20 @@ export function buildDataBlockBudgeted(groupedChunks, sectionsOrder, opts = {}) 
       const addition = (sectionText ? "\n" : "") + chunkText;
       const additionCost = estimateTokens(addition);
 
-      // If adding the whole chunk exceeds budget, try trimming it to fit
       if (usedTokens + headerCost + estimateTokens(sectionText) + additionCost > maxDataTokens) {
         const remaining = maxDataTokens - (usedTokens + headerCost + estimateTokens(sectionText));
-        if (remaining <= 30) {
-          // too little space left to add meaningful text
-          break;
-        }
+        if (remaining <= 30) break;
+
         const trimmed = hardTrimToTokenBudget(chunkText, remaining);
         const trimmedAddition = (sectionText ? "\n" : "") + trimmed;
 
-        // final check
-        if (usedTokens + headerCost + estimateTokens(sectionText) + estimateTokens(trimmedAddition) <= maxDataTokens) {
+        if (
+          usedTokens + headerCost + estimateTokens(sectionText) + estimateTokens(trimmedAddition) <= maxDataTokens
+        ) {
           sectionText += trimmedAddition;
           includedChunkCount += 1;
         }
-        break; // budget exhausted for this section
+        break;
       }
 
       sectionText += addition;
@@ -103,80 +97,141 @@ export function buildDataBlockBudgeted(groupedChunks, sectionsOrder, opts = {}) 
   };
 }
 
+/**
+ * Budget and format conversation history.
+ * history items: [{ role: "user"|"assistant", content: "..." }, ...]
+ */
+export function buildHistoryBudgeted(history = [], maxHistoryTokens = 600) {
+  const clean = Array.isArray(history)
+    ? history
+        .filter((h) => h && (h.role === "user" || h.role === "assistant") && typeof h.content === "string")
+        .map((h) => ({ role: h.role, content: h.content.trim() }))
+        .filter((h) => h.content)
+    : [];
+
+  // Prefer most recent history
+  let used = 0;
+  const picked = [];
+
+  for (let i = clean.length - 1; i >= 0; i--) {
+    const h = clean[i];
+    const cost = estimateTokens(h.content) + 4;
+    if (used + cost > maxHistoryTokens) break;
+    picked.unshift(h);
+    used += cost;
+  }
+
+  return { historyMessages: picked, usedTokens: used, count: picked.length };
+}
+
 export function buildChatMessages({
   rulesPrompt,
   groupedChunks,
   userText,
   sectionsOrder,
+
+  // optional conversation history
+  history = [],
+  maxHistoryTokens = 600,
+
   // budgets
-  maxTotalTokens = 3500, // total tokens allowed for EVERYTHING here (system + user + data)
+  maxTotalTokens = 3500,
   maxDataTokens = 2500,
   perChunkMaxTokens = 300,
 } = {}) {
   const safeRulesPrompt = String(rulesPrompt || "").trim();
   const safeUserText = String(userText || "").trim();
 
-  // 1) Build KB block with its own budget first
+  // 0) history (budgeted)
+  const { historyMessages, usedTokens: historyTokens, count: historyCount } = buildHistoryBudgeted(
+    history,
+    maxHistoryTokens
+  );
+
+  // 1) KB block
   const { dataBlock, usedTokens: dataTokens, includedChunkCount } = buildDataBlockBudgeted(
     groupedChunks,
     sectionsOrder,
     { maxDataTokens, perChunkMaxTokens }
   );
 
-  // 2) Build final user content
-  // IMPORTANT: don't add "No relevant data found." everywhere — it wastes budget.
-  const userContent =
-    (dataBlock ? `${dataBlock}\n\n` : "") +
-    `User message:\n${safeUserText}`;
+  // 2) user content
+  const userContent = (dataBlock ? `${dataBlock}\n\n` : "") + `User message:\n${safeUserText}`;
 
-  // 3) Final budget check (system + user)
-  const totalTokens = estimateTokens(safeRulesPrompt) + estimateTokens(userContent);
+  // 3) total budget check (system + history + user)
+  const totalTokens =
+    estimateTokens(safeRulesPrompt) +
+    historyTokens +
+    estimateTokens(userContent);
 
   const meta = {
     totalTokens,
     dataTokens,
+    historyTokens,
+    historyCount,
     includedChunkCount,
     code: null,
     advice: null,
   };
 
-  // 4) If too big, shrink further: first shrink data budget, then trim user content last
+  // 4) If too big, shrink: reduce history first, then data, then user
   if (totalTokens > maxTotalTokens) {
     meta.code = "PROMPT_RISK_LONG_MESSAGE";
     meta.advice =
-      "Outgoing prompt too large. Reduce retrieved chunks (K), reduce per-chunk size, or reduce conversation window.";
+      "Outgoing prompt too large. Reduce history window, reduce retrieved chunks (K), reduce per-chunk size, or reduce user length.";
 
-    // Reduce data budget aggressively and rebuild once
+    // A) reduce history budget
+    const reducedHistoryBudget = Math.max(120, Math.floor(maxHistoryTokens * 0.5));
+    const rebuiltHistory = buildHistoryBudgeted(history, reducedHistoryBudget);
+
+    // B) reduce data budget
     const reducedDataBudget = Math.max(600, Math.floor(maxDataTokens * 0.5));
-    const rebuilt = buildDataBlockBudgeted(groupedChunks, sectionsOrder, {
+    const rebuiltData = buildDataBlockBudgeted(groupedChunks, sectionsOrder, {
       maxDataTokens: reducedDataBudget,
       perChunkMaxTokens: Math.max(120, Math.floor(perChunkMaxTokens * 0.7)),
     });
 
     const rebuiltUserContent =
-      (rebuilt.dataBlock ? `${rebuilt.dataBlock}\n\n` : "") +
+      (rebuiltData.dataBlock ? `${rebuiltData.dataBlock}\n\n` : "") +
       `User message:\n${safeUserText}`;
 
-    const rebuiltTotalTokens = estimateTokens(safeRulesPrompt) + estimateTokens(rebuiltUserContent);
+    const rebuiltTotalTokens =
+      estimateTokens(safeRulesPrompt) +
+      rebuiltHistory.usedTokens +
+      estimateTokens(rebuiltUserContent);
 
-    meta.dataTokens = rebuilt.usedTokens;
-    meta.includedChunkCount = rebuilt.includedChunkCount;
+    meta.dataTokens = rebuiltData.usedTokens;
+    meta.includedChunkCount = rebuiltData.includedChunkCount;
+    meta.historyTokens = rebuiltHistory.usedTokens;
+    meta.historyCount = rebuiltHistory.count;
     meta.totalTokens = rebuiltTotalTokens;
 
-    // If STILL too big, trim user text slightly (rare)
     let finalUserContent = rebuiltUserContent;
+
+    // C) still too big → trim user text last
     if (rebuiltTotalTokens > maxTotalTokens) {
-      const allowedForUser = Math.max(200, maxTotalTokens - estimateTokens(safeRulesPrompt) - estimateTokens(rebuilt.dataBlock));
+      const allowedForUser = Math.max(
+        200,
+        maxTotalTokens -
+          estimateTokens(safeRulesPrompt) -
+          rebuiltHistory.usedTokens -
+          estimateTokens(rebuiltData.dataBlock || "")
+      );
+
       finalUserContent =
-        (rebuilt.dataBlock ? `${rebuilt.dataBlock}\n\n` : "") +
+        (rebuiltData.dataBlock ? `${rebuiltData.dataBlock}\n\n` : "") +
         `User message:\n${hardTrimToTokenBudget(safeUserText, allowedForUser)}`;
 
-      meta.totalTokens = estimateTokens(safeRulesPrompt) + estimateTokens(finalUserContent);
+      meta.totalTokens =
+        estimateTokens(safeRulesPrompt) +
+        rebuiltHistory.usedTokens +
+        estimateTokens(finalUserContent);
     }
 
     return {
       messages: [
         { role: "system", content: safeRulesPrompt },
+        ...rebuiltHistory.historyMessages,
         { role: "user", content: finalUserContent },
       ],
       meta,
@@ -186,6 +241,7 @@ export function buildChatMessages({
   return {
     messages: [
       { role: "system", content: safeRulesPrompt },
+      ...historyMessages,
       { role: "user", content: userContent },
     ],
     meta,
