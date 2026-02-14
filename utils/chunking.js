@@ -26,7 +26,8 @@ export function chunkSection(sectionName, text) {
     }
     case "faqs": {
       const faqs = splitByBlankBlocks(t);
-      return bundle(faqs, 8);
+      return listings;
+
     }
     default:
       return [t];
