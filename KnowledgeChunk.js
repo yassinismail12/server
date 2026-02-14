@@ -22,6 +22,12 @@ KnowledgeChunkSchema.index({
   clientId: 1,
   botType: 1,
   section: 1,
+  createdAt: -1,
 });
 
-export default mongoose.model("KnowledgeChunk", KnowledgeChunkSchema);
+export default mongoose.model(
+  "KnowledgeChunk",
+  KnowledgeChunkSchema,
+  "knowledge_chunks" // force exact collection name
+);
+
