@@ -20,7 +20,7 @@ import Page from "./pages.js";
 import ordersRoute from "./routes/orders.js";
 import whatsappRoute from "./whatsapp.js";
 import knowledgeRoute from "./routes/knowledge.js";
-
+import engagementRoutes from "./routes/engagement.js";
 import Product from "./Product.js"; // ✅ this registers the model
 
 const app = express();
@@ -1349,7 +1349,7 @@ app.use("/instagram", instagramRoute);
 app.use("/whatsapp", whatsappRoute);
 app.use("/api", ordersRoute);
 app.use("/api/knowledge", knowledgeRoute);
-
+app.use("/api/engagement", engagementRoutes);
 // ✅ MongoDB connection + start server
 const MONGODB_URI = process.env.MONGODB_URI;
 
