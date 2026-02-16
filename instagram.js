@@ -1,11 +1,9 @@
-// instagram.js (FIXED)
-// Key fixes:
-// ✅ DO NOT create blank client docs on webhook (causes missing tokens forever)
-// ✅ Skip is_echo events (never reply to your own messages)
-// ✅ Use correct IG DM send endpoint: POST /{PAGE_ID}/messages (NOT /{IG_ID}/messages)
-// ✅ Support legacy DB fields + new recommended fields
-// ✅ Dedupe on (igId + mid) instead of mid alone
-// ✅ Clear, consistent token handling + logging
+// instagram.js (FIXED v2 - Dedupe fixed properly)
+// ✅ Skip echo events
+// ✅ Only dedupe INBOUND USER TEXT messages
+// ✅ Dedupe key = (igBusinessId, mid)
+// ✅ Add env toggle: DEDUPE_ENABLED=true/false
+// ✅ Correct IG send endpoint: POST /{PAGE_ID}/messages
 
 import express from "express";
 import fetch from "node-fetch";
@@ -23,6 +21,8 @@ const mongoClient = new MongoClient(process.env.MONGODB_URI);
 const dbName = "Agent";
 let dbPromise = null;
 
+const DEDUPE_ENABLED = String(process.env.DEDUPE_ENABLED || "true").toLowerCase() === "true";
+
 // ===============================
 // Helpers
 // ===============================
@@ -30,7 +30,6 @@ function normalizeId(id) {
   return String(id || "").trim();
 }
 
-// removes Bearer, quotes, whitespace, and invisible chars
 function sanitizeAccessToken(token) {
   return String(token || "")
     .replace(/^Bearer\s+/i, "")
@@ -46,6 +45,19 @@ function isLikelyValidToken(token) {
 
 function nowIso() {
   return new Date().toISOString();
+}
+
+// Only treat actual user inbound text as a "chat message"
+// This prevents dedupe from firing on weird non-text events, delivery events, etc.
+function isInboundUserText({ igBusinessId, messaging }) {
+  const msg = messaging?.message;
+  if (!msg?.text) return false;                  // must be a text message
+  if (msg?.is_echo) return false;                // not echo
+  const senderId = normalizeId(messaging?.sender?.id);
+  if (!senderId) return false;
+  // If sender is the IG business itself, it's not a user inbound chat
+  if (senderId === normalizeId(igBusinessId)) return false;
+  return true;
 }
 
 // ===============================
@@ -64,35 +76,24 @@ async function connectDB() {
 }
 
 // ===============================
-// Client Resolution (IMPORTANT)
+// Client Resolution
 // ===============================
-// We accept webhook entry.id as IG Business ID (igBusinessId).
-// Token we need for sending is PAGE access token + PAGE ID.
-//
-// Your DB might have older field names. We support both:
-// New recommended fields:
-//   - igBusinessId, pageId, pageAccessToken
-// Legacy fields you may already have:
-//   - igId, PAGE_ACCESS_TOKEN, page_token, pageToken, PAGE_ID, pageId
 async function getClientDocByIgBusinessId(igBusinessId) {
   const db = await connectDB();
   const clients = db.collection("Clients");
   const igIdStr = normalizeId(igBusinessId);
 
-  // Try new schema first, then legacy.
   const client =
     (await clients.findOne({ igBusinessId: igIdStr })) ||
-    (await clients.findOne({ igId: igIdStr }));
+    (await clients.findOne({ igId: igIdStr })); // legacy
 
   if (!client) return null;
 
-  // Resolve pageId from multiple possible field names
   const pageId =
     normalizeId(client.pageId) ||
     normalizeId(client.PAGE_ID) ||
     normalizeId(client.page_id);
 
-  // Resolve pageAccessToken from multiple possible field names
   const pageAccessToken =
     sanitizeAccessToken(
       client.pageAccessToken ||
@@ -102,7 +103,12 @@ async function getClientDocByIgBusinessId(igBusinessId) {
         client.PAGE_TOKEN
     ) || "";
 
-  return { ...client, igBusinessId: igIdStr, resolvedPageId: pageId, resolvedPageAccessToken: pageAccessToken };
+  return {
+    ...client,
+    igBusinessId: igIdStr,
+    resolvedPageId: pageId,
+    resolvedPageAccessToken: pageAccessToken,
+  };
 }
 
 // ===============================
@@ -115,7 +121,6 @@ async function incrementMessageCount(igBusinessId) {
 
   const filter = { $or: [{ igBusinessId: igIdStr }, { igId: igIdStr }] };
 
-  // Try modern driver option first
   let updated;
   try {
     updated = await clients.findOneAndUpdate(
@@ -129,10 +134,9 @@ async function incrementMessageCount(igBusinessId) {
           quotaWarningSent: false,
         },
       },
-      { upsert: true, returnDocument: "after" } // mongodb v4+
+      { upsert: true, returnDocument: "after" }
     );
   } catch (e) {
-    // Fallback for older driver versions
     updated = await clients.findOneAndUpdate(
       filter,
       {
@@ -144,16 +148,12 @@ async function incrementMessageCount(igBusinessId) {
           quotaWarningSent: false,
         },
       },
-      { upsert: true, returnOriginal: false } // mongodb v3.x
+      { upsert: true, returnOriginal: false }
     );
   }
 
-  // Some driver/env combos still return null in updated.value; fetch explicitly
-  let doc = updated?.value || (await clients.findOne(filter));
-
-  if (!doc) {
-    throw new Error(`Failed to increment message count for igBusinessId=${igIdStr}`);
-  }
+  const doc = updated?.value || (await clients.findOne(filter));
+  if (!doc) throw new Error(`Failed to increment message count for igBusinessId=${igIdStr}`);
 
   if (doc.messageCount > doc.messageLimit) {
     return { allowed: false, messageCount: doc.messageCount, messageLimit: doc.messageLimit };
@@ -161,6 +161,8 @@ async function incrementMessageCount(igBusinessId) {
 
   const remaining = doc.messageLimit - doc.messageCount;
 
+  // you had 950 here; normally you warn at 100 remaining.
+  // Keeping your logic but feel free to change:
   if (remaining === 950 && !doc.quotaWarningSent) {
     await sendQuotaWarning(igIdStr);
     await clients.updateOne(filter, { $set: { quotaWarningSent: true } });
@@ -168,7 +170,6 @@ async function incrementMessageCount(igBusinessId) {
 
   return { allowed: true, messageCount: doc.messageCount, messageLimit: doc.messageLimit };
 }
-
 
 // ===============================
 // Conversations / Customers
@@ -222,12 +223,11 @@ async function saveCustomer(igBusinessId, userId, userProfile) {
   );
 }
 
-// IG user profile (best effort; falls back if token is missing)
+// IG user profile (best effort)
 async function getUserProfile(igUserId, pageAccessToken) {
   const token = sanitizeAccessToken(pageAccessToken);
   if (!isLikelyValidToken(token)) return { username: "there" };
 
-  // Works for Instagram Messaging webhooks user IDs in many setups; if it fails we fallback.
   const url = `https://graph.facebook.com/${encodeURIComponent(igUserId)}?fields=username&access_token=${encodeURIComponent(
     token
   )}`;
@@ -248,11 +248,11 @@ function isNewDay(lastDate) {
 }
 
 // ===============================
-// Dedupe (IMPORTANT)
+// Dedupe (fixed)
 // ===============================
-// Make sure your DB index is UNIQUE on { igBusinessId: 1, mid: 1 }
-// NOT just mid.
+// IMPORTANT: You need a unique index on { igBusinessId: 1, mid: 1 } in ProcessedEvents
 async function dedupeOrSkip({ igBusinessId, mid, senderId }) {
+  if (!DEDUPE_ENABLED) return false;
   if (!mid) return false;
 
   const db = await connectDB();
@@ -270,17 +270,14 @@ async function dedupeOrSkip({ igBusinessId, mid, senderId }) {
     return false; // not duplicate
   } catch (e) {
     // Only treat DUPLICATE KEY as duplicate
-    if (e && (e.code === 11000 || e.codeName === "DuplicateKey")) {
-      console.log("🔁 Duplicate webhook event, skipping", { igBusinessId: doc.igBusinessId, mid: doc.mid });
+    if (e?.code === 11000 || e?.codeName === "DuplicateKey") {
+      console.log("🔁 Duplicate inbound user message, skipping", { igBusinessId: doc.igBusinessId, mid: doc.mid });
       return true;
     }
-
-    // Anything else is a real DB error → don't silently skip
     console.error("❌ ProcessedEvents insert failed (NOT duplicate):", e?.message || e);
     throw e;
   }
 }
-
 
 // ===============================
 // Correct IG send: POST /{PAGE_ID}/messages
@@ -330,20 +327,17 @@ router.get("/", async (req, res) => {
   const db = await connectDB();
   const client = await db.collection("Clients").findOne({ VERIFY_TOKEN: token });
 
-  if (mode === "subscribe" && client) {
-    return res.status(200).send(challenge);
-  }
+  if (mode === "subscribe" && client) return res.status(200).send(challenge);
   return res.sendStatus(403);
 });
 
 // ===============================
 // Correct hard-coded IG send test
-// (Uses PAGE_ID, not IG_ID)
 // ===============================
 router.get("/ig-test-send", async (req, res) => {
   const pageId = normalizeId(req.query.pageId || process.env.PAGE_ID);
   const pageToken = sanitizeAccessToken(req.query.pageToken || process.env.PAGE_ACCESS_TOKEN);
-  const recipientId = normalizeId(req.query.recipientId); // IG user id from webhook (sender.id)
+  const recipientId = normalizeId(req.query.recipientId);
   const text = String(req.query.text || "✅ Hard-coded IG DM test").slice(0, 1000);
 
   try {
@@ -360,9 +354,7 @@ router.get("/ig-test-send", async (req, res) => {
 router.post("/", async (req, res) => {
   const body = req.body;
 
-  // Respond immediately so Meta doesn't retry
   res.status(200).send("EVENT_RECEIVED");
-
   if (body.object !== "instagram") return;
 
   (async () => {
@@ -374,31 +366,33 @@ router.post("/", async (req, res) => {
       for (const messaging of entry.messaging || []) {
         const mid = messaging?.message?.mid;
         const isEcho = !!messaging?.message?.is_echo;
-
-        // IG inbound: sender.id = USER, recipient.id = IG BUSINESS (often)
-        // Echo: sender.id = IG BUSINESS, recipient.id = PAGE or USER
         const senderId = normalizeId(messaging?.sender?.id);
         const recipientId = normalizeId(messaging?.recipient?.id);
 
-        console.log(
-          `📬 [${nowIso()}] IG event`,
-          JSON.stringify({ igBusinessId, senderId, recipientId, mid, isEcho })
-        );
+        console.log(`📬 [${nowIso()}] IG event`, JSON.stringify({ igBusinessId, senderId, recipientId, mid, isEcho }));
 
-        // ✅ MUST: skip echo events (messages sent by you)
+        // 1) Skip echo always
         if (isEcho) {
           console.log("↩️ Echo event, skipping", { igBusinessId, mid });
           continue;
         }
 
-        // ✅ Dedupe on (igBusinessId + mid)
+        // 2) Only process inbound user text messages as chat
+        const inboundUserText = isInboundUserText({ igBusinessId, messaging });
+        const userText = messaging?.message?.text;
+
+        if (!inboundUserText) {
+          // Not a chat message we want to reply to (prevents dedupe + processing on weird events)
+          continue;
+        }
+
+        // 3) Dedupe ONLY on inbound user text
         if (await dedupeOrSkip({ igBusinessId, mid, senderId })) continue;
 
-        // ✅ Resolve client. DO NOT auto-create blank clients here.
+        // 4) Resolve client
         const clientDoc = await getClientDocByIgBusinessId(igBusinessId);
-
         if (!clientDoc) {
-          console.warn("❌ No client mapping for this igBusinessId (not connected yet).", { igBusinessId });
+          console.warn("❌ No client mapping for this igBusinessId.", { igBusinessId });
           await db.collection("Logs").insertOne({
             igBusinessId,
             userId: senderId,
@@ -414,10 +408,7 @@ router.post("/", async (req, res) => {
         const pageToken = clientDoc.resolvedPageAccessToken;
 
         console.log("🔑 pageId:", pageId || "(missing)");
-        console.log(
-          "🔑 pageToken preview:",
-          pageToken ? `${pageToken.slice(0, 10)}...${pageToken.slice(-6)}` : "(empty)"
-        );
+        console.log("🔑 pageToken preview:", pageToken ? `${pageToken.slice(0, 10)}...${pageToken.slice(-6)}` : "(empty)");
 
         if (!pageId || !isLikelyValidToken(pageToken)) {
           console.warn("❌ Missing pageId or valid pageAccessToken for this client.", { igBusinessId, pageId });
@@ -434,38 +425,16 @@ router.post("/", async (req, res) => {
 
         // Bot disabled?
         if (clientDoc.active === false) {
-          try {
-            await sendInstagramDM({
-              pageId,
-              pageAccessToken: pageToken,
-              recipientId: senderId,
-              text: "⚠️ This bot is currently disabled.",
-            });
-          } catch (e) {
-            console.error("❌ Failed to send disabled message:", e.message);
-          }
+          await sendInstagramDM({ pageId, pageAccessToken: pageToken, recipientId: senderId, text: "⚠️ This bot is currently disabled." });
           continue;
         }
 
         // Quota
         const usage = await incrementMessageCount(igBusinessId);
         if (!usage.allowed) {
-          try {
-            await sendInstagramDM({
-              pageId,
-              pageAccessToken: pageToken,
-              recipientId: senderId,
-              text: "⚠️ Message limit reached.",
-            });
-          } catch (e) {
-            console.error("❌ Failed to send quota message:", e.message);
-          }
+          await sendInstagramDM({ pageId, pageAccessToken: pageToken, recipientId: senderId, text: "⚠️ Message limit reached." });
           continue;
         }
-
-        // Only handle text messages
-        const userText = messaging?.message?.text;
-        if (!userText) continue;
 
         console.log("📝 IG user message:", userText);
 
@@ -478,16 +447,13 @@ router.post("/", async (req, res) => {
         if (!convo || isNewDay(convo?.lastInteraction)) {
           const userProfile = await getUserProfile(senderId, pageToken);
           await saveCustomer(igBusinessId, senderId, userProfile);
-
           const username = userProfile?.username || "there";
           greeting = `Hi ${username}, good to see you today 👋`;
         }
 
-        // Add to chat history
         if (greeting) history.push({ role: "assistant", content: greeting, createdAt: new Date() });
         history.push({ role: "user", content: userText, createdAt: new Date() });
 
-        // OpenAI
         let assistantMessage = "";
         try {
           assistantMessage = await getChatCompletion(history);
@@ -505,11 +471,8 @@ router.post("/", async (req, res) => {
         }
 
         history.push({ role: "assistant", content: assistantMessage, createdAt: new Date() });
-
-        // Save conversation (store clientId if present)
         await saveConversation(igBusinessId, senderId, history, new Date(), clientDoc.clientId);
 
-        // Tour request email
         if (assistantMessage.includes("[TOUR_REQUEST]")) {
           const data = extractTourData(assistantMessage);
           data.igBusinessId = igBusinessId;
@@ -530,14 +493,8 @@ router.post("/", async (req, res) => {
 
         const finalReply = greeting ? `${greeting}\n\n${assistantMessage}` : assistantMessage;
 
-        // Send reply
         try {
-          await sendInstagramDM({
-            pageId,
-            pageAccessToken: pageToken,
-            recipientId: senderId,
-            text: finalReply,
-          });
+          await sendInstagramDM({ pageId, pageAccessToken: pageToken, recipientId: senderId, text: finalReply });
         } catch (e) {
           console.error("❌ IG send error:", e.message);
           await db.collection("Logs").insertOne({
