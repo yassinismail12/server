@@ -1,3 +1,4 @@
+import mongoose from "mongoose";
 import Client from "../Client.js";
 import { sendWhatsAppTemplate } from "../services/Whatsapp.js";
 
@@ -14,14 +15,30 @@ function waSafeParam(value) {
     .trim();
 }
 
+function isObjectIdLike(value) {
+  const v = String(value || "").trim();
+  return mongoose.Types.ObjectId.isValid(v);
+}
+
 /**
  * Notify client staff about a new order via WhatsApp Cloud API
+ *
+ * Accepts:
+ * - clientId = Mongo _id (ObjectId string)  ✅
+ * - clientId = business clientId like "realestate" ✅
  */
 export async function notifyClientStaffNewOrder({ clientId, payload }) {
-  // 1) Load client
-  const client = await Client.findById(clientId).lean();
+  const clientIdStr = String(clientId || "").trim();
+  if (!clientIdStr) throw new Error("clientId is required");
+
+  // 1) Load client (supports _id OR business clientId)
+  const query = isObjectIdLike(clientIdStr)
+    ? { _id: clientIdStr }
+    : { clientId: clientIdStr };
+
+  const client = await Client.findOne(query).lean();
   if (!client) {
-    throw new Error(`Client not found for id=${clientId}`);
+    throw new Error(`Client not found for ${JSON.stringify(query)}`);
   }
 
   // 2) Resolve staff numbers (SUPPORT OLD + NEW SCHEMA)
@@ -41,7 +58,7 @@ export async function notifyClientStaffNewOrder({ clientId, payload }) {
   console.log("📲 WhatsApp staff numbers resolved:", staffNumbers);
 
   if (!staffNumbers.length) {
-    console.warn("⚠️ No staff WhatsApp numbers found for client:", clientId);
+    console.warn("⚠️ No staff WhatsApp numbers found for client:", clientIdStr);
     return { ok: true, sent: 0, reason: "no staff numbers" };
   }
 
@@ -69,8 +86,7 @@ export async function notifyClientStaffNewOrder({ clientId, payload }) {
       const r = await sendWhatsAppTemplate({
         to,
         templateName: "new_order_alert",
-     languageCode: "en_US"
-,
+        languageCode: "en_US",
         bodyParams: [clientName, customerName, customerPhone, items, notes, orderId],
       });
 

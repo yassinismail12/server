@@ -1,20 +1,19 @@
-// instagram.js (Messenger + memory parity)
+// instagram.js (FULL — Messenger parity + memory + WhatsApp order + human escalation)
 // ✅ No auto-create clients from webhook
 // ✅ Idempotency store (ProcessedEventsIG) unique(igBusinessId + eventKey) + TTL
 // ✅ Skip echo events
 // ✅ Only process inbound USER TEXT DMs
 // ✅ Retrieval + runtime injection (same style as messenger.js)
-// ✅ Inject last N conversation turns into OpenAI (memory)
+// ✅ Memory: inject last N conversation turns into OpenAI
 // ✅ Flags: [Human_request], [ORDER_REQUEST], [TOUR_REQUEST]
 // ✅ Human escalation: pause bot + allow "!bot" resume
-// ✅ Order -> WhatsApp notify + Order.create (same utils as messenger.js)
+// ✅ Order -> WhatsApp notify (NO ObjectId cast issues) + Order.create
 // ✅ Tour -> email
 // ✅ Reply via correct endpoint: POST /{PAGE_ID}/messages?access_token=...
 
 import express from "express";
 import fetch from "node-fetch";
 import { MongoClient } from "mongodb";
-import crypto from "crypto";
 
 import { retrieveChunks } from "./services/retrieval.js";
 import { buildChatMessages } from "./services/promptBuilder.js";
@@ -24,10 +23,13 @@ import { SYSTEM_PROMPT } from "./utils/systemPrompt.js";
 import { sendQuotaWarning } from "./sendQuotaWarning.js";
 
 import Order from "./order.js";
-import { notifyClientStaffNewOrder } from "./utils/notifyClientStaffWhatsApp.js";
 
 import { sendTourEmail } from "./sendEmail.js";
 import { extractTourData } from "./extractTourData.js";
+
+// IMPORTANT: Use WhatsApp service directly so we can lookup by clientId STRING
+// (avoids: Cast to ObjectId failed for "realestate")
+import { sendWhatsAppTemplate } from "./services/Whatsapp.js";
 
 const router = express.Router();
 
@@ -85,6 +87,14 @@ function isLikelyValidToken(token) {
   return t.length >= 60 && /^EAA/i.test(t);
 }
 
+function waSafeParam(value) {
+  return String(value ?? "")
+    .replace(/[\r\n\t]+/g, " ")
+    .replace(/\s{5,}/g, "    ")
+    .trim()
+    .slice(0, 1024);
+}
+
 // ===============================
 // DB + indexes
 // ===============================
@@ -93,6 +103,13 @@ async function ensureIndexes(db) {
     const col = db.collection("ProcessedEventsIG");
     await col.createIndex({ igBusinessId: 1, eventKey: 1 }, { unique: true });
     await col.createIndex({ createdAt: 1 }, { expireAfterSeconds: 60 * 60 * 24 }); // 24h
+
+    // Helpful indexes
+    await db.collection("Conversations").createIndex({ igBusinessId: 1, userId: 1, source: 1 });
+    await db.collection("Customers").createIndex({ igBusinessId: 1, userId: 1, source: 1 });
+    await db.collection("Clients").createIndex({ igBusinessId: 1 });
+    await db.collection("Clients").createIndex({ igId: 1 });
+    await db.collection("Clients").createIndex({ clientId: 1 }, { unique: false });
   } catch (e) {
     console.warn("⚠️ ensureIndexes(IG) failed:", e.message);
   }
@@ -155,10 +172,6 @@ async function markProcessedIg(igBusinessId, eventKey, meta = {}) {
 // ===============================
 // Clients (NO auto-create from webhook)
 // ===============================
-function newClientId() {
-  return crypto.randomUUID();
-}
-
 async function getClientByIgBusinessId(igBusinessId) {
   const db = await connectDB();
   const clients = db.collection("Clients");
@@ -170,12 +183,7 @@ async function getClientByIgBusinessId(igBusinessId) {
 
   if (!client) return null;
 
-  if (!client.clientId) {
-    const cid = newClientId();
-    await clients.updateOne({ _id: client._id }, { $set: { clientId: cid, updatedAt: new Date() } });
-    client.clientId = cid;
-    log("warn", "IG client missing clientId; backfilled", { igBusinessId: igStr, clientId: cid });
-  }
+  const clientId = normalizeId(client.clientId); // ✅ this is your business string (e.g. "realestate")
 
   const pageId = normalizeId(client.pageId || client.PAGE_ID || client.page_id);
   const pageAccessToken = sanitizeAccessToken(
@@ -187,7 +195,7 @@ async function getClientByIgBusinessId(igBusinessId) {
       ""
   );
 
-  return { ...client, resolvedPageId: pageId, resolvedPageAccessToken: pageAccessToken };
+  return { ...client, clientId, resolvedPageId: pageId, resolvedPageAccessToken: pageAccessToken };
 }
 
 // ===============================
@@ -200,10 +208,10 @@ async function incrementMessageCountForIgClient(igBusinessId) {
 
   const filter = { $or: [{ igBusinessId: igStr }, { igId: igStr }] };
 
-  const updateRes = await clients.updateOne(
-    filter,
-    { $inc: { messageCount: 1 }, $set: { updatedAt: new Date() } }
-  );
+  const updateRes = await clients.updateOne(filter, {
+    $inc: { messageCount: 1 },
+    $set: { updatedAt: new Date() },
+  });
 
   if (!updateRes.matchedCount) {
     log("warn", "incrementMessageCountForIgClient: client not found; skipping", { igBusinessId: igStr });
@@ -212,12 +220,6 @@ async function incrementMessageCountForIgClient(igBusinessId) {
 
   const doc = await clients.findOne(filter);
   if (!doc) return { allowed: false, reason: "client_not_found" };
-
-  if (!doc.clientId) {
-    const cid = newClientId();
-    await clients.updateOne(filter, { $set: { clientId: cid, updatedAt: new Date() } });
-    doc.clientId = cid;
-  }
 
   const messageLimit = doc.messageLimit ?? 1000;
   const messageCount = doc.messageCount ?? 0;
@@ -250,19 +252,12 @@ async function getConversationIG(igBusinessId, userId, source = "instagram") {
 async function saveConversationIG(igBusinessId, userId, history, lastInteraction, clientId, source = "instagram") {
   const db = await connectDB();
   const igStr = normalizeId(igBusinessId);
+  const cid = normalizeId(clientId);
 
-  // ensure client exists
-  const client = await db.collection("Clients").findOne({ $or: [{ igBusinessId: igStr }, { igId: igStr }] });
-  if (!client) {
-    log("warn", "saveConversationIG: client not found; skipping", { igBusinessId: igStr });
-    await logToDb("warn", source, "saveConversationIG: client not found; skipping", { igBusinessId: igStr });
-    return;
-  }
-
-  let cid = clientId || client.clientId;
   if (!cid) {
-    cid = newClientId();
-    await db.collection("Clients").updateOne({ _id: client._id }, { $set: { clientId: cid, updatedAt: new Date() } });
+    log("warn", "saveConversationIG: missing clientId; skipping", { igBusinessId: igStr, userId });
+    await logToDb("warn", "instagram", "saveConversationIG: missing clientId; skipping", { igBusinessId: igStr, userId });
+    return;
   }
 
   await db.collection("Conversations").updateOne(
@@ -270,7 +265,7 @@ async function saveConversationIG(igBusinessId, userId, history, lastInteraction
     {
       $set: {
         igBusinessId: igStr,
-        clientId: cid,
+        clientId: cid, // ✅ your business string
         userId,
         history,
         lastInteraction,
@@ -361,14 +356,6 @@ function extractLineValue(text, label) {
   return m ? m[1].trim() : "";
 }
 
-function waSafeParam(text) {
-  return String(text || "")
-    .replace(/[\r\n\t]+/g, " ")
-    .replace(/\s{5,}/g, "    ")
-    .trim()
-    .slice(0, 1024);
-}
-
 // inbound USER text only
 function isInboundUserText(igBusinessId, ev) {
   const msg = ev?.message;
@@ -396,19 +383,13 @@ function injectHistory(messages, compactHistory) {
 
   if (!filtered.length) return messages;
 
-  // take last MEMORY_TURNS pairs (approx). We just slice last 2*MEMORY_TURNS messages.
   const sliceCount = Math.max(0, MEMORY_TURNS * 2);
   const tail = filtered.slice(-sliceCount);
+  if (!tail.length) return messages;
 
-  // Insert history AFTER system/rules messages (keep system first)
-  // Assume buildChatMessages returns something starting with system messages; we’ll append tail before the final user message.
-  // If structure differs, this is still safe.
-  const out = [];
-  for (let i = 0; i < messages.length; i++) {
-    out.push(messages[i]);
-  }
+  const out = messages.slice();
 
-  // If the last message is the current user message, better to insert history before it.
+  // If last is current user, insert history before it
   if (out.length && out[out.length - 1]?.role === "user") {
     const last = out.pop();
     out.push(...tail);
@@ -450,13 +431,75 @@ async function sendInstagramDM({ pageId, pageAccessToken, recipientId, text }) {
 }
 
 // ===============================
+// WhatsApp notify (lookup by clientId STRING, no ObjectId casting)
+// ===============================
+async function notifyClientStaffNewOrderByClientId({ clientId, payload }) {
+  const db = await connectDB();
+  const cid = normalizeId(clientId);
+
+  const client = await db.collection("Clients").findOne({ clientId: cid });
+  if (!client) throw new Error(`Client not found for clientId=${cid}`);
+
+  let staffNumbers = [];
+  if (Array.isArray(client.staffNumbers) && client.staffNumbers.length > 0) {
+    staffNumbers = client.staffNumbers;
+  } else if (client.staffWhatsApp) {
+    staffNumbers = [client.staffWhatsApp];
+  }
+
+  staffNumbers = staffNumbers.map((n) => String(n).trim()).filter(Boolean);
+
+  console.log("📲 WhatsApp staff numbers resolved:", staffNumbers);
+  if (!staffNumbers.length) {
+    console.warn("⚠️ No staff WhatsApp numbers found for client:", cid);
+    return { ok: true, sent: 0, reason: "no staff numbers" };
+  }
+
+  const clientName = waSafeParam(client.name || "Client");
+  const customerName = waSafeParam(payload?.customerName || "Unknown");
+  const customerPhone = waSafeParam(payload?.customerPhone || "N/A");
+  const items = waSafeParam(payload?.itemsText || "N/A");
+  const notes = waSafeParam(payload?.notes || "—");
+  const orderId = waSafeParam(payload?.orderId || "—");
+
+  let sent = 0;
+  const results = [];
+
+  for (const toRaw of staffNumbers) {
+    const to = waSafeParam(toRaw);
+    try {
+      console.log("📤 Sending WhatsApp order alert to:", to);
+
+      const r = await sendWhatsAppTemplate({
+        to,
+        templateName: "new_order_alert",
+        languageCode: "en_US",
+        bodyParams: [clientName, customerName, customerPhone, items, notes, orderId],
+      });
+
+      sent++;
+      results.push({ to, ok: true, response: r });
+    } catch (e) {
+      console.error("❌ WhatsApp send failed for", to, e.message);
+      results.push({ to, ok: false, error: e.message });
+    }
+  }
+
+  return { ok: true, sent, results };
+}
+
+// ===============================
 // Order flow (WhatsApp notify + Order.create)
+// clientId is your BUSINESS STRING, not Mongo _id
 // ===============================
 async function createOrderFlow({ clientId, igBusinessId, senderId, orderSummaryText, channel = "instagram" }) {
   const db = await connectDB();
+  const cid = normalizeId(clientId);
+  if (!cid) throw new Error("Missing clientId (string) for createOrderFlow");
 
-  const client = await db.collection("Clients").findOne({ clientId: normalizeId(clientId) });
-  if (!client) throw new Error(`Client not found for clientId=${clientId}`);
+  // ensure client exists (by string)
+  const client = await db.collection("Clients").findOne({ clientId: cid });
+  if (!client) throw new Error(`Client not found for clientId=${cid}`);
 
   const customer = await db.collection("Customers").findOne({
     igBusinessId: normalizeId(igBusinessId),
@@ -484,23 +527,23 @@ async function createOrderFlow({ clientId, igBusinessId, senderId, orderSummaryT
 
   const fallbackOrderId = `ORD-${Date.now()}`;
 
-  const notifyResult = await notifyClientStaffNewOrder({
-    clientId: client.clientId,
+  const notifyResult = await notifyClientStaffNewOrderByClientId({
+    clientId: cid,
     payload: {
-      customerName: waSafeParam(customerName),
-      customerPhone: waSafeParam(customerPhone),
-      itemsText: waSafeParam(itemsText),
-      notes: waSafeParam(combinedNotes),
-      orderId: waSafeParam(fallbackOrderId),
+      customerName,
+      customerPhone,
+      itemsText,
+      notes: combinedNotes,
+      orderId: fallbackOrderId,
       channel: "instagram",
     },
   });
 
-  log("info", "WhatsApp notify result (IG)", { igBusinessId, notifyResult });
+  log("info", "WhatsApp notify result (IG)", { igBusinessId, clientId: cid, notifyResult });
 
   try {
     const order = await Order.create({
-      clientId: client.clientId,
+      clientId: cid, // ✅ string
       channel,
       customer: {
         name: customerName,
@@ -512,11 +555,15 @@ async function createOrderFlow({ clientId, igBusinessId, senderId, orderSummaryT
       status: "new",
     });
 
-    log("info", "Order saved (IG)", { igBusinessId, orderId: String(order._id) });
+    log("info", "Order saved (IG)", { igBusinessId, clientId: cid, orderId: String(order._id) });
     return { order, notifyResult };
   } catch (e) {
-    log("warn", "Order save failed (IG) (WhatsApp already sent)", { igBusinessId, err: e.message });
-    await logToDb("warn", "order", "Order save failed (IG) (WhatsApp already sent)", { igBusinessId, err: e.message });
+    log("warn", "Order save failed (IG) (WhatsApp already sent)", { igBusinessId, clientId: cid, err: e.message });
+    await logToDb("warn", "order", "Order save failed (IG) (WhatsApp already sent)", {
+      igBusinessId,
+      clientId: cid,
+      err: e.message,
+    });
     return { order: null, notifyResult };
   }
 }
@@ -592,7 +639,7 @@ router.post("/", async (req, res) => {
         hasMessage: Boolean(webhook_event?.message),
       };
 
-      // Idempotency (like messenger.js)
+      // Idempotency (Meta retries)
       const eventKey = buildIgEventKey(webhook_event);
       if (eventKey && (await wasProcessedIg(igBusinessId, eventKey))) {
         log("info", "Skipping duplicate IG webhook event", { ...metaBase, eventKey });
@@ -602,13 +649,14 @@ router.post("/", async (req, res) => {
 
       // Only inbound user text
       if (!isInboundUserText(igBusinessId, webhook_event)) {
-        if (isEcho) log("info", "Echo event, ignored", { igBusinessId, eventKey });
+        if (isEcho) log("info", "Echo event ignored", { igBusinessId, eventKey });
         continue;
       }
 
       const userText = webhook_event.message.text;
 
       try {
+        // ✅ Only process onboarded clients (NO auto-create)
         const clientDoc = await getClientByIgBusinessId(igBusinessId);
         if (!clientDoc) {
           log("warn", "IG webhook for unknown igBusinessId; ignoring", { igBusinessId });
@@ -617,7 +665,20 @@ router.post("/", async (req, res) => {
         }
         if (clientDoc.active === false) continue;
 
-        // webhook freshness
+        // ✅ must have clientId string
+        if (!clientDoc.clientId) {
+          log("error", "Client missing clientId string (required). Fix Clients document.", {
+            igBusinessId,
+            clientMongoId: String(clientDoc._id),
+          });
+          await logToDb("error", "instagram", "Client missing clientId string (required).", {
+            igBusinessId,
+            clientMongoId: String(clientDoc._id),
+          });
+          continue;
+        }
+
+        // Track webhook freshness
         try {
           const db = await connectDB();
           await db.collection("Clients").updateOne(
@@ -630,8 +691,14 @@ router.post("/", async (req, res) => {
         const pageToken = clientDoc.resolvedPageAccessToken;
 
         if (!pageId || !isLikelyValidToken(pageToken)) {
-          log("warn", "Client missing pageId or PAGE_ACCESS_TOKEN for IG send", { igBusinessId, pageId: pageId || null });
-          await logToDb("warn", "instagram", "Client missing pageId or PAGE_ACCESS_TOKEN for IG send", { igBusinessId, pageId: pageId || null });
+          log("warn", "Client missing pageId or PAGE_ACCESS_TOKEN for IG send", {
+            igBusinessId,
+            pageId: pageId || null,
+          });
+          await logToDb("warn", "instagram", "Client missing pageId or PAGE_ACCESS_TOKEN for IG send", {
+            igBusinessId,
+            pageId: pageId || null,
+          });
           continue;
         }
 
@@ -669,7 +736,12 @@ router.post("/", async (req, res) => {
             { upsert: true }
           );
 
-          await sendInstagramDM({ pageId, pageAccessToken: pageToken, recipientId: senderId, text: "✅ Bot is reactivated!" });
+          await sendInstagramDM({
+            pageId,
+            pageAccessToken: pageToken,
+            recipientId: senderId,
+            text: "✅ Bot is reactivated!",
+          });
           continue;
         }
 
@@ -684,7 +756,7 @@ router.post("/", async (req, res) => {
         // ===============================
         const rulesPrompt = await SYSTEM_PROMPT({ igId: igBusinessId });
 
-        const clientId = clientDoc.clientId;
+        const clientId = clientDoc.clientId; // ✅ string like "realestate"
         const botType = clientDoc?.botType || "default";
         const sectionsOrder = clientDoc?.sectionsOrder || ["menu", "offers", "hours"];
 
@@ -692,6 +764,7 @@ router.post("/", async (req, res) => {
         const convo = await getConversationIG(igBusinessId, senderId, "instagram");
         const compactHistory = Array.isArray(convo?.history) ? convo.history : [];
 
+        // greeting
         let greeting = "";
         if (!convo || isNewDay(convo.lastInteraction)) {
           const userProfile = await getUserProfileIG(senderId, pageToken, metaBase);
@@ -703,9 +776,14 @@ router.post("/", async (req, res) => {
         // usage check
         const usage = await incrementMessageCountForIgClient(igBusinessId);
         if (!usage.allowed) {
-          if (usage.reason === "client_not_found") return;
-          await sendInstagramDM({ pageId, pageAccessToken: pageToken, recipientId: senderId, text: "⚠️ Message limit reached." });
-          return;
+          if (usage.reason === "client_not_found") continue;
+          await sendInstagramDM({
+            pageId,
+            pageAccessToken: pageToken,
+            recipientId: senderId,
+            text: "⚠️ Message limit reached.",
+          });
+          continue;
         }
 
         // retrieve relevant chunks
@@ -726,9 +804,10 @@ router.post("/", async (req, res) => {
           sectionsOrder,
         });
 
-        // ✅ Inject memory (last N turns) into OpenAI
+        // inject memory
         const messagesForOpenAI = injectHistory(baseMessages, compactHistory);
 
+        // OpenAI
         let assistantMessage = "";
         try {
           assistantMessage = await getChatCompletion(messagesForOpenAI);
@@ -738,7 +817,7 @@ router.post("/", async (req, res) => {
           assistantMessage = "⚠️ I'm having trouble right now. Please try again shortly.";
         }
 
-        // Flags (same as messenger.js)
+        // Flags
         const flags = { human: false, tour: false, order: false };
 
         if (assistantMessage.includes("[Human_request]")) {
@@ -803,7 +882,8 @@ router.post("/", async (req, res) => {
               pageId,
               pageAccessToken: pageToken,
               recipientId: senderId,
-              text: "✅ Your order request has been received.\nA staff member will contact you shortly.\n\nتم استلام طلبك وسيتم التواصل معك قريبًا.",
+              text:
+                "✅ Your order request has been received.\nA staff member will contact you shortly.\n\nتم استلام طلبك وسيتم التواصل معك قريبًا.",
             });
 
             compactHistory.push({ role: "user", content: userText, createdAt: new Date() });
@@ -853,12 +933,18 @@ router.post("/", async (req, res) => {
         await saveConversationIG(igBusinessId, senderId, compactHistory, new Date(), clientId, "instagram");
 
         const combinedMessage = greeting ? `${greeting}\n\n${assistantMessage}` : assistantMessage;
-        await sendInstagramDM({ pageId, pageAccessToken: pageToken, recipientId: senderId, text: combinedMessage });
+
+        await sendInstagramDM({
+          pageId,
+          pageAccessToken: pageToken,
+          recipientId: senderId,
+          text: combinedMessage,
+        });
       } catch (error) {
         log("error", "IG handler error", { ...metaBase, err: error.message });
         await logToDb("error", "instagram", "IG handler error", { ...metaBase, err: error.message });
 
-        // best-effort fail message
+        // Best-effort fail message
         try {
           const clientDoc = await getClientByIgBusinessId(igBusinessId);
           if (clientDoc?.resolvedPageId && isLikelyValidToken(clientDoc?.resolvedPageAccessToken)) {
