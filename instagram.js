@@ -113,39 +113,62 @@ async function incrementMessageCount(igBusinessId) {
   const clients = db.collection("Clients");
   const igIdStr = normalizeId(igBusinessId);
 
-  // NOTE: We update by igBusinessId (or legacy igId)
-  const updated = await clients.findOneAndUpdate(
-    { $or: [{ igBusinessId: igIdStr }, { igId: igIdStr }] },
-    {
-      $inc: { messageCount: 1 },
-      $setOnInsert: {
-        igBusinessId: igIdStr,
-        active: true,
-        messageLimit: 1000,
-        quotaWarningSent: false,
-      },
-    },
-    { upsert: true, returnDocument: "after" }
-  );
+  const filter = { $or: [{ igBusinessId: igIdStr }, { igId: igIdStr }] };
 
-  const doc = updated.value;
-  if (!doc) throw new Error(`Failed to increment message count for igBusinessId=${igIdStr}`);
+  // Try modern driver option first
+  let updated;
+  try {
+    updated = await clients.findOneAndUpdate(
+      filter,
+      {
+        $inc: { messageCount: 1 },
+        $setOnInsert: {
+          igBusinessId: igIdStr,
+          active: true,
+          messageLimit: 1000,
+          quotaWarningSent: false,
+        },
+      },
+      { upsert: true, returnDocument: "after" } // mongodb v4+
+    );
+  } catch (e) {
+    // Fallback for older driver versions
+    updated = await clients.findOneAndUpdate(
+      filter,
+      {
+        $inc: { messageCount: 1 },
+        $setOnInsert: {
+          igBusinessId: igIdStr,
+          active: true,
+          messageLimit: 1000,
+          quotaWarningSent: false,
+        },
+      },
+      { upsert: true, returnOriginal: false } // mongodb v3.x
+    );
+  }
+
+  // Some driver/env combos still return null in updated.value; fetch explicitly
+  let doc = updated?.value || (await clients.findOne(filter));
+
+  if (!doc) {
+    throw new Error(`Failed to increment message count for igBusinessId=${igIdStr}`);
+  }
 
   if (doc.messageCount > doc.messageLimit) {
     return { allowed: false, messageCount: doc.messageCount, messageLimit: doc.messageLimit };
   }
 
   const remaining = doc.messageLimit - doc.messageCount;
-  if (remaining === 100 && !doc.quotaWarningSent) {
+
+  if (remaining === 950 && !doc.quotaWarningSent) {
     await sendQuotaWarning(igIdStr);
-    await clients.updateOne(
-      { $or: [{ igBusinessId: igIdStr }, { igId: igIdStr }] },
-      { $set: { quotaWarningSent: true } }
-    );
+    await clients.updateOne(filter, { $set: { quotaWarningSent: true } });
   }
 
   return { allowed: true, messageCount: doc.messageCount, messageLimit: doc.messageLimit };
 }
+
 
 // ===============================
 // Conversations / Customers
