@@ -1,5 +1,5 @@
 import express from "express";
-import Client from "../models/Client.js"; // adjust path/name to your real Client model
+import Client from "../Client.js"; // adjust path/name to your real Client model
 
 const router = express.Router();
 
