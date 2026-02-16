@@ -252,6 +252,34 @@ function isNewDay(lastDate) {
 // ===============================
 // Make sure your DB index is UNIQUE on { igBusinessId: 1, mid: 1 }
 // NOT just mid.
+async function dedupeOrSkip({ igBusinessId, mid, senderId }) {
+  if (!mid) return false;
+
+  const db = await connectDB();
+  const processed = db.collection("ProcessedEvents");
+
+  const doc = {
+    igBusinessId: normalizeId(igBusinessId),
+    mid: normalizeId(mid),
+    senderId: normalizeId(senderId),
+    createdAt: new Date(),
+  };
+
+  try {
+    await processed.insertOne(doc);
+    return false; // not duplicate
+  } catch (e) {
+    // Only treat DUPLICATE KEY as duplicate
+    if (e && (e.code === 11000 || e.codeName === "DuplicateKey")) {
+      console.log("🔁 Duplicate webhook event, skipping", { igBusinessId: doc.igBusinessId, mid: doc.mid });
+      return true;
+    }
+
+    // Anything else is a real DB error → don't silently skip
+    console.error("❌ ProcessedEvents insert failed (NOT duplicate):", e?.message || e);
+    throw e;
+  }
+}
 
 
 // ===============================
