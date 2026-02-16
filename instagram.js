@@ -252,25 +252,7 @@ function isNewDay(lastDate) {
 // ===============================
 // Make sure your DB index is UNIQUE on { igBusinessId: 1, mid: 1 }
 // NOT just mid.
-async function dedupeOrSkip({ igBusinessId, mid, senderId }) {
-  if (!mid) return false;
-  const db = await connectDB();
-  const processed = db.collection("ProcessedEvents");
 
-  try {
-    await processed.insertOne({
-      igBusinessId: normalizeId(igBusinessId),
-      mid: normalizeId(mid),
-      senderId: normalizeId(senderId),
-      createdAt: new Date(),
-    });
-    return false; // not duplicate
-  } catch (e) {
-    // Mongo duplicate key is typically code 11000
-    console.log("🔁 Duplicate webhook event, skipping", { igBusinessId, mid });
-    return true; // duplicate
-  }
-}
 
 // ===============================
 // Correct IG send: POST /{PAGE_ID}/messages
