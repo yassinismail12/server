@@ -141,6 +141,18 @@ export function verifyToken(req, res, next) {
     return res.status(401).json({ error: "Invalid token" });
   }
 }
+function attachClientId(req, res, next) {
+  // verifyToken already ran, so req.user exists
+  if (!req.user) return res.status(401).json({ error: "Unauthorized" });
+
+  // ✅ Clients can only access their own data
+  if (req.user.role === "client") {
+    req.query.clientId = req.user.clientId;
+  }
+
+  // ✅ Admin can optionally pass ?clientId=... if you want
+  next();
+}
 
 function requireClientOwnership(req, res, next) {
   // If verifyToken wasn't used, req.user is undefined
@@ -1349,7 +1361,8 @@ app.use("/instagram", instagramRoute);
 app.use("/whatsapp", whatsappRoute);
 app.use("/api", ordersRoute);
 app.use("/api/knowledge", knowledgeRoute);
-app.use("/api/engagement", engagementRoutes);
+app.use("/api/engagement", verifyToken, attachClientId, engagementRoutes);
+
 // ✅ MongoDB connection + start server
 const MONGODB_URI = process.env.MONGODB_URI;
 
