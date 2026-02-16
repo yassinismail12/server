@@ -28,11 +28,7 @@ router.get("/pages/:pageId/posts", async (req, res) => {
 
     const token = await getPageTokenForClient(clientId, pageId);
 
-    const url =
-      `https://graph.facebook.com/v20.0/${pageId}/feed` +
-      `?fields=message,created_time,permalink_url` +
-      `&limit=5` +
-      `&access_token=${encodeURIComponent(token)}`;
+   const url = `https://graph.facebook.com/v20.0/${pageId}/feed?fields=message,created_time,permalink_url&limit=5&access_token${encodeURIComponent(token)}`;
 
     const r = await fetch(url);
     const data = await r.json();
