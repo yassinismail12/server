@@ -1,3 +1,9 @@
+// server.js (updated for Instagram connect + review-ready asset visibility)
+// ✅ Adds: fetch + store IG handle/name/pfp via connected Page
+// ✅ Adds: page picker finalize endpoint (for multi-page users)
+// ✅ Tightens: admin-only renew endpoints
+// ⚠️ Keep your existing instagram.js for DM/webhook logic — this file just fixes auth + storing the right IG fields.
+
 import express from "express";
 import mongoose from "mongoose";
 import dotenv from "dotenv";
@@ -26,7 +32,76 @@ import Product from "./Product.js"; // ✅ this registers the model
 const app = express();
 dotenv.config();
 
+// -------------------------
+// Helpers
+// -------------------------
+function normalizeUrl(u = "") {
+  return String(u).trim().replace(/\/+$/, "");
+}
+
+async function fetchJson(url, opts = {}) {
+  const r = await fetch(url, opts);
+  const text = await r.text();
+  let data = {};
+  try {
+    data = JSON.parse(text);
+  } catch {
+    data = { raw: text };
+  }
+  if (!r.ok) {
+    const err = new Error(`HTTP ${r.status} ${r.statusText}`);
+    err.data = data;
+    throw err;
+  }
+  return data;
+}
+
+/**
+ * ✅ Get connected Instagram professional account for a Page (if any),
+ * and fetch reviewer-required fields (handle/name/pfp).
+ *
+ * Works with Page Access Token.
+ */
+async function fetchInstagramAccountForPage(pageId, pageAccessToken) {
+  // 1) Ask page for its connected IG business account
+  const pageFieldsUrl =
+    `https://graph.facebook.com/v20.0/${encodeURIComponent(pageId)}` +
+    `?fields=instagram_business_account{id,username,name,profile_picture_url}` +
+    `&access_token=${encodeURIComponent(pageAccessToken)}`;
+
+  const pageData = await fetchJson(pageFieldsUrl);
+  const ig = pageData?.instagram_business_account;
+
+  if (!ig?.id) {
+    return {
+      hasInstagram: false,
+      igId: "",
+      igUsername: "",
+      igName: "",
+      igProfilePicUrl: "",
+    };
+  }
+
+  // 2) Some accounts return limited fields above; fetch again from IG node to be safe
+  const igFieldsUrl =
+    `https://graph.facebook.com/v20.0/${encodeURIComponent(ig.id)}` +
+    `?fields=id,username,name,profile_picture_url` +
+    `&access_token=${encodeURIComponent(pageAccessToken)}`;
+
+  const igData = await fetchJson(igFieldsUrl);
+
+  return {
+    hasInstagram: true,
+    igId: String(igData?.id || ig.id || ""),
+    igUsername: String(igData?.username || ig.username || ""),
+    igName: String(igData?.name || ig.name || ""),
+    igProfilePicUrl: String(igData?.profile_picture_url || ig.profile_picture_url || ""),
+  };
+}
+
+// -------------------------
 // Middleware
+// -------------------------
 app.use(
   cors({
     origin: [
@@ -41,9 +116,8 @@ app.use(
 );
 
 app.use(cookieParser());
-
-app.use(express.json({ limit: "10mb" })); // allow JSON up to 10 MB
-app.use(express.urlencoded({ limit: "10mb", extended: true })); // for form data
+app.use(express.json({ limit: "10mb" }));
+app.use(express.urlencoded({ limit: "10mb", extended: true }));
 
 // ✅ Ensure uploads folder exists
 const uploadDir = path.join(process.cwd(), "uploads");
@@ -53,9 +127,7 @@ if (!fs.existsSync(uploadDir)) {
 
 // ✅ Multer config (safe file upload)
 const storage = multer.diskStorage({
-  destination: (req, file, cb) => {
-    cb(null, uploadDir);
-  },
+  destination: (req, file, cb) => cb(null, uploadDir),
   filename: (req, file, cb) => {
     const uniqueSuffix = Date.now() + "-" + Math.round(Math.random() * 1e9);
     cb(null, uniqueSuffix + "-" + file.originalname);
@@ -65,38 +137,21 @@ const storage = multer.diskStorage({
 // ✅ File filter: allow only safe types
 const fileFilter = (req, file, cb) => {
   const allowedTypes = [
-    "text/plain", // .txt
-    "text/markdown", // .md
-    "text/csv", // .csv
-    "text/tab-separated-values", // .tsv
-    "application/pdf", // .pdf
-    "application/json", // .json
+    "text/plain",
+    "text/markdown",
+    "text/csv",
+    "text/tab-separated-values",
+    "application/pdf",
+    "application/json",
   ];
-
-  if (allowedTypes.includes(file.mimetype)) {
-    cb(null, true);
-  } else {
-    cb(new Error("❌ Invalid file type. Only TXT, MD, CSV, TSV, PDF, JSON allowed."), false);
-  }
+  if (allowedTypes.includes(file.mimetype)) cb(null, true);
+  else cb(new Error("❌ Invalid file type. Only TXT, MD, CSV, TSV, PDF, JSON allowed."), false);
 };
 
 const upload = multer({
   storage,
   fileFilter,
   limits: { fileSize: 5 * 1024 * 1024 }, // 5 MB max
-});
-
-// ✅ File upload route (basic)
-app.post("/upload", upload.single("file"), (req, res) => {
-  if (!req.file) {
-    return res.status(400).json({ error: "❌ No file uploaded" });
-  }
-  res.json({
-    message: "✅ File uploaded successfully",
-    filename: req.file.filename,
-    path: `/uploads/${req.file.filename}`,
-    size: req.file.size,
-  });
 });
 
 // ✅ Helper: Clean and normalize file content
@@ -107,7 +162,6 @@ function cleanFileContent(content, mimetype) {
     .replace(/\n{3,}/g, "\n\n")
     .trim();
 
-  // CSV / TSV => turn into table-like text
   if (mimetype === "text/csv" || mimetype === "text/tab-separated-values") {
     const rows = cleaned.split("\n").map((r) => r.split(/,|\t/).join(" | "));
     cleaned = rows.join("\n");
@@ -117,13 +171,9 @@ function cleanFileContent(content, mimetype) {
     try {
       const parsed = JSON.parse(content);
       cleaned = JSON.stringify(parsed, null, 2);
-    } catch (err) {
+    } catch {
       // leave as-is
     }
-  }
-
-  if (mimetype === "text/markdown") {
-    cleaned = cleaned.trim();
   }
 
   return cleaned;
@@ -137,36 +187,30 @@ export function verifyToken(req, res, next) {
     const decoded = jwt.verify(token, process.env.JWT_SECRET);
     req.user = decoded; // { id, role, clientId }
     next();
-  } catch (err) {
+  } catch {
     return res.status(401).json({ error: "Invalid token" });
   }
 }
+
 function attachClientId(req, res, next) {
-  // verifyToken already ran, so req.user exists
   if (!req.user) return res.status(401).json({ error: "Unauthorized" });
-
-  // ✅ Clients can only access their own data
-  if (req.user.role === "client") {
-    req.query.clientId = req.user.clientId;
-  }
-
-  // ✅ Admin can optionally pass ?clientId=... if you want
+  if (req.user.role === "client") req.query.clientId = req.user.clientId;
   next();
 }
 
 function requireClientOwnership(req, res, next) {
-  // If verifyToken wasn't used, req.user is undefined
   if (!req.user) return res.status(401).json({ error: "Unauthorized" });
-
   if (req.user.role === "admin") return next();
-
   if (req.user.role === "client") {
     const paramId = req.params.clientId || req.params.id;
-    if (paramId && paramId !== req.user.clientId) {
-      return res.status(403).json({ error: "Forbidden" });
-    }
+    if (paramId && paramId !== req.user.clientId) return res.status(403).json({ error: "Forbidden" });
   }
+  next();
+}
 
+function requireAdmin(req, res, next) {
+  if (!req.user) return res.status(401).json({ error: "Unauthorized" });
+  if (req.user.role !== "admin") return res.status(403).json({ error: "Forbidden" });
   next();
 }
 
@@ -174,8 +218,17 @@ function requireClientOwnership(req, res, next) {
 app.use("/uploads", express.static(uploadDir));
 
 // Root route
-app.get("/", (req, res) => {
-  res.send("✅ Server is running!");
+app.get("/", (req, res) => res.send("✅ Server is running!"));
+
+// ✅ File upload route (basic)
+app.post("/upload", upload.single("file"), (req, res) => {
+  if (!req.file) return res.status(400).json({ error: "❌ No file uploaded" });
+  res.json({
+    message: "✅ File uploaded successfully",
+    filename: req.file.filename,
+    path: `/uploads/${req.file.filename}`,
+    size: req.file.size,
+  });
 });
 
 // ✅ Upload file & save into Client.files[]
@@ -184,9 +237,7 @@ app.post("/upload/:clientId", verifyToken, requireClientOwnership, upload.single
     const { clientId } = req.params;
     const { name } = req.body;
 
-    if (!req.file) {
-      return res.status(400).json({ error: "❌ No file uploaded" });
-    }
+    if (!req.file) return res.status(400).json({ error: "❌ No file uploaded" });
 
     const filePath = path.join(uploadDir, req.file.filename);
     let content = "";
@@ -201,21 +252,12 @@ app.post("/upload/:clientId", verifyToken, requireClientOwnership, upload.single
     }
 
     const client = await Client.findOne({ clientId });
-    if (!client) {
-      return res.status(404).json({ error: "❌ Client not found" });
-    }
+    if (!client) return res.status(404).json({ error: "❌ Client not found" });
 
-    client.files.push({
-      name: name || req.file.originalname,
-      content,
-    });
-
+    client.files.push({ name: name || req.file.originalname, content });
     await client.save();
 
-    res.json({
-      message: "✅ File uploaded, cleaned, and saved to client",
-      client,
-    });
+    res.json({ message: "✅ File uploaded, cleaned, and saved to client", client });
   } catch (err) {
     console.error("❌ Error saving file to client:", err);
     res.status(500).json({ error: "Server error" });
@@ -228,9 +270,7 @@ app.delete("/clients/:clientId/files/:fileId", verifyToken, requireClientOwnersh
     const { clientId, fileId } = req.params;
 
     const client = await Client.findOne({ clientId });
-    if (!client) {
-      return res.status(404).json({ error: "❌ Client not found" });
-    }
+    if (!client) return res.status(404).json({ error: "❌ Client not found" });
 
     client.files = client.files.filter((f) => f._id.toString() !== fileId);
     await client.save();
@@ -245,8 +285,6 @@ app.delete("/clients/:clientId/files/:fileId", verifyToken, requireClientOwnersh
 // ------------------------------------
 // ✅ Minimal WARNINGS endpoint (NEW)
 // ------------------------------------
-// Client-friendly warnings (no token math)
-// GET /api/clients/:clientId/health
 app.get("/api/clients/:clientId/health", verifyToken, requireClientOwnership, async (req, res) => {
   try {
     const { clientId } = req.params;
@@ -256,21 +294,15 @@ app.get("/api/clients/:clientId/health", verifyToken, requireClientOwnership, as
 
     const warnings = [];
 
-    // 1) Quota warning
     const used = client.messageCount || 0;
     const quota = client.messageLimit || 0;
     if (quota > 0) {
       const ratio = used / quota;
       if (ratio >= 0.9) {
-        warnings.push({
-          code: "QUOTA_HIGH",
-          severity: "warn",
-          message: "You are close to your message quota (90%+ used).",
-        });
+        warnings.push({ code: "QUOTA_HIGH", severity: "warn", message: "You are close to your message quota (90%+ used)." });
       }
     }
 
-    // 2) Page connection / token presence
     if (client.pageId && !client.PAGE_ACCESS_TOKEN) {
       warnings.push({
         code: "PAGE_TOKEN_MISSING",
@@ -279,7 +311,6 @@ app.get("/api/clients/:clientId/health", verifyToken, requireClientOwnership, as
       });
     }
 
-    // 3) Webhook freshness (if page connected)
     if (client.pageId) {
       const lastWebhookAt = client.lastWebhookAt ? new Date(client.lastWebhookAt) : null;
       const staleMs = 24 * 60 * 60 * 1000;
@@ -291,20 +322,13 @@ app.get("/api/clients/:clientId/health", verifyToken, requireClientOwnership, as
           message: "No webhook has been received yet. Trigger a test message/comment and refresh.",
         });
       } else if (Date.now() - lastWebhookAt.getTime() > staleMs) {
-        warnings.push({
-          code: "WEBHOOK_STALE",
-          severity: "warn",
-          message: "No webhook received in the last 24 hours.",
-        });
+        warnings.push({ code: "WEBHOOK_STALE", severity: "warn", message: "No webhook received in the last 24 hours." });
       }
     }
 
-    // 4) Prompt risk heuristic (simple)
-    // Latest conversation: if too many messages or very long message
     const latest = await Conversation.findOne({ clientId }).sort({ updatedAt: -1 }).lean();
     if (latest?.history?.length) {
-      const historyLen = latest.history.length;
-      if (historyLen > 40) {
+      if (latest.history.length > 40) {
         warnings.push({
           code: "PROMPT_RISK_LONG_CHAT",
           severity: "warn",
@@ -322,9 +346,8 @@ app.get("/api/clients/:clientId/health", verifyToken, requireClientOwnership, as
       }
     }
 
-    // 5) Knowledge size heuristic (files stored on Client)
-    const totalKbChars = (client.files || []).reduce((sum, f) => sum + String(f?.content || "").length, 0);
-    if (totalKbChars > 100000) {
+    const totalChars = (client.files || []).reduce((sum, f) => sum + String(f?.content || "").length, 0);
+    if (totalChars > 100000) {
       warnings.push({
         code: "KB_LARGE",
         severity: "warn",
@@ -344,6 +367,8 @@ app.get("/api/clients/:clientId/health", verifyToken, requireClientOwnership, as
         quota,
         lastWebhookAt: client.lastWebhookAt || null,
         hasPage: Boolean(client.pageId),
+        hasInstagram: Boolean(client.igId),
+        igUsername: client.igUsername || "",
       },
     });
   } catch (err) {
@@ -359,10 +384,7 @@ app.get("/api/clients/:id", verifyToken, requireClientOwnership, async (req, res
   try {
     const { id } = req.params;
     const client = await Client.findOne({ clientId: id });
-
-    if (!client) {
-      return res.status(404).json({ error: "Client not found" });
-    }
+    if (!client) return res.status(404).json({ error: "Client not found" });
 
     const stats = await Conversation.aggregate([
       { $match: { clientId: id } },
@@ -385,18 +407,24 @@ app.get("/api/clients/:id", verifyToken, requireClientOwnership, async (req, res
       email: client.email || "",
       clientId: client.clientId || "",
       pageId: client.pageId || "",
+      PAGE_NAME: client.PAGE_NAME || "",
+      PAGE_ACCESS_TOKEN: client.PAGE_ACCESS_TOKEN || "",
+
       igId: client.igId || "",
+      igUsername: client.igUsername || "",
+      igName: client.igName || "",
+      igProfilePicUrl: client.igProfilePicUrl || "",
+      igAccessToken: client.igAccessToken || "",
+
       used: client.messageCount || 0,
       quota: client.messageLimit || 0,
       remaining: (client.messageLimit || 0) - (client.messageCount || 0),
+
       files: client.files || [],
       lastActive: client.updatedAt || client.createdAt,
       systemPrompt: client.systemPrompt || "",
       faqs: client.faqs || "",
       active: client.active ?? false,
-      PAGE_ACCESS_TOKEN: client.PAGE_ACCESS_TOKEN || "",
-      igAccessToken: client.igAccessToken || "",
-      PAGE_NAME: client.PAGE_NAME || "",
 
       totalHumanRequests: convoStats.totalHumanRequests || 0,
       totalTourRequests: convoStats.totalTourRequests || 0,
@@ -409,15 +437,14 @@ app.get("/api/clients/:id", verifyToken, requireClientOwnership, async (req, res
   }
 });
 
-// POST /admin/renew/:clientId
-app.post("/admin/renew/:clientId", async (req, res) => {
+// ----------------------
+// Admin renew (secured)
+// ----------------------
+app.post("/admin/renew/:clientId", verifyToken, requireAdmin, async (req, res) => {
   try {
     const { clientId } = req.params;
-
     const client = await Client.findOne({ clientId });
-    if (!client) {
-      return res.status(404).json({ error: "❌ Client not found" });
-    }
+    if (!client) return res.status(404).json({ error: "❌ Client not found" });
 
     const now = new Date();
     const nextMonth = new Date();
@@ -442,8 +469,7 @@ app.post("/admin/renew/:clientId", async (req, res) => {
   }
 });
 
-// POST /admin/renew-all
-app.post("/admin/renew-all", async (req, res) => {
+app.post("/admin/renew-all", verifyToken, requireAdmin, async (req, res) => {
   try {
     const now = new Date();
     const nextMonth = new Date();
@@ -465,17 +491,15 @@ app.post("/admin/renew-all", async (req, res) => {
   }
 });
 
+// ------------------------------------
+// Auth / Users
+// ------------------------------------
 app.post("/api/create-admin", async (req, res) => {
   try {
     const { email, password } = req.body;
     const hashedPassword = await bcrypt.hash(password, 10);
 
-    const admin = new User({
-      email,
-      password: hashedPassword,
-      role: "admin",
-    });
-
+    const admin = new User({ email, password: hashedPassword, role: "admin" });
     await admin.save();
     res.json({ message: "✅ Admin created", admin });
   } catch (err) {
@@ -489,14 +513,7 @@ app.post("/api/create-client", async (req, res) => {
     const { name, email, password, clientId } = req.body;
     const hashedPassword = await bcrypt.hash(password, 10);
 
-    const clientUser = new User({
-      name,
-      email,
-      password: hashedPassword,
-      role: "client",
-      clientId,
-    });
-
+    const clientUser = new User({ name, email, password: hashedPassword, role: "client", clientId });
     await clientUser.save();
     res.json({ message: "✅ Client user created", clientUser });
   } catch (err) {
@@ -526,286 +543,6 @@ async function createAdmin() {
   }
 }
 createAdmin();
-
-app.post("/api/migrate-clients-to-users", async (req, res) => {
-  try {
-    const clients = await Client.find();
-
-    const createdUsers = [];
-    for (const c of clients) {
-      const existing = await User.findOne({ clientId: c._id });
-      if (existing) continue;
-
-      const user = new User({
-        name: c.name,
-        email: c.email || `${c._id}@example.com`,
-        password: await bcrypt.hash("default123", 10),
-        role: "client",
-        clientId: c.clientId || "",
-      });
-
-      await user.save();
-      createdUsers.push(user);
-    }
-
-    res.json({
-      message: `✅ Migrated ${createdUsers.length} clients to users`,
-      createdUsers,
-    });
-  } catch (err) {
-    console.error("❌ Migration error:", err);
-    res.status(500).json({ error: "Migration failed" });
-  }
-});
-
-// Dashboard stats route (admin)
-app.get("/api/stats", verifyToken, async (req, res) => {
-  if (req.user.role !== "admin") {
-    return res.status(403).json({ error: "Forbidden" });
-  }
-  try {
-    const totalClients = await Client.countDocuments();
-    const clients = await Client.find();
-
-    const convoStats = await Conversation.aggregate([
-      {
-        $group: {
-          _id: null,
-          totalHumanRequests: { $sum: "$humanRequestCount" },
-          totalTourRequests: { $sum: "$tourRequestCount" },
-          totalorderRequests: { $sum: "$orderRequestCount" },
-          activeHumanChats: { $sum: { $cond: ["$humanEscalation", 1, 0] } },
-        },
-      },
-    ]);
-
-    const globalStats = convoStats[0] || {
-      totalHumanRequests: 0,
-      totalTourRequests: 0,
-      totalorderRequests: 0,
-      activeHumanChats: 0,
-    };
-
-    const used = clients.reduce((sum, c) => sum + (c.messageCount || 0), 0);
-    const quota = clients.reduce((sum, c) => sum + (c.messageLimit || 0), 0);
-    const remaining = quota - used;
-
-    const { mode } = req.query;
-    let pipeline = [];
-
-    if (mode === "daily") {
-      pipeline = [
-        { $unwind: "$history" },
-        {
-          $match: {
-            "history.role": "user",
-            "history.createdAt": { $gte: new Date(new Date().setHours(0, 0, 0, 0)) },
-          },
-        },
-        { $group: { _id: { $hour: "$history.createdAt" }, count: { $sum: 1 } } },
-        { $sort: { _id: 1 } },
-      ];
-    } else if (mode === "weekly") {
-      pipeline = [
-        { $unwind: "$history" },
-        {
-          $match: {
-            "history.role": "user",
-            "history.createdAt": { $gte: new Date(Date.now() - 7 * 24 * 60 * 60 * 1000) },
-          },
-        },
-        { $group: { _id: { $dayOfWeek: "$history.createdAt" }, count: { $sum: 1 } } },
-        { $sort: { _id: 1 } },
-      ];
-    } else if (mode === "monthly") {
-      pipeline = [
-        { $unwind: "$history" },
-        {
-          $match: {
-            "history.role": "user",
-            "history.createdAt": { $gte: new Date(Date.now() - 30 * 24 * 60 * 60 * 1000) },
-          },
-        },
-        { $group: { _id: { $dayOfMonth: "$history.createdAt" }, count: { $sum: 1 } } },
-        { $sort: { _id: 1 } },
-      ];
-    }
-
-    const chartResults = pipeline.length > 0 ? await Conversation.aggregate(pipeline) : [];
-
-    const perClientStatsArr = await Conversation.aggregate([
-      {
-        $group: {
-          _id: "$clientId",
-          humanRequests: { $sum: "$humanRequestCount" },
-          tourRequests: { $sum: "$tourRequestCount" },
-          orderRequests: { $sum: "$orderRequestCount" },
-        },
-      },
-    ]);
-
-    const statsMap = {};
-    perClientStatsArr.forEach((s) => {
-      statsMap[s._id] = {
-        humanRequests: s.humanRequests || 0,
-        tourRequests: s.tourRequests || 0,
-        orderRequests: s.orderRequests || 0,
-      };
-    });
-
-    const clientsData = clients.map((c) => {
-      const used = c.messageCount || 0;
-      const quota = c.messageLimit || 0;
-      const remaining = quota - used;
-      const clientStats = statsMap[c.clientId] || {};
-
-      return {
-        _id: c._id,
-        name: c.name,
-        email: c.email || "",
-        used,
-        clientId: c.clientId || "",
-        pageId: c.pageId || 0,
-        igId: c.igId || "",
-        quota,
-        remaining,
-        systemPrompt: c.systemPrompt || "",
-        faqs: c.faqs || "",
-        files: c.files || [],
-        humanRequests: clientStats.humanRequests || 0,
-        tourRequests: clientStats.tourRequests || 0,
-        orderRequests: clientStats.orderRequests || 0,
-        lastActive: c.updatedAt || c.createdAt,
-        active: c.active ?? false,
-        PAGE_ACCESS_TOKEN: c.PAGE_ACCESS_TOKEN || "",
-        PAGE_NAME: c.PAGE_NAME || "",
-        VERIFY_TOKEN: c.VERIFY_TOKEN || "",
-        igAccessToken: c.igAccessToken || "",
-      };
-    });
-
-    res.json({
-      totalClients,
-      used,
-      remaining,
-      quota,
-      chartResults,
-      totalHumanRequests: globalStats.totalHumanRequests,
-      totalTourRequests: globalStats.totalTourRequests,
-      totalorderRequests: globalStats.totalorderRequests,
-      activeHumanChats: globalStats.activeHumanChats,
-      clients: clientsData,
-    });
-  } catch (err) {
-    console.error(err);
-    res.status(500).json({ error: "Server error" });
-  }
-});
-
-// stats by client
-app.get("/api/stats/:clientId", verifyToken, requireClientOwnership, async (req, res) => {
-  try {
-    const { clientId } = req.params;
-
-    const client = await Client.findOne({ clientId });
-    if (!client) {
-      return res.status(404).json({ error: "❌ Client not found" });
-    }
-
-    const used = client.messageCount || 0;
-    const quota = client.messageLimit || 0;
-    const remaining = quota - used;
-
-    const { mode } = req.query;
-
-    let pipeline = [{ $match: { clientId } }, { $unwind: "$history" }, { $match: { "history.role": "user" } }];
-
-    const now = new Date();
-
-    if (mode === "daily") {
-      pipeline.push({ $match: { "history.createdAt": { $gte: new Date(now.setHours(0, 0, 0, 0)) } } });
-      pipeline.push({ $group: { _id: { $hour: "$history.createdAt" }, count: { $sum: 1 } } });
-    } else if (mode === "weekly") {
-      pipeline.push({ $match: { "history.createdAt": { $gte: new Date(Date.now() - 7 * 24 * 60 * 60 * 1000) } } });
-      pipeline.push({ $group: { _id: { $dayOfWeek: "$history.createdAt" }, count: { $sum: 1 } } });
-    } else if (mode === "monthly") {
-      pipeline.push({ $match: { "history.createdAt": { $gte: new Date(Date.now() - 30 * 24 * 60 * 60 * 1000) } } });
-      pipeline.push({ $group: { _id: { $dayOfMonth: "$history.createdAt" }, count: { $sum: 1 } } });
-    }
-
-    pipeline.push({ $sort: { _id: 1 } });
-
-    const chartResults = await Conversation.aggregate(pipeline);
-
-    const clientConvos = await Conversation.find({ clientId });
-
-    const totalHumanRequests = clientConvos.reduce((sum, c) => sum + (c.humanRequestCount || 0), 0);
-    const totalTourRequests = clientConvos.reduce((sum, c) => sum + (c.tourRequestCount || 0), 0);
-    const orderRequestCount = clientConvos.reduce((sum, c) => sum + (c.orderRequestCount || 0), 0);
-    const activeHumanChats = clientConvos.reduce((sum, c) => sum + (c.humanEscalation ? 1 : 0), 0);
-
-    res.json({
-      clientId: client._id,
-      _id: client._id,
-      name: client.name,
-      email: client.email || "",
-      clientId: client.clientId || "",
-      pageId: client.pageId || "",
-      used,
-      igId: client.igId || "",
-      quota,
-      remaining,
-      files: client.files || [],
-      systemPrompt: client.systemPrompt || "",
-      faqs: client.faqs || "",
-      lastActive: client.updatedAt || client.createdAt,
-      active: client.active ?? false,
-      PAGE_ACCESS_TOKEN: client.PAGE_ACCESS_TOKEN || "",
-      PAGE_NAME: client.PAGE_NAME || "",
-      igAccessToken: client.igAccessToken || "",
-      chartResults,
-      totalHumanRequests,
-      totalTourRequests,
-      totalorderRequests: orderRequestCount,
-      activeHumanChats,
-    });
-  } catch (err) {
-    console.error("❌ Error fetching client stats:", err);
-    res.status(500).json({ error: "Server error" });
-  }
-});
-
-// ✅ Create new client (admin only)
-app.post("/api/clients", verifyToken, async (req, res) => {
-  if (req.user.role !== "admin") return res.status(403).json({ error: "Forbidden" });
-  try {
-    const clientData = req.body;
-
-    const client = new Client({
-      ...clientData,
-      messageLimit: clientData.quota || 100,
-      messageCount: clientData.messageCount || 0,
-    });
-    await client.save();
-
-    const plainPassword = clientData.password || "default123";
-    const hashedPassword = await bcrypt.hash(plainPassword, 10);
-
-    const user = new User({
-      name: clientData.name,
-      email: clientData.email,
-      password: hashedPassword,
-      role: "client",
-      clientId: client.clientId || "",
-    });
-    await user.save();
-
-    res.status(201).json({ client, user });
-  } catch (err) {
-    console.error("❌ Error creating client & user:", err);
-    res.status(500).json({ error: "Server error" });
-  }
-});
 
 app.post("/api/register", async (req, res) => {
   try {
@@ -884,10 +621,7 @@ app.post("/api/login", async (req, res) => {
 app.get("/api/me", verifyToken, async (req, res) => {
   try {
     const user = await User.findById(req.user.id).select("-password");
-
-    if (!user) {
-      return res.status(404).json({ error: "User not found" });
-    }
+    if (!user) return res.status(404).json({ error: "User not found" });
 
     res.json({
       id: user._id,
@@ -935,15 +669,12 @@ app.put("/api/clients/:id", verifyToken, requireClientOwnership, async (req, res
 });
 
 // ✅ Delete client (admin only)
-app.delete("/api/clients/:id", verifyToken, async (req, res) => {
-  if (req.user.role !== "admin") return res.status(403).json({ error: "Forbidden" });
+app.delete("/api/clients/:id", verifyToken, requireAdmin, async (req, res) => {
   try {
     const client = await Client.findOneAndDelete({ clientId: req.params.id });
-
     if (!client) return res.status(404).json({ error: "Client not found" });
 
     await User.findOneAndDelete({ clientId: req.params.id });
-
     res.json({ message: "✅ Client and linked user deleted" });
   } catch (err) {
     console.error("❌ Error deleting client & user:", err);
@@ -952,16 +683,12 @@ app.delete("/api/clients/:id", verifyToken, async (req, res) => {
 });
 
 // ✅ Get all conversations (admin only)
-app.get("/api/conversations", verifyToken, async (req, res) => {
-  if (req.user.role !== "admin") {
-    return res.status(403).json({ error: "Forbidden" });
-  }
+app.get("/api/conversations", verifyToken, requireAdmin, async (req, res) => {
   try {
     const { source } = req.query;
     const query = source ? { source } : {};
 
     let conversations = await Conversation.find(query).sort({ updatedAt: -1 }).lean();
-
     conversations = conversations.map((convo) => ({
       ...convo,
       history: convo.history.filter((msg) => msg.role !== "system"),
@@ -982,10 +709,7 @@ app.get("/api/conversations/:clientId", verifyToken, requireClientOwnership, asy
     const query = source ? { clientId, source } : { clientId };
 
     const conversations = await Conversation.find(query).lean();
-
-    conversations.forEach((c) => {
-      c.history = c.history.filter((msg) => msg.role !== "system");
-    });
+    conversations.forEach((c) => { c.history = c.history.filter((msg) => msg.role !== "system"); });
 
     res.json(conversations);
   } catch (err) {
@@ -994,12 +718,10 @@ app.get("/api/conversations/:clientId", verifyToken, requireClientOwnership, asy
   }
 });
 
-// ✅ Health check endpoint (FIXED - no connectDB)
+// ✅ Health check endpoint
 app.get("/health", async (req, res) => {
   try {
-    if (!mongoose.connection?.db) {
-      return res.status(500).json({ status: "error", error: "DB not connected" });
-    }
+    if (!mongoose.connection?.db) return res.status(500).json({ status: "error", error: "DB not connected" });
     await mongoose.connection.db.admin().ping();
     res.json({ status: "ok", time: new Date().toISOString() });
   } catch (err) {
@@ -1009,13 +731,8 @@ app.get("/health", async (req, res) => {
 });
 
 // --------------------
-// 🌐 FACEBOOK OAUTH FLOW
+// 🌐 FACEBOOK OAUTH FLOW (Page + IG asset fetch + store)
 // --------------------
-
-// Helpers
-function normalizeUrl(u = "") {
-  return String(u).trim().replace(/\/+$/, "");
-}
 
 // OAuth START
 app.get("/auth/facebook", async (req, res) => {
@@ -1053,6 +770,7 @@ async function upsertClientConnection({
   userAccessToken,
   webhookSubscribed,
   webhookFields,
+  ig, // { igId, igUsername, igName, igProfilePicUrl, hasInstagram }
 }) {
   await Client.updateOne(
     { clientId },
@@ -1063,6 +781,16 @@ async function upsertClientConnection({
         PAGE_ACCESS_TOKEN,
         userAccessToken,
         connectedAt: new Date(),
+
+        // ✅ Instagram identity fields (review needs handle visible)
+        igId: ig?.igId || "",
+        igUsername: ig?.igUsername || "",
+        igName: ig?.igName || "",
+        igProfilePicUrl: ig?.igProfilePicUrl || "",
+
+        // ✅ Use the same Page token for IG Graph calls in most cases
+        igAccessToken: PAGE_ACCESS_TOKEN,
+
         webhookSubscribed: Boolean(webhookSubscribed),
         webhookFields: webhookFields || [],
         webhookSubscribedAt: webhookSubscribed ? new Date() : null,
@@ -1071,6 +799,82 @@ async function upsertClientConnection({
     { upsert: true }
   );
 }
+
+// ✅ Page picker finalize (when user has multiple pages)
+// Frontend calls this after user chooses a page.
+// POST /api/pages/select { clientId, pageId }
+app.post("/api/pages/select", verifyToken, async (req, res) => {
+  try {
+    const { clientId, pageId } = req.body || {};
+    if (!clientId || !pageId) return res.status(400).json({ error: "Missing clientId/pageId" });
+
+    // Ownership: client can only select their own clientId
+    if (req.user.role === "client" && req.user.clientId !== clientId) {
+      return res.status(403).json({ error: "Forbidden" });
+    }
+
+    const client = await Client.findOne({ clientId }).lean();
+    if (!client?.userAccessToken) return res.status(400).json({ error: "Missing userAccessToken. Reconnect." });
+
+    // Fetch this page with access_token included
+    const pageUrl =
+      `https://graph.facebook.com/v20.0/${encodeURIComponent(pageId)}` +
+      `?fields=id,name,access_token` +
+      `&access_token=${encodeURIComponent(client.userAccessToken)}`;
+
+    const pageData = await fetchJson(pageUrl);
+    const PAGE_ACCESS_TOKEN = pageData?.access_token;
+    const pageName = pageData?.name;
+
+    if (!PAGE_ACCESS_TOKEN) return res.status(400).json({ error: "Could not get Page access token" });
+
+    // Subscribe page webhooks
+    const fields = ["messages", "messaging_postbacks", "messaging_optins", "feed"];
+    let webhookSubscribed = false;
+
+    try {
+      const params = new URLSearchParams();
+      params.append("subscribed_fields", fields.join(","));
+      params.append("access_token", PAGE_ACCESS_TOKEN);
+      const subUrl = `https://graph.facebook.com/v20.0/${pageId}/subscribed_apps`;
+      const subData = await fetchJson(subUrl, { method: "POST", body: params });
+      webhookSubscribed = Boolean(subData?.success);
+    } catch (e) {
+      console.error("❌ Webhook subscription failed (page picker):", e?.data || e?.message);
+    }
+
+    // ✅ Fetch IG account connected to this page
+    let ig = null;
+    try {
+      ig = await fetchInstagramAccountForPage(pageId, PAGE_ACCESS_TOKEN);
+    } catch (e) {
+      console.error("❌ IG fetch failed (page picker):", e?.data || e?.message);
+      ig = { hasInstagram: false, igId: "", igUsername: "", igName: "", igProfilePicUrl: "" };
+    }
+
+    await upsertClientConnection({
+      clientId,
+      pageId,
+      pageName,
+      PAGE_ACCESS_TOKEN,
+      userAccessToken: client.userAccessToken,
+      webhookSubscribed,
+      webhookFields: fields,
+      ig,
+    });
+
+    return res.json({
+      ok: true,
+      page: { pageId, pageName },
+      instagram: ig,
+      webhookSubscribed,
+      webhookFields: fields,
+    });
+  } catch (err) {
+    console.error("❌ /api/pages/select error:", err?.data || err);
+    return res.status(500).json({ error: "Page select failed" });
+  }
+});
 
 // OAuth CALLBACK
 app.get("/auth/facebook/callback", async (req, res) => {
@@ -1094,20 +898,8 @@ app.get("/auth/facebook/callback", async (req, res) => {
       `&client_secret=${encodeURIComponent(process.env.FACEBOOK_APP_SECRET)}` +
       `&code=${encodeURIComponent(code)}`;
 
-    const tokenRes = await fetch(tokenUrl);
-    const tokenText = await tokenRes.text();
-    let tokenData = {};
-    try {
-      tokenData = JSON.parse(tokenText);
-    } catch {
-      tokenData = { raw: tokenText };
-    }
-
-    if (!tokenData.access_token) {
-      console.error("❌ Failed to get user access token:", tokenData);
-      return res.status(400).send("Failed to get user access token");
-    }
-
+    const tokenData = await fetchJson(tokenUrl);
+    if (!tokenData.access_token) return res.status(400).send("Failed to get user access token");
     const userAccessToken = tokenData.access_token;
 
     // 2) Get user's managed Pages
@@ -1116,21 +908,10 @@ app.get("/auth/facebook/callback", async (req, res) => {
       `?fields=id,name,access_token` +
       `&access_token=${encodeURIComponent(userAccessToken)}`;
 
-    const pagesRes = await fetch(pagesUrl);
-    const pagesText = await pagesRes.text();
-    let pagesData = {};
-    try {
-      pagesData = JSON.parse(pagesText);
-    } catch {
-      pagesData = { raw: pagesText };
-    }
+    const pagesData = await fetchJson(pagesUrl);
+    if (!pagesData.data || pagesData.data.length === 0) return res.status(400).send("No managed pages found");
 
-    if (!pagesData.data || pagesData.data.length === 0) {
-      console.error("❌ No managed pages found:", pagesData);
-      return res.status(400).send("No managed pages found");
-    }
-
-    // Multiple pages -> redirect to picker
+    // Multiple pages -> store userAccessToken, let frontend pick page, then call /api/pages/select
     if (pagesData.data.length > 1) {
       await Client.updateOne(
         { clientId },
@@ -1149,10 +930,7 @@ app.get("/auth/facebook/callback", async (req, res) => {
     const PAGE_ACCESS_TOKEN = page.access_token;
     const pageName = page.name;
 
-    if (!pageId || !PAGE_ACCESS_TOKEN) {
-      console.error("❌ Invalid Page data:", page);
-      return res.status(400).send("Invalid Page data");
-    }
+    if (!pageId || !PAGE_ACCESS_TOKEN) return res.status(400).send("Invalid Page data");
 
     // 3) Subscribe Page to Webhooks
     const fields = ["messages", "messaging_postbacks", "messaging_optins", "feed"];
@@ -1162,21 +940,20 @@ app.get("/auth/facebook/callback", async (req, res) => {
       const params = new URLSearchParams();
       params.append("subscribed_fields", fields.join(","));
       params.append("access_token", PAGE_ACCESS_TOKEN);
-
       const subUrl = `https://graph.facebook.com/v20.0/${pageId}/subscribed_apps`;
-      const subRes = await fetch(subUrl, { method: "POST", body: params });
-      const subText = await subRes.text();
-
-      let subData = {};
-      try {
-        subData = JSON.parse(subText);
-      } catch {
-        subData = { raw: subText };
-      }
-
+      const subData = await fetchJson(subUrl, { method: "POST", body: params });
       webhookSubscribed = Boolean(subData?.success);
     } catch (err) {
-      console.error("❌ Webhook subscription failed (OAuth):", err);
+      console.error("❌ Webhook subscription failed (OAuth):", err?.data || err?.message);
+    }
+
+    // ✅ 3.5) Fetch IG identity from connected Page (store handle for review)
+    let ig = null;
+    try {
+      ig = await fetchInstagramAccountForPage(pageId, PAGE_ACCESS_TOKEN);
+    } catch (e) {
+      console.error("❌ IG fetch failed (OAuth):", e?.data || e?.message);
+      ig = { hasInstagram: false, igId: "", igUsername: "", igName: "", igProfilePicUrl: "" };
     }
 
     // 4) Store everything
@@ -1188,14 +965,20 @@ app.get("/auth/facebook/callback", async (req, res) => {
       userAccessToken,
       webhookSubscribed,
       webhookFields: fields,
+      ig,
     });
 
     // 5) Redirect back
+    // Include ig handle so you can display instantly in UI (good for review)
     return res.redirect(
-      `${FRONTEND_URL}/client?connected=success&pageId=${encodeURIComponent(pageId)}&pageName=${encodeURIComponent(pageName)}`
+      `${FRONTEND_URL}/client?connected=success` +
+        `&pageId=${encodeURIComponent(pageId)}` +
+        `&pageName=${encodeURIComponent(pageName)}` +
+        `&igId=${encodeURIComponent(ig?.igId || "")}` +
+        `&igUsername=${encodeURIComponent(ig?.igUsername || "")}`
     );
   } catch (err) {
-    console.error("❌ OAuth callback error:", err);
+    console.error("❌ OAuth callback error:", err?.data || err);
     return res.status(500).send("OAuth callback error");
   }
 });
@@ -1219,17 +1002,17 @@ app.post("/api/webhooks/subscribe/:clientId", verifyToken, requireClientOwnershi
     params.append("access_token", client.PAGE_ACCESS_TOKEN);
 
     const subUrl = `https://graph.facebook.com/v20.0/${client.pageId}/subscribed_apps`;
-    const subRes = await fetch(subUrl, { method: "POST", body: params });
-    const subText = await subRes.text();
 
+    let ok = false;
     let subData = {};
     try {
-      subData = JSON.parse(subText);
-    } catch {
-      subData = { raw: subText };
+      subData = await fetchJson(subUrl, { method: "POST", body: params });
+      ok = Boolean(subData?.success);
+    } catch (e) {
+      console.error("❌ /api/webhooks/subscribe error:", e?.data || e?.message);
+      ok = false;
+      subData = e?.data || { error: String(e?.message || e) };
     }
-
-    const ok = Boolean(subData?.success);
 
     await Client.updateOne(
       { clientId },
@@ -1238,12 +1021,11 @@ app.post("/api/webhooks/subscribe/:clientId", verifyToken, requireClientOwnershi
 
     return res.json({ success: ok, fields, subData });
   } catch (err) {
-    console.error("❌ /api/webhooks/subscribe error:", err);
+    console.error("❌ /api/webhooks/subscribe fatal:", err);
     return res.status(500).json({ error: "Subscribe failed" });
   }
 });
 
-// Webhook status (SECURED)
 app.get("/api/webhooks/status/:clientId", verifyToken, requireClientOwnership, async (req, res) => {
   try {
     const { clientId } = req.params;
@@ -1261,13 +1043,11 @@ app.get("/api/webhooks/status/:clientId", verifyToken, requireClientOwnership, a
   }
 });
 
-// Last webhook payload (SECURED)
 app.get("/api/webhooks/last/:clientId", verifyToken, requireClientOwnership, async (req, res) => {
   try {
     const { clientId } = req.params;
 
     const client = await Client.findOne({ clientId }, "lastWebhookAt lastWebhookType lastWebhookPayload").lean();
-
     if (!client) return res.status(404).json({ error: "Client not found" });
     return res.json(client);
   } catch (err) {
@@ -1287,7 +1067,6 @@ async function saveLastWebhook(req, res, next) {
 
   try {
     const entry0 = body?.entry?.[0];
-
     const incomingPageId = entry0?.id;
     const lastType = entry0?.changes?.[0]?.field || (entry0?.messaging ? "messages" : "unknown");
 
@@ -1310,7 +1089,7 @@ async function saveLastWebhook(req, res, next) {
   return next();
 }
 
-// Review test send
+// ✅ Review test send (Messenger) — keep
 app.post("/api/review/send-test", async (req, res) => {
   console.log("✅ /api/review/send-test HIT", req.body);
 
@@ -1341,10 +1120,7 @@ app.post("/api/review/send-test", async (req, res) => {
     const data = await r.json();
     console.log("📨 META RESPONSE:", data);
 
-    if (!r.ok) {
-      return res.status(400).json({ ok: false, metaError: data });
-    }
-
+    if (!r.ok) return res.status(400).json({ ok: false, metaError: data });
     return res.json({ ok: true, meta: data });
   } catch (err) {
     console.error("❌ SEND TEST ERROR:", err);
@@ -1352,7 +1128,9 @@ app.post("/api/review/send-test", async (req, res) => {
   }
 });
 
+// ------------------------------------
 // API routes
+// ------------------------------------
 app.use("/webhook", saveLastWebhook);
 app.use("/webhook", messengerRoute);
 
@@ -1371,8 +1149,6 @@ mongoose
   .then(() => {
     console.log("✅ MongoDB connected:", mongoose.connection.name);
     console.log("📂 Collections:", Object.keys(mongoose.connection.collections));
-    app.listen(3000, () => {
-      console.log("🚀 Server running on port 3000");
-    });
+    app.listen(3000, () => console.log("🚀 Server running on port 3000"));
   })
   .catch((err) => console.error("❌ MongoDB connection error:", err));

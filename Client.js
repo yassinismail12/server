@@ -31,7 +31,10 @@ staffNumbers: { type: [String], default: [] }, // E.164: "+2010..."
 
 whatsappPhoneNumberId: { type: String, default: "" }, // metadata.phone_number_id
 whatsappBusinessNumber: { type: String, default: "" }, // optional "+2011..."
-
+igUsername: { type: String, default: "" }, // @handle without @
+igName: { type: String, default: "" },     // display name
+igProfilePicUrl: { type: String, default: "" }
+,
 
     // ✅ Flexible file storage
     files: [
