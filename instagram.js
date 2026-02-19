@@ -10,10 +10,16 @@
 // ✅ Order -> WhatsApp notify (NO ObjectId cast issues) + Order.create
 // ✅ Tour -> email
 // ✅ Reply via correct endpoint: POST /{PAGE_ID}/messages?access_token=...
+//
+// ✅ NEW FOR APP REVIEW:
+// - Secure review endpoints: /review/profile, /review/media, /review/send-dm
+// - Persist last inbound sender so you can "reply from dashboard"
+// - Store IG account identity fields into client doc (best-effort): igUsername/igName/igProfilePicUrl
 
 import express from "express";
 import fetch from "node-fetch";
 import { MongoClient } from "mongodb";
+import jwt from "jsonwebtoken";
 
 import { retrieveChunks } from "./services/retrieval.js";
 import { buildChatMessages } from "./services/promptBuilder.js";
@@ -95,6 +101,14 @@ function waSafeParam(value) {
     .slice(0, 1024);
 }
 
+function safeJsonParse(text) {
+  try {
+    return JSON.parse(text);
+  } catch {
+    return null;
+  }
+}
+
 // ===============================
 // DB + indexes
 // ===============================
@@ -126,6 +140,44 @@ async function connectDB() {
     } catch {}
   }
   return mongoClient.db(dbName);
+}
+
+// ===============================
+// JWT auth for review endpoints (cookie token)
+// ===============================
+function getCookie(req, name) {
+  const raw = req.headers?.cookie || "";
+  const parts = raw.split(";").map((p) => p.trim());
+  const match = parts.find((p) => p.startsWith(`${name}=`));
+  if (!match) return "";
+  return decodeURIComponent(match.slice(name.length + 1));
+}
+
+function requireDashboardAuth(req, res, next) {
+  try {
+    const token = getCookie(req, "token");
+    if (!token) return res.status(401).json({ ok: false, error: "Unauthorized (no cookie token)" });
+
+    const decoded = jwt.verify(token, process.env.JWT_SECRET);
+    req.user = decoded; // { id, role, clientId }
+    return next();
+  } catch (e) {
+    return res.status(401).json({ ok: false, error: "Unauthorized (invalid token)" });
+  }
+}
+
+function requireOwnerOrAdmin(req, res, next) {
+  const role = req.user?.role;
+  if (role === "admin") return next();
+
+  // client can only access their own clientId
+  const requestedClientId = normalizeId(req.query.clientId || req.body?.clientId);
+  if (!requestedClientId) return res.status(400).json({ ok: false, error: "Missing clientId" });
+
+  if (role === "client" && normalizeId(req.user?.clientId) !== requestedClientId) {
+    return res.status(403).json({ ok: false, error: "Forbidden" });
+  }
+  return next();
 }
 
 // ===============================
@@ -183,19 +235,51 @@ async function getClientByIgBusinessId(igBusinessId) {
 
   if (!client) return null;
 
-  const clientId = normalizeId(client.clientId); // ✅ this is your business string (e.g. "realestate")
+  const clientId = normalizeId(client.clientId); // ✅ business string (e.g. "realestate")
 
   const pageId = normalizeId(client.pageId || client.PAGE_ID || client.page_id);
   const pageAccessToken = sanitizeAccessToken(
     client.pageAccessToken ||
       client.PAGE_ACCESS_TOKEN ||
+      client.PAGE_ACCESS_TOKEN_IG ||
       client.page_token ||
       client.pageToken ||
       client.PAGE_TOKEN ||
+      client.igAccessToken || // sometimes you store it here
       ""
   );
 
   return { ...client, clientId, resolvedPageId: pageId, resolvedPageAccessToken: pageAccessToken };
+}
+
+async function getClientByClientId(clientId) {
+  const db = await connectDB();
+  const cid = normalizeId(clientId);
+  if (!cid) return null;
+  const client = await db.collection("Clients").findOne({ clientId: cid });
+  if (!client) return null;
+
+  const pageId = normalizeId(client.pageId || client.PAGE_ID || client.page_id);
+  const pageAccessToken = sanitizeAccessToken(
+    client.pageAccessToken ||
+      client.PAGE_ACCESS_TOKEN ||
+      client.PAGE_ACCESS_TOKEN_IG ||
+      client.page_token ||
+      client.pageToken ||
+      client.PAGE_TOKEN ||
+      client.igAccessToken ||
+      ""
+  );
+
+  const igId = normalizeId(client.igBusinessId || client.igId);
+
+  return {
+    ...client,
+    clientId: cid,
+    resolvedPageId: pageId,
+    resolvedPageAccessToken: pageAccessToken,
+    resolvedIgId: igId,
+  };
 }
 
 // ===============================
@@ -265,7 +349,7 @@ async function saveConversationIG(igBusinessId, userId, history, lastInteraction
     {
       $set: {
         igBusinessId: igStr,
-        clientId: cid, // ✅ your business string
+        clientId: cid, // ✅ business string
         userId,
         history,
         lastInteraction,
@@ -329,11 +413,7 @@ async function getUserProfileIG(userId, pageAccessToken, meta = {}) {
     return { username: "there" };
   }
 
-  try {
-    return JSON.parse(text);
-  } catch {
-    return { username: "there" };
-  }
+  return safeJsonParse(text) || { username: "there" };
 }
 
 // ===============================
@@ -414,6 +494,7 @@ async function sendInstagramDM({ pageId, pageAccessToken, recipientId, text }) {
   if (!rid) throw new Error("Missing recipientId for IG send");
   if (!text) return;
 
+  // Keep version consistent with rest of your project
   const url = new URL(`https://graph.facebook.com/v21.0/${encodeURIComponent(pid)}/messages`);
   url.searchParams.set("access_token", token);
 
@@ -428,6 +509,62 @@ async function sendInstagramDM({ pageId, pageAccessToken, recipientId, text }) {
   const data = await r.json().catch(() => ({}));
   if (!r.ok) throw new Error(`Failed to send IG message: ${JSON.stringify(data)}`);
   return data;
+}
+
+// ===============================
+// IG profile + media (for instagram_basic review)
+// ===============================
+async function fetchIgBusinessProfile({ igId, pageAccessToken }) {
+  const token = sanitizeAccessToken(pageAccessToken);
+  const id = normalizeId(igId);
+
+  if (!id) throw new Error("Missing igId");
+  if (!isLikelyValidToken(token)) throw new Error("Missing/invalid page access token");
+
+  const url = new URL(`https://graph.facebook.com/v21.0/${encodeURIComponent(id)}`);
+  url.searchParams.set(
+    "fields",
+    [
+      "id",
+      "username",
+      "name",
+      "biography",
+      "followers_count",
+      "media_count",
+      "profile_picture_url",
+    ].join(",")
+  );
+  url.searchParams.set("access_token", token);
+
+  const r = await fetch(url.toString());
+  const txt = await r.text().catch(() => "");
+  const data = safeJsonParse(txt) || { raw: txt };
+
+  if (!r.ok) throw new Error(`IG profile fetch failed: ${JSON.stringify(data)}`);
+  return data;
+}
+
+async function fetchIgBusinessMedia({ igId, pageAccessToken, limit = 6 }) {
+  const token = sanitizeAccessToken(pageAccessToken);
+  const id = normalizeId(igId);
+
+  if (!id) throw new Error("Missing igId");
+  if (!isLikelyValidToken(token)) throw new Error("Missing/invalid page access token");
+
+  const url = new URL(`https://graph.facebook.com/v21.0/${encodeURIComponent(id)}/media`);
+  url.searchParams.set(
+    "fields",
+    ["id", "caption", "media_type", "media_url", "permalink", "timestamp"].join(",")
+  );
+  url.searchParams.set("limit", String(Math.max(1, Math.min(25, Number(limit) || 6))));
+  url.searchParams.set("access_token", token);
+
+  const r = await fetch(url.toString());
+  const txt = await r.text().catch(() => "");
+  const data = safeJsonParse(txt) || { raw: txt };
+
+  if (!r.ok) throw new Error(`IG media fetch failed: ${JSON.stringify(data)}`);
+  return data?.data || [];
 }
 
 // ===============================
@@ -594,6 +731,119 @@ router.get("/", async (req, res) => {
 });
 
 // ===============================
+// ✅ REVIEW ENDPOINTS (for App Review screencast)
+// ===============================
+// 1) GET /instagram/review/profile?clientId=...
+router.get("/review/profile", requireDashboardAuth, requireOwnerOrAdmin, async (req, res) => {
+  try {
+    const clientId = normalizeId(req.query.clientId);
+    const client = await getClientByClientId(clientId);
+    if (!client) return res.status(404).json({ ok: false, error: "Client not found" });
+
+    const igId = normalizeId(client.resolvedIgId);
+    if (!igId) return res.status(400).json({ ok: false, error: "Client has no igId/igBusinessId saved" });
+
+    const pageToken = client.resolvedPageAccessToken;
+    if (!isLikelyValidToken(pageToken)) {
+      return res.status(400).json({ ok: false, error: "Missing/invalid PAGE_ACCESS_TOKEN for IG profile/media" });
+    }
+
+    const data = await fetchIgBusinessProfile({ igId, pageAccessToken: pageToken });
+
+    // Best-effort: store identity fields so your dashboard can display handle/ID
+    try {
+      const db = await connectDB();
+      await db.collection("Clients").updateOne(
+        { clientId },
+        {
+          $set: {
+            igId: data.id || client.igId || "",
+            igBusinessId: data.id || client.igBusinessId || client.igId || "",
+            igUsername: data.username || "",
+            igName: data.name || "",
+            igProfilePicUrl: data.profile_picture_url || "",
+            igIdentityUpdatedAt: new Date(),
+          },
+        }
+      );
+    } catch {}
+
+    return res.json({ ok: true, data });
+  } catch (e) {
+    return res.status(400).json({ ok: false, error: e.message });
+  }
+});
+
+// 2) GET /instagram/review/media?clientId=...
+router.get("/review/media", requireDashboardAuth, requireOwnerOrAdmin, async (req, res) => {
+  try {
+    const clientId = normalizeId(req.query.clientId);
+    const client = await getClientByClientId(clientId);
+    if (!client) return res.status(404).json({ ok: false, error: "Client not found" });
+
+    const igId = normalizeId(client.resolvedIgId);
+    if (!igId) return res.status(400).json({ ok: false, error: "Client has no igId/igBusinessId saved" });
+
+    const pageToken = client.resolvedPageAccessToken;
+    if (!isLikelyValidToken(pageToken)) {
+      return res.status(400).json({ ok: false, error: "Missing/invalid PAGE_ACCESS_TOKEN for IG profile/media" });
+    }
+
+    const limit = Number(req.query.limit || 6);
+    const data = await fetchIgBusinessMedia({ igId, pageAccessToken: pageToken, limit });
+
+    return res.json({ ok: true, data });
+  } catch (e) {
+    return res.status(400).json({ ok: false, error: e.message });
+  }
+});
+
+// 3) POST /instagram/review/send-dm  { clientId, recipientId?, text }
+// - If recipientId missing, it will try client's lastIgSenderId (saved from webhook)
+router.post("/review/send-dm", requireDashboardAuth, requireOwnerOrAdmin, express.json(), async (req, res) => {
+  try {
+    const clientId = normalizeId(req.body?.clientId);
+    const text = String(req.body?.text || "").trim().slice(0, 1000);
+    let recipientId = normalizeId(req.body?.recipientId || "");
+
+    if (!clientId) return res.status(400).json({ ok: false, error: "Missing clientId" });
+    if (!text) return res.status(400).json({ ok: false, error: "Missing text" });
+
+    const client = await getClientByClientId(clientId);
+    if (!client) return res.status(404).json({ ok: false, error: "Client not found" });
+
+    const pageId = client.resolvedPageId;
+    const pageToken = client.resolvedPageAccessToken;
+
+    if (!pageId) return res.status(400).json({ ok: false, error: "Client missing pageId" });
+    if (!isLikelyValidToken(pageToken)) {
+      return res.status(400).json({ ok: false, error: "Missing/invalid PAGE_ACCESS_TOKEN" });
+    }
+
+    if (!recipientId) {
+      recipientId = normalizeId(client.lastIgSenderId || "");
+    }
+    if (!recipientId) {
+      return res.status(400).json({
+        ok: false,
+        error: "Missing recipientId and no lastIgSenderId stored yet. DM the IG account first to capture senderId.",
+      });
+    }
+
+    const out = await sendInstagramDM({
+      pageId,
+      pageAccessToken: pageToken,
+      recipientId,
+      text,
+    });
+
+    return res.json({ ok: true, out, usedRecipientId: recipientId });
+  } catch (e) {
+    return res.status(400).json({ ok: false, error: e.message });
+  }
+});
+
+// ===============================
 // Hard-coded IG send test
 // /instagram/ig-test-send?pageId=...&pageToken=...&recipientId=...&text=...
 // ===============================
@@ -678,12 +928,20 @@ router.post("/", async (req, res) => {
           continue;
         }
 
-        // Track webhook freshness
+        // Track webhook freshness + store last inbound sender for review DM reply
         try {
           const db = await connectDB();
           await db.collection("Clients").updateOne(
             { _id: clientDoc._id },
-            { $set: { lastWebhookAt: new Date(), updatedAt: new Date() } }
+            {
+              $set: {
+                lastWebhookAt: new Date(),
+                updatedAt: new Date(),
+                lastIgSenderId: senderId,
+                lastIgSenderText: String(userText || "").slice(0, 500),
+                lastIgSenderAt: new Date(),
+              },
+            }
           );
         } catch {}
 
