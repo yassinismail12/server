@@ -2,6 +2,7 @@
 // ✅ Adds: fetch + store IG handle/name/pfp via connected Page
 // ✅ Adds: page picker finalize endpoint (for multi-page users)
 // ✅ Tightens: admin-only renew endpoints
+// ✅ Fixes: clientId consistency (string everywhere), Orders counting (real orders), typos in orderRequests keys
 // ⚠️ Keep your existing instagram.js for DM/webhook logic — this file just fixes auth + storing the right IG fields.
 
 import express from "express";
@@ -28,6 +29,7 @@ import whatsappRoute from "./whatsapp.js";
 import knowledgeRoute from "./routes/knowledge.js";
 import engagementRoutes from "./routes/engagement.js";
 import Product from "./Product.js"; // ✅ this registers the model
+import Order from "./order.js"; // ✅ IMPORTANT: used to count real Orders in DB
 
 const app = express();
 dotenv.config();
@@ -185,7 +187,7 @@ export function verifyToken(req, res, next) {
 
   try {
     const decoded = jwt.verify(token, process.env.JWT_SECRET);
-    req.user = decoded; // { id, role, clientId }
+    req.user = decoded; // { id, role, clientId }  <-- clientId is STRING everywhere
     next();
   } catch {
     return res.status(401).json({ error: "Invalid token" });
@@ -355,8 +357,7 @@ app.get("/api/clients/:clientId/health", verifyToken, requireClientOwnership, as
       });
     }
 
-    const status =
-      warnings.some((w) => w.severity === "error") ? "error" : warnings.length ? "warning" : "ok";
+    const status = warnings.some((w) => w.severity === "error") ? "error" : warnings.length ? "warning" : "ok";
 
     return res.json({
       ok: true,
@@ -386,20 +387,23 @@ app.get("/api/clients/:id", verifyToken, requireClientOwnership, async (req, res
     const client = await Client.findOne({ clientId: id });
     if (!client) return res.status(404).json({ error: "Client not found" });
 
-    const stats = await Conversation.aggregate([
+    // ✅ conversations counters (requests)
+    const convoStatsAgg = await Conversation.aggregate([
       { $match: { clientId: id } },
       {
         $group: {
           _id: "$clientId",
           totalHumanRequests: { $sum: "$humanRequestCount" },
           totalTourRequests: { $sum: "$tourRequestCount" },
-          totalorderRequests: { $sum: "$orderRequestCount" },
+          totalOrderRequests: { $sum: "$orderRequestCount" }, // ✅ fixed key casing
           activeHumanChats: { $sum: { $cond: ["$humanEscalation", 1, 0] } },
         },
       },
     ]);
+    const convoStats = convoStatsAgg[0] || {};
 
-    const convoStats = stats[0] || {};
+    // ✅ REAL Orders count from Orders collection
+    const totalOrders = await Order.countDocuments({ clientId: id });
 
     res.json({
       _id: client._id,
@@ -426,9 +430,14 @@ app.get("/api/clients/:id", verifyToken, requireClientOwnership, async (req, res
       faqs: client.faqs || "",
       active: client.active ?? false,
 
+      // request counters
       totalHumanRequests: convoStats.totalHumanRequests || 0,
       totalTourRequests: convoStats.totalTourRequests || 0,
-      totalorderRequests: convoStats.totalorderRequests || 0,
+      totalOrderRequests: convoStats.totalOrderRequests || 0,
+
+      // real orders
+      totalOrders,
+
       activeHumanChats: convoStats.activeHumanChats || 0,
     });
   } catch (err) {
@@ -438,7 +447,7 @@ app.get("/api/clients/:id", verifyToken, requireClientOwnership, async (req, res
 });
 
 // ------------------------------------
-// ✅ STATS ROUTES (copied from old server.js)
+// ✅ STATS ROUTES
 // ------------------------------------
 
 // Dashboard stats route (admin)
@@ -456,7 +465,7 @@ app.get("/api/stats", verifyToken, async (req, res) => {
           _id: null,
           totalHumanRequests: { $sum: "$humanRequestCount" },
           totalTourRequests: { $sum: "$tourRequestCount" },
-          totalorderRequests: { $sum: "$orderRequestCount" },
+          totalOrderRequests: { $sum: "$orderRequestCount" }, // ✅ fixed key casing
           activeHumanChats: { $sum: { $cond: ["$humanEscalation", 1, 0] } },
         },
       },
@@ -465,9 +474,12 @@ app.get("/api/stats", verifyToken, async (req, res) => {
     const globalStats = convoStats[0] || {
       totalHumanRequests: 0,
       totalTourRequests: 0,
-      totalorderRequests: 0,
+      totalOrderRequests: 0,
       activeHumanChats: 0,
     };
+
+    // ✅ total orders in system (real Orders collection)
+    const totalOrders = await Order.countDocuments({});
 
     const used = clients.reduce((sum, c) => sum + (c.messageCount || 0), 0);
     const quota = clients.reduce((sum, c) => sum + (c.messageLimit || 0), 0);
@@ -536,6 +548,15 @@ app.get("/api/stats", verifyToken, async (req, res) => {
       };
     });
 
+    // ✅ real orders per client
+    const ordersPerClientAgg = await Order.aggregate([
+      { $group: { _id: "$clientId", totalOrders: { $sum: 1 } } },
+    ]);
+    const ordersMap = {};
+    ordersPerClientAgg.forEach((o) => {
+      ordersMap[o._id] = o.totalOrders || 0;
+    });
+
     const clientsData = clients.map((c) => {
       const used = c.messageCount || 0;
       const quota = c.messageLimit || 0;
@@ -548,7 +569,7 @@ app.get("/api/stats", verifyToken, async (req, res) => {
         email: c.email || "",
         used,
         clientId: c.clientId || "",
-        pageId: c.pageId || 0,
+        pageId: c.pageId || "",
         igId: c.igId || "",
         quota,
         remaining,
@@ -557,7 +578,8 @@ app.get("/api/stats", verifyToken, async (req, res) => {
         files: c.files || [],
         humanRequests: clientStats.humanRequests || 0,
         tourRequests: clientStats.tourRequests || 0,
-        orderRequests: clientStats.orderRequests || 0,
+        orderRequests: clientStats.orderRequests || 0, // requests
+        totalOrders: ordersMap[c.clientId] || 0, // ✅ real orders count
         lastActive: c.updatedAt || c.createdAt,
         active: c.active ?? false,
         PAGE_ACCESS_TOKEN: c.PAGE_ACCESS_TOKEN || "",
@@ -573,9 +595,15 @@ app.get("/api/stats", verifyToken, async (req, res) => {
       remaining,
       quota,
       chartResults,
+
+      // request counters
       totalHumanRequests: globalStats.totalHumanRequests,
       totalTourRequests: globalStats.totalTourRequests,
-      totalorderRequests: globalStats.totalorderRequests,
+      totalOrderRequests: globalStats.totalOrderRequests,
+
+      // real orders count
+      totalOrders,
+
       activeHumanChats: globalStats.activeHumanChats,
       clients: clientsData,
     });
@@ -624,11 +652,13 @@ app.get("/api/stats/:clientId", verifyToken, requireClientOwnership, async (req,
 
     const totalHumanRequests = clientConvos.reduce((sum, c) => sum + (c.humanRequestCount || 0), 0);
     const totalTourRequests = clientConvos.reduce((sum, c) => sum + (c.tourRequestCount || 0), 0);
-    const orderRequestCount = clientConvos.reduce((sum, c) => sum + (c.orderRequestCount || 0), 0);
+    const totalOrderRequests = clientConvos.reduce((sum, c) => sum + (c.orderRequestCount || 0), 0);
     const activeHumanChats = clientConvos.reduce((sum, c) => sum + (c.humanEscalation ? 1 : 0), 0);
 
+    // ✅ real orders count for this client
+    const totalOrders = await Order.countDocuments({ clientId });
+
     res.json({
-      clientId: client._id,
       _id: client._id,
       name: client.name,
       email: client.email || "",
@@ -647,9 +677,15 @@ app.get("/api/stats/:clientId", verifyToken, requireClientOwnership, async (req,
       PAGE_NAME: client.PAGE_NAME || "",
       igAccessToken: client.igAccessToken || "",
       chartResults,
+
+      // request counters
       totalHumanRequests,
       totalTourRequests,
-      totalorderRequests: orderRequestCount,
+      totalOrderRequests,
+
+      // real orders
+      totalOrders,
+
       activeHumanChats,
     });
   } catch (err) {
@@ -696,14 +732,17 @@ app.post("/admin/renew-all", verifyToken, requireAdmin, async (req, res) => {
     const nextMonth = new Date();
     nextMonth.setMonth(now.getMonth() + 1);
 
-    await Client.updateMany({}, {
-      $set: {
-        messageCount: 0,
-        quotaWarningSent: false,
-        currentPeriodStart: now,
-        currentPeriodEnd: nextMonth,
-      },
-    });
+    await Client.updateMany(
+      {},
+      {
+        $set: {
+          messageCount: 0,
+          quotaWarningSent: false,
+          currentPeriodStart: now,
+          currentPeriodEnd: nextMonth,
+        },
+      }
+    );
 
     res.json({ success: true, message: "All clients renewed successfully" });
   } catch (err) {
@@ -774,12 +813,15 @@ app.post("/api/register", async (req, res) => {
 
     const hashedPassword = await bcrypt.hash(password, 10);
 
+    // ✅ clientId is a random string, NOT ObjectId
+    const clientIdStr = new mongoose.Types.ObjectId().toString();
+
     const user = new User({
       name,
       email,
       password: hashedPassword,
       role: "client",
-      clientId: new mongoose.Types.ObjectId().toString(),
+      clientId: clientIdStr,
     });
     await user.save();
 
@@ -930,7 +972,9 @@ app.get("/api/conversations/:clientId", verifyToken, requireClientOwnership, asy
     const query = source ? { clientId, source } : { clientId };
 
     const conversations = await Conversation.find(query).lean();
-    conversations.forEach((c) => { c.history = c.history.filter((msg) => msg.role !== "system"); });
+    conversations.forEach((c) => {
+      c.history = c.history.filter((msg) => msg.role !== "system");
+    });
 
     res.json(conversations);
   } catch (err) {
@@ -1134,15 +1178,9 @@ app.get("/auth/facebook/callback", async (req, res) => {
 
     // Multiple pages -> store userAccessToken, let frontend pick page, then call /api/pages/select
     if (pagesData.data.length > 1) {
-      await Client.updateOne(
-        { clientId },
-        { $set: { userAccessToken, connectedAt: new Date() } },
-        { upsert: true }
-      );
+      await Client.updateOne({ clientId }, { $set: { userAccessToken, connectedAt: new Date() } }, { upsert: true });
 
-      return res.redirect(
-        `${FRONTEND_URL}/client?choose_page=1&connected=partial&clientId=${encodeURIComponent(clientId)}`
-      );
+      return res.redirect(`${FRONTEND_URL}/client?choose_page=1&connected=partial&clientId=${encodeURIComponent(clientId)}`);
     }
 
     // Single Page path
@@ -1190,7 +1228,6 @@ app.get("/auth/facebook/callback", async (req, res) => {
     });
 
     // 5) Redirect back
-    // Include ig handle so you can display instantly in UI (good for review)
     return res.redirect(
       `${FRONTEND_URL}/client?connected=success` +
         `&pageId=${encodeURIComponent(pageId)}` +
@@ -1310,8 +1347,8 @@ async function saveLastWebhook(req, res, next) {
   return next();
 }
 
-// ✅ Review test send (Messenger) — keep
-app.post("/api/review/send-test", async (req, res) => {
+// ✅ Review test send (Messenger) — keep (but secure it)
+app.post("/api/review/send-test", verifyToken, requireClientOwnership, async (req, res) => {
   console.log("✅ /api/review/send-test HIT", req.body);
 
   try {
@@ -1323,6 +1360,11 @@ app.post("/api/review/send-test", async (req, res) => {
 
     const client = await Client.findOne({ pageId });
     if (!client) return res.status(404).json({ error: "Client not found" });
+
+    // ✅ ownership check: client can only send test for their own connection
+    if (req.user.role === "client" && client.clientId !== req.user.clientId) {
+      return res.status(403).json({ error: "Forbidden" });
+    }
 
     const PAGE_ACCESS_TOKEN = client.PAGE_ACCESS_TOKEN;
     if (!PAGE_ACCESS_TOKEN) return res.status(404).json({ error: "Page access token not found" });

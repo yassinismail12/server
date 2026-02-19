@@ -2,7 +2,8 @@ import mongoose from "mongoose";
 
 const OrderSchema = new mongoose.Schema(
   {
-    clientId: { type: mongoose.Schema.Types.ObjectId, ref: "Client", required: true },
+   clientId: { type: String, required: true, index: true }
+,
 
     channel: { type: String, enum: ["messenger", "instagram", "web"], required: true },
 
