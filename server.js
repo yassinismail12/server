@@ -437,6 +437,227 @@ app.get("/api/clients/:id", verifyToken, requireClientOwnership, async (req, res
   }
 });
 
+// ------------------------------------
+// ✅ STATS ROUTES (copied from old server.js)
+// ------------------------------------
+
+// Dashboard stats route (admin)
+app.get("/api/stats", verifyToken, async (req, res) => {
+  if (req.user.role !== "admin") {
+    return res.status(403).json({ error: "Forbidden" });
+  }
+  try {
+    const totalClients = await Client.countDocuments();
+    const clients = await Client.find();
+
+    const convoStats = await Conversation.aggregate([
+      {
+        $group: {
+          _id: null,
+          totalHumanRequests: { $sum: "$humanRequestCount" },
+          totalTourRequests: { $sum: "$tourRequestCount" },
+          totalorderRequests: { $sum: "$orderRequestCount" },
+          activeHumanChats: { $sum: { $cond: ["$humanEscalation", 1, 0] } },
+        },
+      },
+    ]);
+
+    const globalStats = convoStats[0] || {
+      totalHumanRequests: 0,
+      totalTourRequests: 0,
+      totalorderRequests: 0,
+      activeHumanChats: 0,
+    };
+
+    const used = clients.reduce((sum, c) => sum + (c.messageCount || 0), 0);
+    const quota = clients.reduce((sum, c) => sum + (c.messageLimit || 0), 0);
+    const remaining = quota - used;
+
+    const { mode } = req.query;
+    let pipeline = [];
+
+    if (mode === "daily") {
+      pipeline = [
+        { $unwind: "$history" },
+        {
+          $match: {
+            "history.role": "user",
+            "history.createdAt": { $gte: new Date(new Date().setHours(0, 0, 0, 0)) },
+          },
+        },
+        { $group: { _id: { $hour: "$history.createdAt" }, count: { $sum: 1 } } },
+        { $sort: { _id: 1 } },
+      ];
+    } else if (mode === "weekly") {
+      pipeline = [
+        { $unwind: "$history" },
+        {
+          $match: {
+            "history.role": "user",
+            "history.createdAt": { $gte: new Date(Date.now() - 7 * 24 * 60 * 60 * 1000) },
+          },
+        },
+        { $group: { _id: { $dayOfWeek: "$history.createdAt" }, count: { $sum: 1 } } },
+        { $sort: { _id: 1 } },
+      ];
+    } else if (mode === "monthly") {
+      pipeline = [
+        { $unwind: "$history" },
+        {
+          $match: {
+            "history.role": "user",
+            "history.createdAt": { $gte: new Date(Date.now() - 30 * 24 * 60 * 60 * 1000) },
+          },
+        },
+        { $group: { _id: { $dayOfMonth: "$history.createdAt" }, count: { $sum: 1 } } },
+        { $sort: { _id: 1 } },
+      ];
+    }
+
+    const chartResults = pipeline.length > 0 ? await Conversation.aggregate(pipeline) : [];
+
+    const perClientStatsArr = await Conversation.aggregate([
+      {
+        $group: {
+          _id: "$clientId",
+          humanRequests: { $sum: "$humanRequestCount" },
+          tourRequests: { $sum: "$tourRequestCount" },
+          orderRequests: { $sum: "$orderRequestCount" },
+        },
+      },
+    ]);
+
+    const statsMap = {};
+    perClientStatsArr.forEach((s) => {
+      statsMap[s._id] = {
+        humanRequests: s.humanRequests || 0,
+        tourRequests: s.tourRequests || 0,
+        orderRequests: s.orderRequests || 0,
+      };
+    });
+
+    const clientsData = clients.map((c) => {
+      const used = c.messageCount || 0;
+      const quota = c.messageLimit || 0;
+      const remaining = quota - used;
+      const clientStats = statsMap[c.clientId] || {};
+
+      return {
+        _id: c._id,
+        name: c.name,
+        email: c.email || "",
+        used,
+        clientId: c.clientId || "",
+        pageId: c.pageId || 0,
+        igId: c.igId || "",
+        quota,
+        remaining,
+        systemPrompt: c.systemPrompt || "",
+        faqs: c.faqs || "",
+        files: c.files || [],
+        humanRequests: clientStats.humanRequests || 0,
+        tourRequests: clientStats.tourRequests || 0,
+        orderRequests: clientStats.orderRequests || 0,
+        lastActive: c.updatedAt || c.createdAt,
+        active: c.active ?? false,
+        PAGE_ACCESS_TOKEN: c.PAGE_ACCESS_TOKEN || "",
+        PAGE_NAME: c.PAGE_NAME || "",
+        VERIFY_TOKEN: c.VERIFY_TOKEN || "",
+        igAccessToken: c.igAccessToken || "",
+      };
+    });
+
+    res.json({
+      totalClients,
+      used,
+      remaining,
+      quota,
+      chartResults,
+      totalHumanRequests: globalStats.totalHumanRequests,
+      totalTourRequests: globalStats.totalTourRequests,
+      totalorderRequests: globalStats.totalorderRequests,
+      activeHumanChats: globalStats.activeHumanChats,
+      clients: clientsData,
+    });
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: "Server error" });
+  }
+});
+
+// stats by client
+app.get("/api/stats/:clientId", verifyToken, requireClientOwnership, async (req, res) => {
+  try {
+    const { clientId } = req.params;
+
+    const client = await Client.findOne({ clientId });
+    if (!client) {
+      return res.status(404).json({ error: "❌ Client not found" });
+    }
+
+    const used = client.messageCount || 0;
+    const quota = client.messageLimit || 0;
+    const remaining = quota - used;
+
+    const { mode } = req.query;
+
+    let pipeline = [{ $match: { clientId } }, { $unwind: "$history" }, { $match: { "history.role": "user" } }];
+
+    const now = new Date();
+
+    if (mode === "daily") {
+      pipeline.push({ $match: { "history.createdAt": { $gte: new Date(now.setHours(0, 0, 0, 0)) } } });
+      pipeline.push({ $group: { _id: { $hour: "$history.createdAt" }, count: { $sum: 1 } } });
+    } else if (mode === "weekly") {
+      pipeline.push({ $match: { "history.createdAt": { $gte: new Date(Date.now() - 7 * 24 * 60 * 60 * 1000) } } });
+      pipeline.push({ $group: { _id: { $dayOfWeek: "$history.createdAt" }, count: { $sum: 1 } } });
+    } else if (mode === "monthly") {
+      pipeline.push({ $match: { "history.createdAt": { $gte: new Date(Date.now() - 30 * 24 * 60 * 60 * 1000) } } });
+      pipeline.push({ $group: { _id: { $dayOfMonth: "$history.createdAt" }, count: { $sum: 1 } } });
+    }
+
+    pipeline.push({ $sort: { _id: 1 } });
+
+    const chartResults = await Conversation.aggregate(pipeline);
+
+    const clientConvos = await Conversation.find({ clientId });
+
+    const totalHumanRequests = clientConvos.reduce((sum, c) => sum + (c.humanRequestCount || 0), 0);
+    const totalTourRequests = clientConvos.reduce((sum, c) => sum + (c.tourRequestCount || 0), 0);
+    const orderRequestCount = clientConvos.reduce((sum, c) => sum + (c.orderRequestCount || 0), 0);
+    const activeHumanChats = clientConvos.reduce((sum, c) => sum + (c.humanEscalation ? 1 : 0), 0);
+
+    res.json({
+      clientId: client._id,
+      _id: client._id,
+      name: client.name,
+      email: client.email || "",
+      clientId: client.clientId || "",
+      pageId: client.pageId || "",
+      used,
+      igId: client.igId || "",
+      quota,
+      remaining,
+      files: client.files || [],
+      systemPrompt: client.systemPrompt || "",
+      faqs: client.faqs || "",
+      lastActive: client.updatedAt || client.createdAt,
+      active: client.active ?? false,
+      PAGE_ACCESS_TOKEN: client.PAGE_ACCESS_TOKEN || "",
+      PAGE_NAME: client.PAGE_NAME || "",
+      igAccessToken: client.igAccessToken || "",
+      chartResults,
+      totalHumanRequests,
+      totalTourRequests,
+      totalorderRequests: orderRequestCount,
+      activeHumanChats,
+    });
+  } catch (err) {
+    console.error("❌ Error fetching client stats:", err);
+    res.status(500).json({ error: "Server error" });
+  }
+});
+
 // ----------------------
 // Admin renew (secured)
 // ----------------------
