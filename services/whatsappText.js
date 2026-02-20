@@ -41,6 +41,7 @@ export async function sendWhatsAppText({ phoneNumberId, to, text, accessToken })
   const data = await res.json().catch(() => ({}));
 
   if (!res.ok) {
+    // Keep Meta's exact error payload for debugging
     throw new Error(`WhatsApp send failed: ${JSON.stringify(data)}`);
   }
 

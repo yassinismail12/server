@@ -36,6 +36,8 @@ whatsappWabaId: { type: String, default: "" },          // WhatsApp Business Acc
 whatsappAccessToken: { type: String, default: "" },     // token used to call /messages + templates (MVP)
 whatsappDisplayPhone: { type: String, default: "" },    // display_phone_number (nice for UI)
 whatsappConnectedAt: { type: Date, default: null },     // when connected
+whatsappTokenExpiresAt: { type: Date, default: null },
+whatsappTokenType: { type: String, default: "user_long_lived" },
 igUsername: { type: String, default: "" }, // @handle without @
 igName: { type: String, default: "" },     // display name
 igProfilePicUrl: { type: String, default: "" }
