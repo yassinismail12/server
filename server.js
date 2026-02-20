@@ -28,7 +28,7 @@ import whatsappRoute from "./whatsapp.js";
 import knowledgeRoute from "./routes/knowledge.js";
 import engagementRoutes from "./routes/engagement.js";
 import Product from "./Product.js"; // ✅ this registers the model
-
+import whatsappEmbeddedRoutes from "./routes/whatsappEmbedded.js";
 const app = express();
 dotenv.config();
 
