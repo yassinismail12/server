@@ -40,7 +40,7 @@ router.post("/api/whatsapp/embedded/exchange", async (req, res) => {
   try {
     const appId = process.env.FACEBOOK_APP_ID;
     const appSecret = process.env.FACEBOOK_APP_SECRET;
-    const redirectUri = process.env.FACEBOOK_REDIRECT_URI;
+    const redirectUri = process.env.WHATSAPP_REDIRECT_URI;
 
     if (!appId || !appSecret || !redirectUri) {
       return res.status(500).json({
