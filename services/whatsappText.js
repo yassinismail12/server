@@ -1,28 +1,33 @@
+// services/whatsappText.js
 import fetch from "node-fetch";
 
 const API_VERSION = process.env.WHATSAPP_API_VERSION || "v22.0";
-const TOKEN = process.env.WHATSAPP_TOKEN;
 
-function assertWhatsAppEnv() {
-  if (!TOKEN) throw new Error("Missing WHATSAPP_TOKEN");
-}
-
+/**
+ * WhatsApp Cloud API expects `to` as digits-only (no +)
+ */
 function normalizeToDigitsE164(to) {
-  // Accept "+2010..." or "2010..." and return digits-only (recommended for WA Cloud API)
   const s = String(to || "").trim();
   return s.replace(/[^\d]/g, "");
 }
 
-export async function sendWhatsAppText({ phoneNumberId, to, text }) {
-  assertWhatsAppEnv();
+/**
+ * Send a WhatsApp text message.
+ * - Prefer per-client token (accessToken) from DB (Embedded Signup).
+ * - Fallback to env WHATSAPP_TOKEN for legacy/testing.
+ */
+export async function sendWhatsAppText({ phoneNumberId, to, text, accessToken }) {
   if (!phoneNumberId) throw new Error("Missing phoneNumberId");
+
+  const token = (accessToken || process.env.WHATSAPP_TOKEN || "").trim();
+  if (!token) throw new Error("Missing WhatsApp access token (accessToken or WHATSAPP_TOKEN)");
 
   const url = `https://graph.facebook.com/${API_VERSION}/${String(phoneNumberId).trim()}/messages`;
 
   const res = await fetch(url, {
     method: "POST",
     headers: {
-      Authorization: `Bearer ${TOKEN}`,
+      Authorization: `Bearer ${token}`,
       "Content-Type": "application/json",
     },
     body: JSON.stringify({
@@ -33,10 +38,9 @@ export async function sendWhatsAppText({ phoneNumberId, to, text }) {
     }),
   });
 
-  const data = await res.json();
+  const data = await res.json().catch(() => ({}));
 
   if (!res.ok) {
-    // Keep the exact Meta error for debugging
     throw new Error(`WhatsApp send failed: ${JSON.stringify(data)}`);
   }
 

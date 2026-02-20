@@ -31,6 +31,11 @@ staffNumbers: { type: [String], default: [] }, // E.164: "+2010..."
 
 whatsappPhoneNumberId: { type: String, default: "" }, // metadata.phone_number_id
 whatsappBusinessNumber: { type: String, default: "" }, // optional "+2011..."
+// ✅ Embedded Signup / WhatsApp Cloud API connection (store per client)
+whatsappWabaId: { type: String, default: "" },          // WhatsApp Business Account ID
+whatsappAccessToken: { type: String, default: "" },     // token used to call /messages + templates (MVP)
+whatsappDisplayPhone: { type: String, default: "" },    // display_phone_number (nice for UI)
+whatsappConnectedAt: { type: Date, default: null },     // when connected
 igUsername: { type: String, default: "" }, // @handle without @
 igName: { type: String, default: "" },     // display name
 igProfilePicUrl: { type: String, default: "" }

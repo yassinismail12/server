@@ -193,10 +193,19 @@ router.post("/", async (req, res) => {
         if (!phoneNumberId) continue;
 
         const client = await getClientByPhoneNumberId(phoneNumberId);
-        if (!client) {
+         if (!client) {
           log("warn", "No client matched whatsappPhoneNumberId", { phoneNumberId });
           continue;
         }
+        const waToken = client.whatsappAccessToken || "";
+if (!waToken) {
+  log("warn", "Client has no whatsappAccessToken (Embedded Signup not finished)", {
+    clientId: client.clientId,
+    phoneNumberId,
+  });
+  continue;
+}
+       
 
         await touchClientWebhook(client._id, {
           clientId: client.clientId,
@@ -274,6 +283,7 @@ router.post("/", async (req, res) => {
                   phoneNumberId,
                   to: fromDigits,
                   text: sourceMenuText(),
+                  accesstoken: waToken
                 });
               }
 
@@ -301,6 +311,7 @@ router.post("/", async (req, res) => {
               phoneNumberId,
               to: fromDigits,
               text: `✅ Got it. You selected: ${picked}.\nHow can I help you?`,
+                accessToken: waToken
             });
 
             log("info", "Source choice selected", { from: fromDigits, picked, clientId: client.clientId });
@@ -344,6 +355,7 @@ router.post("/", async (req, res) => {
             phoneNumberId,
             to: fromDigits,
             text: combined,
+              accessToken: waToken
           });
 
           log("info", "WhatsApp reply sent", {

@@ -1361,7 +1361,7 @@ app.use("/whatsapp", whatsappRoute);
 app.use("/api", ordersRoute);
 app.use("/api/knowledge", knowledgeRoute);
 app.use("/api/engagement", verifyToken, attachClientId, engagementRoutes);
-
+app.use(whatsappEmbeddedRoutes);
 // ✅ MongoDB connection + start server
 const MONGODB_URI = process.env.MONGODB_URI;
 
