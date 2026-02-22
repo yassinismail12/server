@@ -1,3 +1,4 @@
+// whatsapp.js
 import express from "express";
 import { MongoClient } from "mongodb";
 
@@ -14,9 +15,10 @@ let mongoConnected = false;
 // Logging
 // ===============================
 function log(level, msg, meta = {}) {
-  if (level === "error") console.error("❌", msg, meta);
-  else if (level === "warn") console.warn("⚠️", msg, meta);
-  else console.log("ℹ️", msg, meta);
+  const base = { t: new Date().toISOString(), msg, ...meta };
+  if (level === "error") console.error("❌", base);
+  else if (level === "warn") console.warn("⚠️", base);
+  else console.log("ℹ️", base);
 }
 
 async function connectDB() {
@@ -57,7 +59,6 @@ function buildSystemPromptFromClient(client) {
 
 function parseSourceChoice(text) {
   const t = String(text || "").trim().toLowerCase();
-  // customize this to your business
   if (["1", "sales", "sell", "buy", "rent"].includes(t)) return "sales";
   if (["2", "support", "help"].includes(t)) return "support";
   if (["3", "order", "orders", "شراء", "طلب"].includes(t)) return "order";
@@ -78,10 +79,10 @@ function sourceMenuText() {
 // ===============================
 // Clients
 // ===============================
-async function getClientByPhoneNumberId(phoneNumberId) {
+async function getClientByPhoneNumberId(whatsappPhoneNumberId) {
   const db = await connectDB();
   return db.collection("Clients").findOne({
-    whatsappPhoneNumberId: String(phoneNumberId || "").trim(),
+    whatsappPhoneNumberId: String(whatsappPhoneNumberId || "").trim(),
     active: { $ne: false },
   });
 }
@@ -169,7 +170,10 @@ router.get("/", (req, res) => {
     return res.status(200).send(challenge);
   }
 
-  log("warn", "WhatsApp webhook verification failed", { mode, tokenProvided: Boolean(token) });
+  log("warn", "WhatsApp webhook verification failed", {
+    mode,
+    tokenProvided: Boolean(token),
+  });
   return res.sendStatus(403);
 });
 
@@ -177,54 +181,139 @@ router.get("/", (req, res) => {
 // WhatsApp webhook receiver
 // ===============================
 router.post("/", async (req, res) => {
+  // Log immediately so you can confirm Meta is hitting this endpoint
+  log("info", "🔥 WHATSAPP WEBHOOK HIT", {
+    hasBody: Boolean(req.body),
+    topKeys: Object.keys(req.body || {}),
+  });
+
+  // Reply to Meta fast
   res.sendStatus(200);
 
   try {
     const body = req.body;
+
     const entries = body?.entry || [];
-    if (!Array.isArray(entries) || !entries.length) return;
+    if (!Array.isArray(entries) || !entries.length) {
+      log("warn", "Webhook body has no entry array", { bodyPreview: JSON.stringify(body || {}).slice(0, 300) });
+      return;
+    }
 
     for (const entry of entries) {
       const changes = entry?.changes || [];
       for (const change of changes) {
-        const value = change?.value;
+        const value = change?.value || {};
 
-        const phoneNumberId = value?.metadata?.phone_number_id;
-        if (!phoneNumberId) continue;
-
-        const client = await getClientByPhoneNumberId(phoneNumberId);
-         if (!client) {
-          log("warn", "No client matched whatsappPhoneNumberId", { phoneNumberId });
+        // Meta WhatsApp inbound: metadata.phone_number_id
+        const whatsappPhoneNumberId = value?.metadata?.phone_number_id;
+        if (!whatsappPhoneNumberId) {
+          log("warn", "Missing metadata.phone_number_id", { valueKeys: Object.keys(value || {}) });
           continue;
         }
-        const waToken = client.whatsappAccessToken || "";
-if (!waToken) {
-  log("warn", "Client has no whatsappAccessToken (Embedded Signup not finished)", {
-    clientId: client.clientId,
-    phoneNumberId,
-  });
-  continue;
-}
-       
 
-        await touchClientWebhook(client._id, {
+        // Find client by whatsappPhoneNumberId (same field name as in Mongo)
+        const client = await getClientByPhoneNumberId(whatsappPhoneNumberId);
+        if (!client) {
+          log("warn", "No client matched whatsappPhoneNumberId", { whatsappPhoneNumberId });
+          continue;
+        }
+
+        // Keep variable names exactly as in Mongo schema
+        const whatsappAccessToken = client.whatsappAccessToken || "";
+        const whatsappConnectedAt = client.whatsappConnectedAt || null;
+        const whatsappDisplayPhone = client.whatsappDisplayPhone || "";
+        const whatsappTokenExpiresAt = client.whatsappTokenExpiresAt || null;
+        const whatsappTokenType = client.whatsappTokenType || "";
+        const whatsappWabaId = client.whatsappWabaId || "";
+
+        // IG fields (not used by WA flow, but logged so you can verify values exist)
+        const igName = client.igName || "";
+        const igProfilePicUrl = client.igProfilePicUrl || "";
+        const igUsername = client.igUsername || "";
+        const igBusinessId = client.igBusinessId || client.igId || "";
+        const igIdentityUpdatedAt = client.igIdentityUpdatedAt || null;
+        const lastIgSenderAt = client.lastIgSenderAt || null;
+        const lastIgSenderId = client.lastIgSenderId || "";
+        const lastIgSenderText = client.lastIgSenderText || "";
+
+        // Log the connection snapshot once per webhook batch
+        log("info", "Client matched for WA webhook", {
           clientId: client.clientId,
-          phoneNumberId,
-          hasMessages: Boolean(value?.messages?.length),
-          meta: value?.metadata || null,
+          whatsappPhoneNumberId,
+          whatsappWabaId,
+          whatsappDisplayPhone,
+          whatsappTokenType,
+          whatsappTokenExpiresAt,
+          whatsappConnectedAt,
+          igBusinessId,
+          igUsername,
         });
 
-        // ignore delivery/read statuses
-        const messages = value?.messages || [];
-        if (!messages.length) continue;
+        if (!whatsappAccessToken) {
+          log("warn", "Client has no whatsappAccessToken (Embedded Signup not finished)", {
+            clientId: client.clientId,
+            whatsappPhoneNumberId,
+          });
+          continue;
+        }
 
+        // Store last webhook payload on the client for debugging (dashboard "View Last Payload")
+        await touchClientWebhook(client._id, {
+          clientId: client.clientId,
+          whatsappPhoneNumberId,
+          hasMessages: Boolean(value?.messages?.length),
+          meta: value?.metadata || null,
+          // include some ids to help debug
+          whatsappWabaId,
+          whatsappDisplayPhone,
+          whatsappTokenType,
+          igBusinessId,
+          igUsername,
+          igName,
+          igProfilePicUrl,
+          igIdentityUpdatedAt,
+          lastIgSenderAt,
+          lastIgSenderId,
+          lastIgSenderText,
+        });
+
+        // Ignore delivery/read statuses: only respond to inbound messages
+        const messages = value?.messages || [];
+        if (!messages.length) {
+          log("info", "No inbound messages in webhook (likely statuses)", {
+            clientId: client.clientId,
+            whatsappPhoneNumberId,
+          });
+          continue;
+        }
+
+        // Staff digits list (ignore staff inbound)
         const staffDigits = (client.staffNumbers || []).map(normalizePhoneDigits);
-        const clientAwaitSource = Boolean(client.awaitSource); // ✅ put this in Mongo if you want
+
+        // Client-level awaitSource switch (optional)
+        const clientAwaitSource = Boolean(client.awaitSource);
 
         for (const msg of messages) {
+          // Log raw message summary
+          log("info", "Inbound WA message", {
+            clientId: client.clientId,
+            whatsappPhoneNumberId,
+            from: msg?.from,
+            type: msg?.type,
+            msgId: msg?.id,
+          });
+
           const fromDigits = normalizePhoneDigits(msg?.from);
           const text = msg?.text?.body || "";
-          if (!text) continue;
+
+          if (!fromDigits) {
+            log("warn", "Message missing from", { msg: msg?.id });
+            continue;
+          }
+          if (!text) {
+            log("info", "Ignoring non-text message", { clientId: client.clientId, from: fromDigits, type: msg?.type });
+            continue;
+          }
 
           // ignore staff messages
           if (staffDigits.includes(fromDigits)) {
@@ -232,9 +321,10 @@ if (!waToken) {
             continue;
           }
 
+          // Load convo
           const convo = await getConversation(client.clientId, fromDigits);
 
-          // if human escalation is ON, ignore bot
+          // If human escalation is ON, ignore bot
           if (convo?.humanEscalation === true) {
             log("info", "Human escalation active; ignoring", { from: fromDigits, clientId: client.clientId });
             continue;
@@ -249,20 +339,15 @@ if (!waToken) {
           let history = convo?.history || [{ role: "system", content: systemPrompt }];
 
           // ====== AWAIT SOURCE MODE ======
-          // If client.awaitSource is true AND convo has no sourceChoice yet:
           const sourceChoiceExisting = convo?.sourceChoice || "";
           const needsChoice = clientAwaitSource && !sourceChoiceExisting;
 
           if (needsChoice) {
-            // user picked a choice?
             const picked = parseSourceChoice(text);
 
             if (!picked) {
-              // send menu again (once per day or first message)
-              const shouldSendMenu =
-                !convo || isNewDay(convo.lastInteraction) || convo?.awaitSource !== true;
+              const shouldSendMenu = !convo || isNewDay(convo.lastInteraction) || convo?.awaitSource !== true;
 
-              // save convo state with awaitSource=true
               history.push({ role: "user", content: text, createdAt: inboundAt });
 
               await upsertConversation({
@@ -275,15 +360,22 @@ if (!waToken) {
                 lastDirection: "in",
                 awaitSource: true,
                 sourceChoice: "",
-                meta: { phoneNumberId },
+                meta: {
+                  whatsappPhoneNumberId,
+                  whatsappWabaId,
+                  whatsappDisplayPhone,
+                  whatsappTokenType,
+                  whatsappTokenExpiresAt,
+                },
               });
 
               if (shouldSendMenu) {
+                log("info", "Sending source menu", { clientId: client.clientId, to: fromDigits });
                 await sendWhatsAppText({
-                  phoneNumberId,
+                  phoneNumberId: whatsappPhoneNumberId,
                   to: fromDigits,
                   text: sourceMenuText(),
-                  accessToken: waToken
+                  accessToken: whatsappAccessToken,
                 });
               }
 
@@ -291,7 +383,7 @@ if (!waToken) {
               continue;
             }
 
-            // user chose a source → store it and proceed normally
+            // user chose a source → store it and proceed
             history.push({ role: "user", content: text, createdAt: inboundAt });
 
             await upsertConversation({
@@ -304,14 +396,26 @@ if (!waToken) {
               lastDirection: "in",
               awaitSource: false,
               sourceChoice: picked,
-              meta: { phoneNumberId },
+              meta: {
+                whatsappPhoneNumberId,
+                whatsappWabaId,
+                whatsappDisplayPhone,
+                whatsappTokenType,
+                whatsappTokenExpiresAt,
+              },
+            });
+
+            log("info", "Sending source selection confirmation", {
+              clientId: client.clientId,
+              to: fromDigits,
+              picked,
             });
 
             await sendWhatsAppText({
-              phoneNumberId,
+              phoneNumberId: whatsappPhoneNumberId,
               to: fromDigits,
               text: `✅ Got it. You selected: ${picked}.\nHow can I help you?`,
-                accessToken: waToken
+              accessToken: whatsappAccessToken,
             });
 
             log("info", "Source choice selected", { from: fromDigits, picked, clientId: client.clientId });
@@ -324,7 +428,7 @@ if (!waToken) {
 
           history.push({ role: "user", content: text, createdAt: inboundAt });
 
-          let assistantMessage;
+          let assistantMessage = "";
           try {
             assistantMessage = await getChatCompletion(history);
           } catch (err) {
@@ -343,24 +447,37 @@ if (!waToken) {
             userId: fromDigits,
             history,
             lastInteraction: outboundAt,
-            lastMessage: inboundPreview, // show last customer text in inbox list
+            lastMessage: inboundPreview,
             lastMessageAt: inboundAt,
             lastDirection: "in",
             awaitSource: false,
             sourceChoice: convo?.sourceChoice || "",
-            meta: { phoneNumberId },
+            meta: {
+              whatsappPhoneNumberId,
+              whatsappWabaId,
+              whatsappDisplayPhone,
+              whatsappTokenType,
+              whatsappTokenExpiresAt,
+            },
+          });
+
+          log("info", "Sending WA reply", {
+            clientId: client.clientId,
+            whatsappPhoneNumberId,
+            to: fromDigits,
+            preview: combined.slice(0, 80),
           });
 
           await sendWhatsAppText({
-            phoneNumberId,
+            phoneNumberId: whatsappPhoneNumberId,
             to: fromDigits,
             text: combined,
-              accessToken: waToken
+            accessToken: whatsappAccessToken,
           });
 
           log("info", "WhatsApp reply sent", {
             clientId: client.clientId,
-            phoneNumberId,
+            whatsappPhoneNumberId,
             to: fromDigits,
             preview: combined.slice(0, 80),
           });
@@ -368,7 +485,8 @@ if (!waToken) {
       }
     }
   } catch (err) {
-    console.error("❌ WhatsApp webhook handler error:", err.message);
+    // If Meta isn't hitting this route, you won't see this.
+    console.error("❌ WhatsApp webhook handler error:", err?.message || err);
   }
 });
 
