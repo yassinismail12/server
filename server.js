@@ -1451,7 +1451,7 @@ const whatsappVerifiedName = phones[0].whatsappVerifiedName || "";
         `&clientId=${encodeURIComponent(clientId)}` +
         `&wabaId=${encodeURIComponent(whatsappWabaId)}` +
         `&phoneNumberId=${encodeURIComponent(whatsappPhoneNumberId)}` +
-        `&display=${encodeURIComponent(whatsappDisplayPhone)}`
+        `&display=${encodeURIComponent(whatsappDisplayPhone)}`+
           `&verifiedName=${encodeURIComponent(whatsappVerifiedName)}`
     );
   } catch (err) {
