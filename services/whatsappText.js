@@ -1,28 +1,46 @@
 // services/whatsappText.js
 import fetch from "node-fetch";
 
-const API_VERSION = process.env.WHATSAPP_API_VERSION || "v22.0";
+const API_VERSION = (process.env.WHATSAPP_API_VERSION || "v22.0").trim();
 
 /**
- * WhatsApp Cloud API expects `to` as digits-only (no +)
+ * WhatsApp Cloud API expects `to` as digits-only (no +).
  */
 function normalizeToDigitsE164(to) {
   const s = String(to || "").trim();
   return s.replace(/[^\d]/g, "");
 }
 
+function safeJsonParse(text) {
+  try {
+    return JSON.parse(text);
+  } catch {
+    return { raw: text };
+  }
+}
+
 /**
  * Send a WhatsApp text message.
- * - Prefer per-client token (accessToken) from DB (Embedded Signup).
- * - Fallback to env WHATSAPP_TOKEN for legacy/testing.
+ *
+ * Priority:
+ *  1) accessToken passed in (per-client from Mongo)
+ *  2) process.env.WHATSAPP_TOKEN (fallback / legacy / testing)
  */
 export async function sendWhatsAppText({ phoneNumberId, to, text, accessToken }) {
-  if (!phoneNumberId) throw new Error("Missing phoneNumberId");
+  const pnid = String(phoneNumberId || "").trim();
+  if (!pnid) throw new Error("Missing phoneNumberId");
 
-  const token = (accessToken || process.env.WHATSAPP_TOKEN || "").trim();
+  const token = String(accessToken || process.env.WHATSAPP_TOKEN || "").trim();
   if (!token) throw new Error("Missing WhatsApp access token (accessToken or WHATSAPP_TOKEN)");
 
-  const url = `https://graph.facebook.com/${API_VERSION}/${String(phoneNumberId).trim()}/messages`;
+  const url = `https://graph.facebook.com/${API_VERSION}/${pnid}/messages`;
+
+  const payload = {
+    messaging_product: "whatsapp",
+    to: normalizeToDigitsE164(to),
+    type: "text",
+    text: { body: String(text ?? "") },
+  };
 
   const res = await fetch(url, {
     method: "POST",
@@ -30,19 +48,15 @@ export async function sendWhatsAppText({ phoneNumberId, to, text, accessToken })
       Authorization: `Bearer ${token}`,
       "Content-Type": "application/json",
     },
-    body: JSON.stringify({
-      messaging_product: "whatsapp",
-      to: normalizeToDigitsE164(to),
-      type: "text",
-      text: { body: String(text ?? "") },
-    }),
+    body: JSON.stringify(payload),
   });
 
-  const data = await res.json().catch(() => ({}));
+  const raw = await res.text();
+  const data = safeJsonParse(raw);
 
   if (!res.ok) {
-    // Keep Meta's exact error payload for debugging
-    throw new Error(`WhatsApp send failed: ${JSON.stringify(data)}`);
+    // keep Meta error JSON for debugging
+    throw new Error(`WhatsApp send failed (HTTP ${res.status}): ${JSON.stringify(data)}`);
   }
 
   return data;
