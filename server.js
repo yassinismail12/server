@@ -1457,7 +1457,36 @@ app.get("/auth/whatsapp/callback", async (req, res) => {
     return res.status(500).send("WhatsApp OAuth callback error");
   }
 });
+app.get("/api/whatsapp/status", verifyToken, async (req, res) => {
+  try {
+    const { clientId } = req.query;
+    if (!clientId) return res.status(400).json({ ok: false, error: "Missing clientId" });
 
+    // ownership protection
+    if (req.user?.role === "client" && req.user.clientId !== clientId) {
+      return res.status(403).json({ ok: false, error: "Forbidden" });
+    }
+
+    const client = await Client.findOne({ clientId }).lean();
+    if (!client) return res.status(404).json({ ok: false, error: "Client not found" });
+
+    return res.json({
+      ok: true,
+      connected: Boolean(client.whatsappPhoneNumberId && client.whatsappWabaId),
+      wabaId: client.whatsappWabaId || "",
+      phoneNumberId: client.whatsappPhoneNumberId || "",
+      displayPhone: client.whatsappDisplayPhone || "",
+      connectedAt: client.whatsappConnectedAt || null,
+      tokenExpiresAt: client.whatsappTokenExpiresAt || null,
+      tokenType: client.whatsappTokenType || "",
+      // OPTIONAL if you add it later:
+      // verifiedName: client.whatsappVerifiedName || "",
+    });
+  } catch (err) {
+    console.error("❌ /api/whatsapp/status error:", err?.data || err);
+    return res.status(500).json({ ok: false, error: "Status failed" });
+  }
+});
 // ------------------------------
 // Meta webhook receiver saveLastWebhook
 // ------------------------------
