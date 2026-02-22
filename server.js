@@ -214,7 +214,10 @@ function requireAdmin(req, res, next) {
   if (req.user.role !== "admin") return res.status(403).json({ error: "Forbidden" });
   next();
 }
-
+app.get("/_ping", (req, res) => {
+  console.log("✅ PING HIT", new Date().toISOString());
+  res.json({ ok: true, t: new Date().toISOString() });
+});
 // Serve uploaded files safely
 app.use("/uploads", express.static(uploadDir));
 
@@ -1568,12 +1571,11 @@ app.use("/webhook", messengerRoute);
 
 app.use("/api/chat", chatRoute);
 app.use("/instagram", instagramRoute);
-app.use("/whatsapp", (req, _res, next) => {
-  console.log("🟢 WHATSAPP WEBHOOK HIT", new Date().toISOString());
-  console.log("🟢 Body:", JSON.stringify(req.body || {}, null, 2));
-  next();
-});
 app.use("/whatsapp", whatsappRoute);
+app.get("/whatsapp/_ping", (req, res) => {
+  console.log("✅ WHATSAPP ROUTE PING", new Date().toISOString());
+  res.json({ ok: true });
+});
 app.use("/api", ordersRoute);
 app.use("/api/knowledge", knowledgeRoute);
 app.use("/api/engagement", verifyToken, attachClientId, engagementRoutes);

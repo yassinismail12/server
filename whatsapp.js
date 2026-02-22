@@ -182,6 +182,9 @@ router.get("/", (req, res) => {
 // ===============================
 router.post("/", async (req, res) => {
   // Log immediately so you can confirm Meta is hitting this endpoint
+  
+  console.log("🔥 WA POST HIT", new Date().toISOString(), "keys:", Object.keys(req.body || {}));
+
   log("info", "🔥 WHATSAPP WEBHOOK HIT", {
     hasBody: Boolean(req.body),
     topKeys: Object.keys(req.body || {}),
