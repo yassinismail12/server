@@ -1358,106 +1358,104 @@ app.get("/auth/whatsapp/callback", async (req, res) => {
       `&code=${encodeURIComponent(code)}`;
 
     const tokenData = await fetchJson(tokenUrl);
-    if (!tokenData?.access_token) {
+    const userAccessToken = tokenData?.access_token;
+    if (!userAccessToken) {
       console.error("❌ tokenData:", tokenData);
       return res.status(400).send("Failed to get user access token");
     }
-
-    const userAccessToken = tokenData.access_token;
 
     const whatsappTokenExpiresAt = tokenData.expires_in
       ? new Date(Date.now() + Number(tokenData.expires_in) * 1000)
       : null;
 
-    // 2) OPTIONAL but super helpful: debug scopes
-    // (Remove later if you want)
+    // 2) Debug scopes (you can remove later)
     try {
       const debugUrl =
         `https://graph.facebook.com/v20.0/debug_token` +
         `?input_token=${encodeURIComponent(userAccessToken)}` +
         `&access_token=${encodeURIComponent(process.env.FACEBOOK_APP_ID + "|" + process.env.FACEBOOK_APP_SECRET)}`;
       const debug = await fetchJson(debugUrl);
-      console.log("🔎 debug_token scopes:", JSON.stringify(debug?.data?.scopes || debug?.data?.granular_scopes || debug, null, 2));
+      console.log("🔎 debug_token scopes:", JSON.stringify(debug?.data?.scopes || debug, null, 2));
     } catch (e) {
       console.log("ℹ️ debug_token skipped/failed:", e?.data || e?.message);
     }
 
-    // 3) Try to list WABAs directly from /me (no business id)
-    // Different apps/accounts sometimes expose different edges.
-    let wabas = [];
-
-    const meOwnedWabasUrl =
-      `https://graph.facebook.com/v20.0/me/owned_whatsapp_business_accounts` +
-      `?fields=id,name` +
+    // 3) List businesses for this user
+    const businessesUrl =
+      `https://graph.facebook.com/v20.0/me/businesses?fields=id,name` +
       `&access_token=${encodeURIComponent(userAccessToken)}`;
 
-    try {
-      const owned = await fetchJson(meOwnedWabasUrl);
-      wabas = owned?.data || [];
-      console.log("📦 /me/owned_whatsapp_business_accounts:", wabas.length);
-    } catch (e) {
-      console.error("❌ owned_wabas failed:", e?.data || e?.message);
-    }
+    const businessesData = await fetchJson(businessesUrl);
+    const businesses = businessesData?.data || [];
+    console.log("🏢 businesses:", businesses.map(b => ({ id: b.id, name: b.name })));
 
-    if (!wabas.length) {
-      const meWabasUrl =
-        `https://graph.facebook.com/v20.0/me/whatsapp_business_accounts` +
-        `?fields=id,name` +
-        `&access_token=${encodeURIComponent(userAccessToken)}`;
-
-      try {
-        const any = await fetchJson(meWabasUrl);
-        wabas = any?.data || [];
-        console.log("📦 /me/whatsapp_business_accounts:", wabas.length);
-      } catch (e) {
-        console.error("❌ me wabas failed:", e?.data || e?.message);
-      }
-    }
-
-    if (!wabas.length) {
+    if (!businesses.length) {
       return res.status(400).send(
-        "No WABAs found for this user token. Likely missing whatsapp_business_management or user isn't admin of the WhatsApp business."
+        "No businesses found for this user. You have business_management, so likely the FB user is not an admin of any Business Portfolio."
       );
     }
 
-    // 4) Find a WABA that has phone numbers
+    // 4) Find a business -> WABA -> phone number that works
+    let chosenBusiness = null;
     let chosenWaba = null;
     let chosenPhone = null;
 
-    for (const w of wabas) {
-      const wabaId = w.id;
-      if (!wabaId) continue;
+    for (const biz of businesses) {
+      const businessId = biz.id;
 
-      const phonesUrl =
-        `https://graph.facebook.com/v20.0/${encodeURIComponent(wabaId)}/phone_numbers` +
-        `?fields=id,display_phone_number,verified_name,quality_rating,code_verification_status` +
+      const wabasUrl =
+        `https://graph.facebook.com/v20.0/${encodeURIComponent(businessId)}/owned_whatsapp_business_accounts` +
+        `?fields=id,name` +
         `&access_token=${encodeURIComponent(userAccessToken)}`;
 
+      let wabasData;
       try {
-        const phonesData = await fetchJson(phonesUrl);
-        const phones = phonesData?.data || [];
-        console.log(`📞 phones for waba ${wabaId}:`, phones.length);
-
-        if (phones.length) {
-          chosenWaba = w;
-          chosenPhone = phones[0];
-          break;
-        }
+        wabasData = await fetchJson(wabasUrl);
       } catch (e) {
-        console.error(`❌ phone_numbers failed for waba ${wabaId}:`, e?.data || e?.message);
-        // continue to next waba
+        console.error(`❌ owned_whatsapp_business_accounts failed for business ${businessId}:`, e?.data || e?.message);
+        continue;
       }
+
+      const wabas = wabasData?.data || [];
+      console.log(`📦 business ${businessId} wabas:`, wabas.length);
+
+      for (const w of wabas) {
+        const wabaId = w.id;
+
+        const phonesUrl =
+          `https://graph.facebook.com/v20.0/${encodeURIComponent(wabaId)}/phone_numbers` +
+          `?fields=id,display_phone_number,verified_name,quality_rating,code_verification_status` +
+          `&access_token=${encodeURIComponent(userAccessToken)}`;
+
+        try {
+          const phonesData = await fetchJson(phonesUrl);
+          const phones = phonesData?.data || [];
+          console.log(`📞 waba ${wabaId} phones:`, phones.length);
+
+          if (phones.length) {
+            chosenBusiness = biz;
+            chosenWaba = w;
+            chosenPhone = phones[0];
+            break;
+          }
+        } catch (e) {
+          console.error(`❌ phone_numbers failed for waba ${wabaId}:`, e?.data || e?.message);
+        }
+      }
+
+      if (chosenPhone) break;
     }
 
-    if (!chosenWaba || !chosenPhone) {
-      return res.status(400).send("Found WABAs but none returned phone numbers (permission/ownership issue).");
+    if (!chosenBusiness || !chosenWaba || !chosenPhone) {
+      return res.status(400).send(
+        "Could not find a WABA with phone numbers across your businesses. Likely the logged-in FB user isn't admin of the business that owns the WhatsApp account."
+      );
     }
 
     const whatsappWabaId = chosenWaba.id;
     const whatsappPhoneNumberId = chosenPhone.id;
     const whatsappDisplayPhone = chosenPhone.display_phone_number || "";
 
-    // 5) Store in Mongo (YOUR schema field names)
     await upsertClientWhatsAppConnection({
       clientId,
       whatsappWabaId,
@@ -1468,7 +1466,6 @@ app.get("/auth/whatsapp/callback", async (req, res) => {
       whatsappTokenType: "user",
     });
 
-    // 6) Redirect back
     return res.redirect(
       `${FRONTEND_URL}/client?whatsapp=connected` +
         `&clientId=${encodeURIComponent(clientId)}` +
