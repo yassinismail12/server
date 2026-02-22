@@ -16,15 +16,23 @@ function normalizeToDigitsE164(to) {
   return digits;
 }
 
-export async function sendWhatsAppTemplate({ to, templateName, languageCode = "en_US", bodyParams = [] }) {
-  assertWhatsAppEnv();
+export async function sendWhatsAppTemplate({
+  phoneNumberId,
+  accessToken,
+  to,
+  templateName,
+  languageCode = "en_US",
+  bodyParams = [],
+}) {
+  if (!phoneNumberId) throw new Error("Missing phoneNumberId");
+  if (!accessToken) throw new Error("Missing accessToken");
 
-  const url = `https://graph.facebook.com/${API_VERSION}/${PHONE_NUMBER_ID}/messages`;
+  const url = `https://graph.facebook.com/${API_VERSION}/${phoneNumberId}/messages`;
 
   const res = await fetch(url, {
     method: "POST",
     headers: {
-      Authorization: `Bearer ${TOKEN}`,
+      Authorization: `Bearer ${accessToken}`,
       "Content-Type": "application/json",
     },
     body: JSON.stringify({
@@ -37,18 +45,21 @@ export async function sendWhatsAppTemplate({ to, templateName, languageCode = "e
         components: [
           {
             type: "body",
-            parameters: bodyParams.map((t) => ({ type: "text", text: String(t ?? "") })),
+            parameters: bodyParams.map((t) => ({
+              type: "text",
+              text: String(t ?? ""),
+            })),
           },
         ],
       },
     }),
   });
 
-  const data = await res.json();
+  const raw = await res.text();
+  const data = JSON.parse(raw);
 
   if (!res.ok) {
-    // Keep the exact Meta error for debugging
-    throw new Error(`WhatsApp send failed: ${JSON.stringify(data)}`);
+    throw new Error(`WhatsApp template send failed: ${raw}`);
   }
 
   return data;

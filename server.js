@@ -1431,7 +1431,7 @@ app.get("/auth/whatsapp/callback", async (req, res) => {
 
     const whatsappPhoneNumberId = phones[0].id;
     const whatsappDisplayPhone = phones[0].display_phone_number || "";
-
+const whatsappVerifiedName = phones[0].verified_name || "";
     // 5) Store in Mongo (your schema fields)
     await upsertClientWhatsAppConnection({
       clientId,
@@ -1567,6 +1567,11 @@ app.use("/webhook", messengerRoute);
 
 app.use("/api/chat", chatRoute);
 app.use("/instagram", instagramRoute);
+app.use("/whatsapp", (req, _res, next) => {
+  console.log("🟢 WHATSAPP WEBHOOK HIT", new Date().toISOString());
+  console.log("🟢 Body:", JSON.stringify(req.body || {}, null, 2));
+  next();
+});
 app.use("/whatsapp", whatsappRoute);
 app.use("/api", ordersRoute);
 app.use("/api/knowledge", knowledgeRoute);
