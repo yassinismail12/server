@@ -1033,6 +1033,7 @@ async function upsertClientWhatsAppConnection({
   whatsappPhoneNumberId,
   whatsappAccessToken,
   whatsappDisplayPhone,
+  whatsappVerifiedName,          // ✅ add this
   whatsappTokenExpiresAt,
   whatsappTokenType = "user",
 }) {
@@ -1044,7 +1045,7 @@ async function upsertClientWhatsAppConnection({
         whatsappPhoneNumberId: whatsappPhoneNumberId || "",
         whatsappAccessToken: whatsappAccessToken || "",
         whatsappDisplayPhone: whatsappDisplayPhone || "",
-         whatsappVerifiedName: whatsappVerifiedName || "",
+        whatsappVerifiedName: whatsappVerifiedName || "",   // ✅ now defined
         whatsappConnectedAt: new Date(),
         whatsappTokenExpiresAt: whatsappTokenExpiresAt || null,
         whatsappTokenType,
