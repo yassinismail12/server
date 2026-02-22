@@ -431,6 +431,11 @@ app.get("/api/clients/:id", verifyToken, requireClientOwnership, async (req, res
       totalTourRequests: convoStats.totalTourRequests || 0,
       totalorderRequests: convoStats.totalorderRequests || 0,
       activeHumanChats: convoStats.activeHumanChats || 0,
+          whatsappWabaId: client.whatsappWabaId,
+      whatsappPhoneNumberId: client.whatsappPhoneNumberId,
+      whatsappDisplayPhone: client.whatsappDisplayPhone,
+      whatsappConnectedAt: client.whatsappConnectedAt,
+      whatsappTokenExpiresAt: client.whatsappTokenExpiresAt,
     });
   } catch (err) {
     console.error("❌ Error fetching client:", err);

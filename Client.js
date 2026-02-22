@@ -30,7 +30,7 @@ lastWebhookPayload: { type: Object, default: null },
 staffNumbers: { type: [String], default: [] }, // E.164: "+2010..."
 
 whatsappPhoneNumberId: { type: String, default: "" }, // metadata.phone_number_id
-whatsappBusinessNumber: { type: String, default: "" }, // optional "+2011..."
+ // optional "+2011..."
 // ✅ Embedded Signup / WhatsApp Cloud API connection (store per client)
 whatsappWabaId: { type: String, default: "" },          // WhatsApp Business Account ID
 whatsappAccessToken: { type: String, default: "" },     // token used to call /messages + templates (MVP)
