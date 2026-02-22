@@ -1316,7 +1316,7 @@ app.get("/auth/whatsapp", async (req, res) => {
       `&response_type=code` +
       `&override_default_response_type=true` +
       `&auth_type=rerequest` +
-      `&config_id=${encodeURIComponent(process.env.WHATSAPP_EMBEDDED_CONFIG_ID)}` +
+      `&config_id=${encodeURIComponent(process.env.WP_CONFIG)}` +
       `&state=${encodeURIComponent(clientId)}` +
       // scopes vary by app setup; this is the common baseline:
       `&scope=${encodeURIComponent(
