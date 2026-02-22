@@ -9,9 +9,12 @@ const API_VER = process.env.META_GRAPH_VERSION || "v25.0";
 
 // 1) Dashboard reads config_id from here
 router.get("/api/whatsapp/config", (req, res) => {
-  return res.json({ ok: true, configId: process.env.WP_CONFIG || "" });
+  return res.json({
+    ok: true,
+    configId: String(process.env.WP_CONFIG || "").trim(),
+    redirectUri: String(process.env.WHATSAPP_REDIRECT_URI || "").trim(),
+  });
 });
-
 // 2) Redirect URI endpoint (must match Meta Valid OAuth Redirect URIs exactly)
 router.get("/api/whatsapp/embedded/redirect", (req, res) => {
   res.status(200).send("OK");
@@ -50,23 +53,25 @@ router.post("/api/whatsapp/embedded/exchange", async (req, res) => {
   try {
     const appId = process.env.FACEBOOK_APP_ID;
     const appSecret = process.env.FACEBOOK_APP_SECRET;
-    const redirectUri = process.env.WHATSAPP_REDIRECT_URI;
+   const redirectUri = String(process.env.WHATSAPP_REDIRECT_URI || "").trim();
 
-    console.log("ℹ️ ENV CHECK", {
-      hasAppId: Boolean(appId),
-      hasAppSecret: Boolean(appSecret),
-      redirectUri,
-    });
+console.log("ℹ️ ENV CHECK", {
+  hasAppId: Boolean(appId),
+  hasAppSecret: Boolean(appSecret),
+  redirectUri,
+  redirectUriLen: redirectUri.length,
+  redirectUriJSON: JSON.stringify(redirectUri), // ✅ shows \n, spaces, etc
+});
 
     if (!appId || !appSecret || !redirectUri) {
       return res.status(500).json({
         ok: false,
-        error: "Missing env vars: FACEBOOK_APP_ID / FACEBOOK_APP_SECRET / FACEBOOK_REDIRECT_URI",
+        error: "Missing env vars: FACEBOOK_APP_ID / FACEBOOK_APP_SECRET / WHATSAPP_REDIRECT_URI",
       });
     }
 
     const tokenUrl =
-      `https://graph.facebook.com/v25.0/oauth/access_token` +
+      `https://graph.facebook.com/${API_VER}/oauth/access_token` +
       `?client_id=${encodeURIComponent(appId)}` +
       `&client_secret=${encodeURIComponent(appSecret)}` +
       `&redirect_uri=${encodeURIComponent(redirectUri)}` +
