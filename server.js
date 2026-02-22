@@ -1044,6 +1044,7 @@ async function upsertClientWhatsAppConnection({
         whatsappPhoneNumberId: whatsappPhoneNumberId || "",
         whatsappAccessToken: whatsappAccessToken || "",
         whatsappDisplayPhone: whatsappDisplayPhone || "",
+         whatsappVerifiedName: whatsappVerifiedName || "",
         whatsappConnectedAt: new Date(),
         whatsappTokenExpiresAt: whatsappTokenExpiresAt || null,
         whatsappTokenType,
@@ -1438,6 +1439,7 @@ app.get("/auth/whatsapp/callback", async (req, res) => {
       whatsappPhoneNumberId,
       whatsappAccessToken: userAccessToken,
       whatsappDisplayPhone,
+       whatsappVerifiedName,
       whatsappTokenExpiresAt,
       whatsappTokenType: "user",
     });
