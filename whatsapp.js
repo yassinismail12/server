@@ -221,6 +221,8 @@ router.post("/", async (req, res) => {
         // Keep variable names exactly as in Mongo schema
         const whatsappAccessToken = client.whatsappAccessToken || "";
         const whatsappConnectedAt = client.whatsappConnectedAt || null;
+        const whatsappVerifiedName = client.whatsappVerifiedName || "";
+        
         const whatsappDisplayPhone = client.whatsappDisplayPhone || "";
         const whatsappTokenExpiresAt = client.whatsappTokenExpiresAt || null;
         const whatsappTokenType = client.whatsappTokenType || "";
@@ -242,6 +244,7 @@ router.post("/", async (req, res) => {
           whatsappPhoneNumberId,
           whatsappWabaId,
           whatsappDisplayPhone,
+          whatsappVerifiedName,
           whatsappTokenType,
           whatsappTokenExpiresAt,
           whatsappConnectedAt,

@@ -1424,7 +1424,7 @@ app.get("/auth/whatsapp/callback", async (req, res) => {
     const phonesData = await fetchJson(phonesUrl);
     const phones = phonesData?.data || [];
 
-    console.log("📞 phone_numbers:", phones.map(p => ({ id: p.id, display: p.display_phone_number, name: p.verified_name })));
+    console.log("📞 phone_numbers:", phones.map(p => ({ id: p.id, display: p.display_phone_number, name: p.whatsappVerifiedName })));
 
     if (!phones.length) {
       return res.status(400).send("No phone numbers found in this WABA.");
@@ -1452,6 +1452,7 @@ const whatsappVerifiedName = phones[0].whatsappVerifiedName || "";
         `&wabaId=${encodeURIComponent(whatsappWabaId)}` +
         `&phoneNumberId=${encodeURIComponent(whatsappPhoneNumberId)}` +
         `&display=${encodeURIComponent(whatsappDisplayPhone)}`
+          `&verifiedName=${encodeURIComponent(whatsappVerifiedName)}`
     );
   } catch (err) {
     console.error("❌ WhatsApp OAuth callback error:", err?.data || err);
@@ -1477,6 +1478,7 @@ app.get("/api/whatsapp/status", verifyToken, async (req, res) => {
       wabaId: client.whatsappWabaId || "",
       phoneNumberId: client.whatsappPhoneNumberId || "",
       displayPhone: client.whatsappDisplayPhone || "",
+      displayName: client.whatsappVerifiedName || "",
       connectedAt: client.whatsappConnectedAt || null,
       tokenExpiresAt: client.whatsappTokenExpiresAt || null,
       tokenType: client.whatsappTokenType || "",
