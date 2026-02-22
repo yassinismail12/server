@@ -1021,7 +1021,31 @@ async function upsertClientConnection({
     { upsert: true }
   );
 }
-
+async function upsertClientWhatsAppConnection({
+  clientId,
+  whatsappWabaId,
+  whatsappPhoneNumberId,
+  whatsappAccessToken,
+  whatsappDisplayPhone,
+  whatsappTokenExpiresAt,
+  whatsappTokenType = "user",
+}) {
+  await Client.updateOne(
+    { clientId },
+    {
+      $set: {
+        whatsappWabaId: whatsappWabaId || "",
+        whatsappPhoneNumberId: whatsappPhoneNumberId || "",
+        whatsappAccessToken: whatsappAccessToken || "",
+        whatsappDisplayPhone: whatsappDisplayPhone || "",
+        whatsappConnectedAt: new Date(),
+        whatsappTokenExpiresAt: whatsappTokenExpiresAt || null,
+        whatsappTokenType,
+      },
+    },
+    { upsert: true }
+  );
+}
 // ✅ Page picker finalize (when user has multiple pages)
 // Frontend calls this after user chooses a page.
 // POST /api/pages/select { clientId, pageId }
@@ -1277,6 +1301,142 @@ app.get("/api/webhooks/last/:clientId", verifyToken, requireClientOwnership, asy
     return res.status(500).json({ error: "Last webhook fetch failed" });
   }
 });
+app.get("/auth/whatsapp", async (req, res) => {
+  try {
+    const { clientId } = req.query;
+    if (!clientId) return res.status(400).send("Missing clientId");
+
+    const redirectUri = normalizeUrl(process.env.WHATSAPP_REDIRECT_URI);
+    if (!redirectUri) return res.status(500).send("Missing WHATSAPP_REDIRECT_URI");
+
+    const authUrl =
+      `https://www.facebook.com/v20.0/dialog/oauth` +
+      `?client_id=${encodeURIComponent(process.env.FACEBOOK_APP_ID)}` +
+      `&redirect_uri=${encodeURIComponent(redirectUri)}` +
+      `&response_type=code` +
+      `&override_default_response_type=true` +
+      `&auth_type=rerequest` +
+      `&config_id=${encodeURIComponent(process.env.WHATSAPP_EMBEDDED_CONFIG_ID)}` +
+      `&state=${encodeURIComponent(clientId)}` +
+      // scopes vary by app setup; this is the common baseline:
+      `&scope=${encodeURIComponent(
+        [
+          "business_management",
+          "whatsapp_business_management",
+          "whatsapp_business_messaging",
+        ].join(",")
+      )}`;
+
+    console.log("WA CONFIG_ID:", process.env.WP_CONFIG);
+    console.log("🔁 WHATSAPP OAUTH START redirect_uri:", redirectUri);
+    return res.redirect(authUrl);
+  } catch (err) {
+    console.error("❌ Error starting WhatsApp OAuth:", err);
+    return res.status(500).send("WhatsApp OAuth start error");
+  }
+});
+app.get("/auth/whatsapp/callback", async (req, res) => {
+  const { code, state } = req.query;
+  const clientId = state;
+
+  if (!code || !clientId) return res.status(400).send("Missing OAuth code or clientId");
+
+  const redirectUri = normalizeUrl(process.env.WHATSAPP_REDIRECT_URI);
+  const FRONTEND_URL = normalizeUrl(process.env.FRONTEND_URL || "http://localhost:5173");
+  if (!redirectUri) return res.status(500).send("Missing WHATSAPP_REDIRECT_URI");
+
+  try {
+    console.log("🔁 WHATSAPP OAUTH CALLBACK redirect_uri:", redirectUri);
+
+    // 1) Exchange code -> user access token
+    const tokenUrl =
+      `https://graph.facebook.com/v20.0/oauth/access_token` +
+      `?client_id=${encodeURIComponent(process.env.FACEBOOK_APP_ID)}` +
+      `&redirect_uri=${encodeURIComponent(redirectUri)}` +
+      `&client_secret=${encodeURIComponent(process.env.FACEBOOK_APP_SECRET)}` +
+      `&code=${encodeURIComponent(code)}`;
+
+    const tokenData = await fetchJson(tokenUrl);
+    if (!tokenData?.access_token) return res.status(400).send("Failed to get user access token");
+
+    const userAccessToken = tokenData.access_token;
+
+    // Optional: store expiry if returned (seconds)
+    const tokenExpiresAt = tokenData.expires_in
+      ? new Date(Date.now() + Number(tokenData.expires_in) * 1000)
+      : null;
+
+    // 2) Find the business the user has access to
+    // NOTE: embedded signup usually happens in a specific business,
+    // but Meta doesn't always return it directly; so we list businesses.
+    const businessesUrl =
+      `https://graph.facebook.com/v20.0/me/businesses` +
+      `?fields=id,name` +
+      `&access_token=${encodeURIComponent(userAccessToken)}`;
+
+    const businessesData = await fetchJson(businessesUrl);
+    const businesses = businessesData?.data || [];
+    if (!businesses.length) {
+      return res.status(400).send("No businesses found for this user. Check business_management permission.");
+    }
+
+    // Pick first business by default (you can make a picker if needed later)
+    const business = businesses[0];
+    const businessId = business.id;
+
+    // 3) From business -> get WABAs
+    const wabasUrl =
+      `https://graph.facebook.com/v20.0/${encodeURIComponent(businessId)}/owned_whatsapp_business_accounts` +
+      `?fields=id,name` +
+      `&access_token=${encodeURIComponent(userAccessToken)}`;
+
+    const wabasData = await fetchJson(wabasUrl);
+    const wabas = wabasData?.data || [];
+    if (!wabas.length) {
+      return res.status(400).send("No WhatsApp Business Accounts found under this business.");
+    }
+
+    // Usually only one for embedded signup; pick first
+    const wabaId = wabas[0].id;
+
+    // 4) From WABA -> phone numbers
+    const phoneNumbersUrl =
+      `https://graph.facebook.com/v20.0/${encodeURIComponent(wabaId)}/phone_numbers` +
+      `?fields=id,display_phone_number,verified_name,quality_rating,code_verification_status` +
+      `&access_token=${encodeURIComponent(userAccessToken)}`;
+
+    const phoneNumbersData = await fetchJson(phoneNumbersUrl);
+    const phones = phoneNumbersData?.data || [];
+    if (!phones.length) {
+      return res.status(400).send("No phone numbers found in this WABA.");
+    }
+
+    const phone = phones[0];
+    const phoneNumberId = phone.id;
+
+   await upsertClientWhatsAppConnection({
+  clientId,
+  whatsappWabaId,
+  whatsappPhoneNumberId,
+  whatsappAccessToken: userAccessToken,
+  whatsappDisplayPhone: phone.display_phone_number || "",
+  whatsappTokenExpiresAt: tokenExpiresAt,
+  whatsappTokenType: "user",
+});
+
+    // 5) Redirect back
+    return res.redirect(
+      `${FRONTEND_URL}/client?whatsapp=connected` +
+        `&clientId=${encodeURIComponent(clientId)}` +
+        `&wabaId=${encodeURIComponent(wabaId)}` +
+        `&phoneNumberId=${encodeURIComponent(phoneNumberId)}` +
+        `&display=${encodeURIComponent(phone.display_phone_number || "")}`
+    );
+  } catch (err) {
+    console.error("❌ WhatsApp OAuth callback error:", err?.data || err);
+    return res.status(500).send("WhatsApp OAuth callback error");
+  }
+});
 
 // ------------------------------
 // Meta webhook receiver saveLastWebhook
@@ -1372,7 +1532,7 @@ app.use("/api", (req, res, next) => {
 const distPath = path.resolve("dist");
 app.use(express.static(distPath));
 
-// ✅ SPA catch-all LAST
+// ✅ SPA catch-all LASTgit
 app.get(/.*/, (req, res) => {
    return res.sendFile(path.join(distPath, "index.html"));
 });
