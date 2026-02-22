@@ -1373,8 +1373,8 @@ const distPath = path.resolve("dist");
 app.use(express.static(distPath));
 
 // ✅ SPA catch-all LAST
-app.get("*", (req, res) => {
-  return res.sendFile(path.join(distPath, "index.html"));
+app.get(/.*/, (req, res) => {
+   return res.sendFile(path.join(distPath, "index.html"));
 });
 // ✅ MongoDB connection + start server
 const MONGODB_URI = process.env.MONGODB_URI;
