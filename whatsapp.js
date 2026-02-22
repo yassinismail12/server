@@ -207,7 +207,7 @@ router.post("/", async (req, res) => {
       for (const change of changes) {
         const value = change?.value || {};
 
-        const whatsappPhoneNumberId = value?.metadata?.phone_number_id;
+        const whatsappPhoneNumberId = "1044259142098481";
         if (!whatsappPhoneNumberId) {
           log("warn", "Missing metadata.phone_number_id", { valueKeys: Object.keys(value || {}) });
           continue;
