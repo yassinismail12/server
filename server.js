@@ -1308,6 +1308,14 @@ app.get("/auth/whatsapp", async (req, res) => {
 
     const redirectUri = normalizeUrl(process.env.WHATSAPP_REDIRECT_URI);
     if (!redirectUri) return res.status(500).send("Missing WHATSAPP_REDIRECT_URI");
+    if (!process.env.WP_CONFIG) return res.status(500).send("Missing WP_CONFIG (WhatsApp config_id)");
+    if (!process.env.FACEBOOK_APP_ID) return res.status(500).send("Missing FACEBOOK_APP_ID");
+
+    const scope = [
+      "business_management",
+      "whatsapp_business_management",
+      "whatsapp_business_messaging",
+    ].join(",");
 
     const authUrl =
       `https://www.facebook.com/v20.0/dialog/oauth` +
@@ -1318,20 +1326,13 @@ app.get("/auth/whatsapp", async (req, res) => {
       `&auth_type=rerequest` +
       `&config_id=${encodeURIComponent(process.env.WP_CONFIG)}` +
       `&state=${encodeURIComponent(clientId)}` +
-      // scopes vary by app setup; this is the common baseline:
-      `&scope=${encodeURIComponent(
-        [
-          "business_management",
-          "whatsapp_business_management",
-          "whatsapp_business_messaging",
-        ].join(",")
-      )}`;
+      `&scope=${encodeURIComponent(scope)}`;
 
     console.log("WA CONFIG_ID:", process.env.WP_CONFIG);
     console.log("🔁 WHATSAPP OAUTH START redirect_uri:", redirectUri);
     return res.redirect(authUrl);
   } catch (err) {
-    console.error("❌ Error starting WhatsApp OAuth:", err);
+    console.error("❌ Error starting WhatsApp OAuth:", err?.data || err);
     return res.status(500).send("WhatsApp OAuth start error");
   }
 });
@@ -1357,80 +1358,123 @@ app.get("/auth/whatsapp/callback", async (req, res) => {
       `&code=${encodeURIComponent(code)}`;
 
     const tokenData = await fetchJson(tokenUrl);
-    if (!tokenData?.access_token) return res.status(400).send("Failed to get user access token");
+    if (!tokenData?.access_token) {
+      console.error("❌ tokenData:", tokenData);
+      return res.status(400).send("Failed to get user access token");
+    }
 
     const userAccessToken = tokenData.access_token;
 
-    // Optional: store expiry if returned (seconds)
-    const tokenExpiresAt = tokenData.expires_in
+    const whatsappTokenExpiresAt = tokenData.expires_in
       ? new Date(Date.now() + Number(tokenData.expires_in) * 1000)
       : null;
 
-    // 2) Find the business the user has access to
-    // NOTE: embedded signup usually happens in a specific business,
-    // but Meta doesn't always return it directly; so we list businesses.
-    const businessesUrl =
-      `https://graph.facebook.com/v20.0/me/businesses` +
-      `?fields=id,name` +
-      `&access_token=${encodeURIComponent(userAccessToken)}`;
-
-    const businessesData = await fetchJson(businessesUrl);
-    const businesses = businessesData?.data || [];
-    if (!businesses.length) {
-      return res.status(400).send("No businesses found for this user. Check business_management permission.");
+    // 2) OPTIONAL but super helpful: debug scopes
+    // (Remove later if you want)
+    try {
+      const debugUrl =
+        `https://graph.facebook.com/v20.0/debug_token` +
+        `?input_token=${encodeURIComponent(userAccessToken)}` +
+        `&access_token=${encodeURIComponent(process.env.FACEBOOK_APP_ID + "|" + process.env.FACEBOOK_APP_SECRET)}`;
+      const debug = await fetchJson(debugUrl);
+      console.log("🔎 debug_token scopes:", JSON.stringify(debug?.data?.scopes || debug?.data?.granular_scopes || debug, null, 2));
+    } catch (e) {
+      console.log("ℹ️ debug_token skipped/failed:", e?.data || e?.message);
     }
 
-    // Pick first business by default (you can make a picker if needed later)
-    const business = businesses[0];
-    const businessId = business.id;
+    // 3) Try to list WABAs directly from /me (no business id)
+    // Different apps/accounts sometimes expose different edges.
+    let wabas = [];
 
-    // 3) From business -> get WABAs
-    const wabasUrl =
-      `https://graph.facebook.com/v20.0/${encodeURIComponent(businessId)}/owned_whatsapp_business_accounts` +
+    const meOwnedWabasUrl =
+      `https://graph.facebook.com/v20.0/me/owned_whatsapp_business_accounts` +
       `?fields=id,name` +
       `&access_token=${encodeURIComponent(userAccessToken)}`;
 
-    const wabasData = await fetchJson(wabasUrl);
-    const wabas = wabasData?.data || [];
+    try {
+      const owned = await fetchJson(meOwnedWabasUrl);
+      wabas = owned?.data || [];
+      console.log("📦 /me/owned_whatsapp_business_accounts:", wabas.length);
+    } catch (e) {
+      console.error("❌ owned_wabas failed:", e?.data || e?.message);
+    }
+
     if (!wabas.length) {
-      return res.status(400).send("No WhatsApp Business Accounts found under this business.");
+      const meWabasUrl =
+        `https://graph.facebook.com/v20.0/me/whatsapp_business_accounts` +
+        `?fields=id,name` +
+        `&access_token=${encodeURIComponent(userAccessToken)}`;
+
+      try {
+        const any = await fetchJson(meWabasUrl);
+        wabas = any?.data || [];
+        console.log("📦 /me/whatsapp_business_accounts:", wabas.length);
+      } catch (e) {
+        console.error("❌ me wabas failed:", e?.data || e?.message);
+      }
     }
 
-    // Usually only one for embedded signup; pick first
-    const wabaId = wabas[0].id;
-
-    // 4) From WABA -> phone numbers
-    const phoneNumbersUrl =
-      `https://graph.facebook.com/v20.0/${encodeURIComponent(wabaId)}/phone_numbers` +
-      `?fields=id,display_phone_number,verified_name,quality_rating,code_verification_status` +
-      `&access_token=${encodeURIComponent(userAccessToken)}`;
-
-    const phoneNumbersData = await fetchJson(phoneNumbersUrl);
-    const phones = phoneNumbersData?.data || [];
-    if (!phones.length) {
-      return res.status(400).send("No phone numbers found in this WABA.");
+    if (!wabas.length) {
+      return res.status(400).send(
+        "No WABAs found for this user token. Likely missing whatsapp_business_management or user isn't admin of the WhatsApp business."
+      );
     }
 
-    const phone = phones[0];
-    const phoneNumberId = phone.id;
+    // 4) Find a WABA that has phone numbers
+    let chosenWaba = null;
+    let chosenPhone = null;
 
-   await upsertClientWhatsAppConnection({
-  clientId,
-  whatsappWabaId,
-  whatsappPhoneNumberId,
-  whatsappAccessToken: userAccessToken,
-  whatsappDisplayPhone: phone.display_phone_number || "",
-  whatsappTokenExpiresAt: tokenExpiresAt,
-  whatsappTokenType: "user",
-});
+    for (const w of wabas) {
+      const wabaId = w.id;
+      if (!wabaId) continue;
 
-    // 5) Redirect back
+      const phonesUrl =
+        `https://graph.facebook.com/v20.0/${encodeURIComponent(wabaId)}/phone_numbers` +
+        `?fields=id,display_phone_number,verified_name,quality_rating,code_verification_status` +
+        `&access_token=${encodeURIComponent(userAccessToken)}`;
+
+      try {
+        const phonesData = await fetchJson(phonesUrl);
+        const phones = phonesData?.data || [];
+        console.log(`📞 phones for waba ${wabaId}:`, phones.length);
+
+        if (phones.length) {
+          chosenWaba = w;
+          chosenPhone = phones[0];
+          break;
+        }
+      } catch (e) {
+        console.error(`❌ phone_numbers failed for waba ${wabaId}:`, e?.data || e?.message);
+        // continue to next waba
+      }
+    }
+
+    if (!chosenWaba || !chosenPhone) {
+      return res.status(400).send("Found WABAs but none returned phone numbers (permission/ownership issue).");
+    }
+
+    const whatsappWabaId = chosenWaba.id;
+    const whatsappPhoneNumberId = chosenPhone.id;
+    const whatsappDisplayPhone = chosenPhone.display_phone_number || "";
+
+    // 5) Store in Mongo (YOUR schema field names)
+    await upsertClientWhatsAppConnection({
+      clientId,
+      whatsappWabaId,
+      whatsappPhoneNumberId,
+      whatsappAccessToken: userAccessToken,
+      whatsappDisplayPhone,
+      whatsappTokenExpiresAt,
+      whatsappTokenType: "user",
+    });
+
+    // 6) Redirect back
     return res.redirect(
       `${FRONTEND_URL}/client?whatsapp=connected` +
         `&clientId=${encodeURIComponent(clientId)}` +
-        `&wabaId=${encodeURIComponent(wabaId)}` +
-        `&phoneNumberId=${encodeURIComponent(phoneNumberId)}` +
-        `&display=${encodeURIComponent(phone.display_phone_number || "")}`
+        `&wabaId=${encodeURIComponent(whatsappWabaId)}` +
+        `&phoneNumberId=${encodeURIComponent(whatsappPhoneNumberId)}` +
+        `&display=${encodeURIComponent(whatsappDisplayPhone)}`
     );
   } catch (err) {
     console.error("❌ WhatsApp OAuth callback error:", err?.data || err);
