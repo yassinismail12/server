@@ -1432,7 +1432,7 @@ app.get("/auth/whatsapp/callback", async (req, res) => {
 
     const whatsappPhoneNumberId = phones[0].id;
     const whatsappDisplayPhone = phones[0].display_phone_number || "";
-const whatsappVerifiedName = phones[0].verified_name || "";
+const whatsappVerifiedName = phones[0].whatsappVerifiedName || "";
     // 5) Store in Mongo (your schema fields)
     await upsertClientWhatsAppConnection({
       clientId,
