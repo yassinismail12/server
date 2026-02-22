@@ -42,7 +42,7 @@ igUsername: { type: String, default: "" }, // @handle without @
 igName: { type: String, default: "" },     // display name
 igProfilePicUrl: { type: String, default: "" }
 ,
-
+whatsappVerifiedName: { type: String, default: "" },
     // ✅ Flexible file storage
     files: [
         {
