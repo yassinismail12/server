@@ -28,7 +28,7 @@ import whatsappRoute from "./whatsapp.js";
 import knowledgeRoute from "./routes/knowledge.js";
 import engagementRoutes from "./routes/engagement.js";
 import Product from "./Product.js"; // ✅ this registers the model
-import whatsappEmbeddedRoutes from "./routes/whatsappEmbedded.js";
+import whatsappEmbedded from "./routes/whatsappEmbedded.js";
 const app = express();
 dotenv.config();
 
@@ -111,6 +111,7 @@ app.use(
       "https://dashboardai1.netlify.app/client",
       "https://dashboardai1.netlify.app/admin",
     ],
+     origin: true,
     credentials: true,
   })
 );
@@ -1361,7 +1362,20 @@ app.use("/whatsapp", whatsappRoute);
 app.use("/api", ordersRoute);
 app.use("/api/knowledge", knowledgeRoute);
 app.use("/api/engagement", verifyToken, attachClientId, engagementRoutes);
-app.use(whatsappEmbeddedRoutes);
+app.use("/api", whatsappEmbedded);
+app.use("/api", (req, res, next) => {
+  console.log("🟩 [API HIT]", req.method, req.originalUrl);
+  next();
+});
+
+// If you serve your frontend from same server:
+const distPath = path.resolve("dist");
+app.use(express.static(distPath));
+
+// ✅ SPA catch-all LAST
+app.get("*", (req, res) => {
+  return res.sendFile(path.join(distPath, "index.html"));
+});
 // ✅ MongoDB connection + start server
 const MONGODB_URI = process.env.MONGODB_URI;
 
