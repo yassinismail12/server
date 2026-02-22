@@ -207,7 +207,6 @@ router.post("/", async (req, res) => {
       for (const change of changes) {
         const value = change?.value || {};
 
-        // Meta WhatsApp inbound: metadata.phone_number_id
         const whatsappPhoneNumberId = value?.metadata?.phone_number_id;
         if (!whatsappPhoneNumberId) {
           log("warn", "Missing metadata.phone_number_id", { valueKeys: Object.keys(value || {}) });
