@@ -84,15 +84,11 @@ function sourceMenuText() {
 function getSystemTokenForClient(client) {
   const key = String(client?.whatsappTokenKey || "").trim().toLowerCase();
 
-  if (key === "bm2" && process.env.WHATSAPP_TOKEN) {
-    return process.env.WHATSAPP_TOKEN;
-  }
-  if (key && process.env[`WHATSAPP_TOKEN${key.toUpperCase()}`]) {
-    return process.env[`WHATSAPP_TOKEN${key.toUpperCase()}`];
+  if (key && process.env[`WHATSAPP_TOKEN_${key.toUpperCase()}`]) {
+    return process.env[`WHATSAPP_TOKEN_${key.toUpperCase()}`];
   }
   return process.env.WHATSAPP_TOKEN || "";
 }
-
 // ===============================
 // Clients
 // ===============================
@@ -186,39 +182,35 @@ async function upsertConversation({
 // ===============================
 // Admin auth for test route
 // ===============================
-function requireAdmin(req, res, next) {
-  const secret = req.header("x-admin-secret");
-  if (!process.env.FACEBOOK_APP_SECRET) {
-    log("warn", "ADMIN_SECRET not set; refusing admin routes");
-    return res.status(500).json({ ok: false, error: "Server misconfigured" });
-  }
-  if (!secret || secret !== process.env.FACEBOOK_APP_SECRET) {
-    return res.status(401).json({ ok: false, error: "Unauthorized" });
-  }
-  next();
-}
+
 
 // ===============================
 // ✅ TEST SEND ENDPOINT (like IG)
 // POST /whatsapp/send-test
 // body: { clientId, to, text }
 // ===============================
-router.post("/send-test", requireAdmin, async (req, res) => {
+router.post("/send-test", async (req, res) => {
   try {
+    // ✅ rely on your existing login session
+    // If you don't have req.user here, see note below.
+    if (!req.user || req.user.role !== "client") {
+      return res.status(401).json({ ok: false, error: "Unauthorized" });
+    }
+
     const { clientId, to, text } = req.body || {};
     const toDigits = normalizePhoneDigits(to);
 
     if (!clientId || !toDigits || !text) {
-      return res.status(400).json({
-        ok: false,
-        error: "Missing clientId, to, or text",
-      });
+      return res.status(400).json({ ok: false, error: "Missing clientId, to, or text" });
+    }
+
+    // ✅ don't allow sending for a different clientId
+    if (String(clientId) !== String(req.user.clientId)) {
+      return res.status(403).json({ ok: false, error: "Forbidden" });
     }
 
     const client = await getClientByClientId(clientId);
-    if (!client) {
-      return res.status(404).json({ ok: false, error: "Client not found" });
-    }
+    if (!client) return res.status(404).json({ ok: false, error: "Client not found" });
 
     const phoneNumberId = String(client.whatsappPhoneNumberId || "").trim();
     if (!phoneNumberId) {
@@ -227,10 +219,8 @@ router.post("/send-test", requireAdmin, async (req, res) => {
 
     const accessToken = getSystemTokenForClient(client);
     if (!accessToken) {
-      return res.status(500).json({ ok: false, error: "Missing system user token env" });
+      return res.status(500).json({ ok: false, error: "Missing WHATSAPP token env" });
     }
-
-    log("info", "WA send-test", { clientId, phoneNumberId, to: toDigits, preview: String(text).slice(0, 80) });
 
     await sendWhatsAppText({
       phoneNumberId,
