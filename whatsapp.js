@@ -77,12 +77,38 @@ function sourceMenuText() {
 }
 
 // ===============================
+// Token selection (System User token)
+// ===============================
+// If you only have ONE portfolio/token, set WHATSAPP_SYSTEM_USER_TOKEN in Render env.
+// If you have 2 portfolios, set both and store client.whatsappTokenKey = "bm2" for example.
+function getSystemTokenForClient(client) {
+  const key = String(client?.whatsappTokenKey || "").trim().toLowerCase();
+
+  if (key === "bm2" && process.env.WHATSAPP_SYSTEM_USER_TOKEN_BM2) {
+    return process.env.WHATSAPP_SYSTEM_USER_TOKEN_BM2;
+  }
+  if (key && process.env[`WHATSAPP_SYSTEM_USER_TOKEN_${key.toUpperCase()}`]) {
+    return process.env[`WHATSAPP_SYSTEM_USER_TOKEN_${key.toUpperCase()}`];
+  }
+  return process.env.WHATSAPP_SYSTEM_USER_TOKEN || "";
+}
+
+// ===============================
 // Clients
 // ===============================
 async function getClientByPhoneNumberId(whatsappPhoneNumberId) {
   const db = await connectDB();
   return db.collection("Clients").findOne({
     whatsappPhoneNumberId: String(whatsappPhoneNumberId || "").trim(),
+    active: { $ne: false },
+  });
+}
+
+// Optional: used by send-test endpoint
+async function getClientByClientId(clientId) {
+  const db = await connectDB();
+  return db.collection("Clients").findOne({
+    clientId: String(clientId || "").trim(),
     active: { $ne: false },
   });
 }
@@ -136,7 +162,7 @@ async function upsertConversation({
       $set: {
         clientId: String(clientId),
         userId,
-        source: "whatsapp", // ✅ dashboard filter key
+        source: "whatsapp",
         sourceLabel: "WhatsApp",
         history,
         lastInteraction,
@@ -156,6 +182,69 @@ async function upsertConversation({
     { upsert: true }
   );
 }
+
+// ===============================
+// Admin auth for test route
+// ===============================
+function requireAdmin(req, res, next) {
+  const secret = req.header("x-admin-secret");
+  if (!process.env.ADMIN_SECRET) {
+    log("warn", "ADMIN_SECRET not set; refusing admin routes");
+    return res.status(500).json({ ok: false, error: "Server misconfigured" });
+  }
+  if (!secret || secret !== process.env.ADMIN_SECRET) {
+    return res.status(401).json({ ok: false, error: "Unauthorized" });
+  }
+  next();
+}
+
+// ===============================
+// ✅ TEST SEND ENDPOINT (like IG)
+// POST /whatsapp/send-test
+// body: { clientId, to, text }
+// ===============================
+router.post("/send-test", requireAdmin, async (req, res) => {
+  try {
+    const { clientId, to, text } = req.body || {};
+    const toDigits = normalizePhoneDigits(to);
+
+    if (!clientId || !toDigits || !text) {
+      return res.status(400).json({
+        ok: false,
+        error: "Missing clientId, to, or text",
+      });
+    }
+
+    const client = await getClientByClientId(clientId);
+    if (!client) {
+      return res.status(404).json({ ok: false, error: "Client not found" });
+    }
+
+    const phoneNumberId = String(client.whatsappPhoneNumberId || "").trim();
+    if (!phoneNumberId) {
+      return res.status(400).json({ ok: false, error: "Client missing whatsappPhoneNumberId" });
+    }
+
+    const accessToken = getSystemTokenForClient(client);
+    if (!accessToken) {
+      return res.status(500).json({ ok: false, error: "Missing system user token env" });
+    }
+
+    log("info", "WA send-test", { clientId, phoneNumberId, to: toDigits, preview: String(text).slice(0, 80) });
+
+    await sendWhatsAppText({
+      phoneNumberId,
+      to: toDigits,
+      text: String(text),
+      accessToken,
+    });
+
+    return res.json({ ok: true });
+  } catch (e) {
+    log("error", "WA send-test failed", { err: e.message });
+    return res.status(500).json({ ok: false, error: e.message });
+  }
+});
 
 // ===============================
 // Webhook verification (Meta)
@@ -181,8 +270,6 @@ router.get("/", (req, res) => {
 // WhatsApp webhook receiver
 // ===============================
 router.post("/", async (req, res) => {
-  // Log immediately so you can confirm Meta is hitting this endpoint
-  
   console.log("🔥 WA POST HIT", new Date().toISOString(), "keys:", Object.keys(req.body || {}));
 
   log("info", "🔥 WHATSAPP WEBHOOK HIT", {
@@ -213,34 +300,22 @@ router.post("/", async (req, res) => {
           continue;
         }
 
-        // Find client by whatsappPhoneNumberId (same field name as in Mongo)
         const client = await getClientByPhoneNumberId(whatsappPhoneNumberId);
         if (!client) {
           log("warn", "No client matched whatsappPhoneNumberId", { whatsappPhoneNumberId });
           continue;
         }
 
-        // Keep variable names exactly as in Mongo schema
-        const whatsappAccessToken = client.whatsappAccessToken || "";
+        // ✅ Use SYSTEM USER TOKEN (stable)
+        const whatsappAccessToken = getSystemTokenForClient(client);
+
         const whatsappConnectedAt = client.whatsappConnectedAt || null;
         const whatsappVerifiedName = client.whatsappVerifiedName || "";
-        
         const whatsappDisplayPhone = client.whatsappDisplayPhone || "";
         const whatsappTokenExpiresAt = client.whatsappTokenExpiresAt || null;
-        const whatsappTokenType = client.whatsappTokenType || "";
+        const whatsappTokenType = client.whatsappTokenType || "system_user";
         const whatsappWabaId = client.whatsappWabaId || "";
 
-        // IG fields (not used by WA flow, but logged so you can verify values exist)
-        const igName = client.igName || "";
-        const igProfilePicUrl = client.igProfilePicUrl || "";
-        const igUsername = client.igUsername || "";
-        const igBusinessId = client.igBusinessId || client.igId || "";
-        const igIdentityUpdatedAt = client.igIdentityUpdatedAt || null;
-        const lastIgSenderAt = client.lastIgSenderAt || null;
-        const lastIgSenderId = client.lastIgSenderId || "";
-        const lastIgSenderText = client.lastIgSenderText || "";
-
-        // Log the connection snapshot once per webhook batch
         log("info", "Client matched for WA webhook", {
           clientId: client.clientId,
           whatsappPhoneNumberId,
@@ -250,39 +325,28 @@ router.post("/", async (req, res) => {
           whatsappTokenType,
           whatsappTokenExpiresAt,
           whatsappConnectedAt,
-          igBusinessId,
-          igUsername,
+          whatsappTokenKey: client.whatsappTokenKey || "",
         });
 
         if (!whatsappAccessToken) {
-          log("warn", "Client has no whatsappAccessToken (Embedded Signup not finished)", {
+          log("warn", "Missing system user token env for this client", {
             clientId: client.clientId,
             whatsappPhoneNumberId,
+            tokenKey: client.whatsappTokenKey || "",
           });
           continue;
         }
 
-        // Store last webhook payload on the client for debugging (dashboard "View Last Payload")
         await touchClientWebhook(client._id, {
           clientId: client.clientId,
           whatsappPhoneNumberId,
           hasMessages: Boolean(value?.messages?.length),
           meta: value?.metadata || null,
-          // include some ids to help debug
           whatsappWabaId,
           whatsappDisplayPhone,
           whatsappTokenType,
-          igBusinessId,
-          igUsername,
-          igName,
-          igProfilePicUrl,
-          igIdentityUpdatedAt,
-          lastIgSenderAt,
-          lastIgSenderId,
-          lastIgSenderText,
         });
 
-        // Ignore delivery/read statuses: only respond to inbound messages
         const messages = value?.messages || [];
         if (!messages.length) {
           log("info", "No inbound messages in webhook (likely statuses)", {
@@ -292,14 +356,10 @@ router.post("/", async (req, res) => {
           continue;
         }
 
-        // Staff digits list (ignore staff inbound)
         const staffDigits = (client.staffNumbers || []).map(normalizePhoneDigits);
-
-        // Client-level awaitSource switch (optional)
         const clientAwaitSource = Boolean(client.awaitSource);
 
         for (const msg of messages) {
-          // Log raw message summary
           log("info", "Inbound WA message", {
             clientId: client.clientId,
             whatsappPhoneNumberId,
@@ -319,31 +379,24 @@ router.post("/", async (req, res) => {
             log("info", "Ignoring non-text message", { clientId: client.clientId, from: fromDigits, type: msg?.type });
             continue;
           }
-
-          // ignore staff messages
           if (staffDigits.includes(fromDigits)) {
             log("info", "Ignoring staff message", { from: fromDigits, clientId: client.clientId });
             continue;
           }
 
-          // Load convo
           const convo = await getConversation(client.clientId, fromDigits);
 
-          // If human escalation is ON, ignore bot
           if (convo?.humanEscalation === true) {
             log("info", "Human escalation active; ignoring", { from: fromDigits, clientId: client.clientId });
             continue;
           }
 
-          // greeting / timestamps
           const inboundAt = new Date();
           const inboundPreview = text.slice(0, 200);
 
-          // default history (system prompt)
           const systemPrompt = buildSystemPromptFromClient(client);
           let history = convo?.history || [{ role: "system", content: systemPrompt }];
 
-          // ====== AWAIT SOURCE MODE ======
           const sourceChoiceExisting = convo?.sourceChoice || "";
           const needsChoice = clientAwaitSource && !sourceChoiceExisting;
 
@@ -365,13 +418,7 @@ router.post("/", async (req, res) => {
                 lastDirection: "in",
                 awaitSource: true,
                 sourceChoice: "",
-                meta: {
-                  whatsappPhoneNumberId,
-                  whatsappWabaId,
-                  whatsappDisplayPhone,
-                  whatsappTokenType,
-                  whatsappTokenExpiresAt,
-                },
+                meta: { whatsappPhoneNumberId, whatsappWabaId, whatsappDisplayPhone, whatsappTokenType },
               });
 
               if (shouldSendMenu) {
@@ -383,12 +430,9 @@ router.post("/", async (req, res) => {
                   accessToken: whatsappAccessToken,
                 });
               }
-
-              log("info", "Awaiting source choice", { from: fromDigits, clientId: client.clientId });
               continue;
             }
 
-            // user chose a source → store it and proceed
             history.push({ role: "user", content: text, createdAt: inboundAt });
 
             await upsertConversation({
@@ -401,19 +445,7 @@ router.post("/", async (req, res) => {
               lastDirection: "in",
               awaitSource: false,
               sourceChoice: picked,
-              meta: {
-                whatsappPhoneNumberId,
-                whatsappWabaId,
-                whatsappDisplayPhone,
-                whatsappTokenType,
-                whatsappTokenExpiresAt,
-              },
-            });
-
-            log("info", "Sending source selection confirmation", {
-              clientId: client.clientId,
-              to: fromDigits,
-              picked,
+              meta: { whatsappPhoneNumberId, whatsappWabaId, whatsappDisplayPhone, whatsappTokenType },
             });
 
             await sendWhatsAppText({
@@ -423,11 +455,9 @@ router.post("/", async (req, res) => {
               accessToken: whatsappAccessToken,
             });
 
-            log("info", "Source choice selected", { from: fromDigits, picked, clientId: client.clientId });
             continue;
           }
 
-          // ====== NORMAL BOT FLOW ======
           let greeting = "";
           if (!convo || isNewDay(convo.lastInteraction)) greeting = "Hi 👋";
 
@@ -443,7 +473,6 @@ router.post("/", async (req, res) => {
 
           const combined = greeting ? `${greeting}\n\n${assistantMessage}` : assistantMessage;
 
-          // persist assistant turn
           const outboundAt = new Date();
           history.push({ role: "assistant", content: assistantMessage, createdAt: outboundAt });
 
@@ -457,13 +486,7 @@ router.post("/", async (req, res) => {
             lastDirection: "in",
             awaitSource: false,
             sourceChoice: convo?.sourceChoice || "",
-            meta: {
-              whatsappPhoneNumberId,
-              whatsappWabaId,
-              whatsappDisplayPhone,
-              whatsappTokenType,
-              whatsappTokenExpiresAt,
-            },
+            meta: { whatsappPhoneNumberId, whatsappWabaId, whatsappDisplayPhone, whatsappTokenType },
           });
 
           log("info", "Sending WA reply", {
@@ -473,24 +496,24 @@ router.post("/", async (req, res) => {
             preview: combined.slice(0, 80),
           });
 
-          await sendWhatsAppText({
-            phoneNumberId: whatsappPhoneNumberId,
-            to: fromDigits,
-            text: combined,
-            accessToken: whatsappAccessToken,
-          });
-
-          log("info", "WhatsApp reply sent", {
-            clientId: client.clientId,
-            whatsappPhoneNumberId,
-            to: fromDigits,
-            preview: combined.slice(0, 80),
-          });
+          try {
+            await sendWhatsAppText({
+              phoneNumberId: whatsappPhoneNumberId,
+              to: fromDigits,
+              text: combined,
+              accessToken: whatsappAccessToken,
+            });
+          } catch (e) {
+            log("error", "WhatsApp send failed", {
+              clientId: client.clientId,
+              to: fromDigits,
+              err: e.message,
+            });
+          }
         }
       }
     }
   } catch (err) {
-    // If Meta isn't hitting this route, you won't see this.
     console.error("❌ WhatsApp webhook handler error:", err?.message || err);
   }
 });
