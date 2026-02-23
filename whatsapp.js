@@ -1,6 +1,7 @@
 // whatsapp.js
 import express from "express";
 import { MongoClient } from "mongodb";
+import jwt from "jsonwebtoken";
 
 import { getChatCompletion } from "./services/openai.js";
 import { sendWhatsAppText } from "./services/whatsappText.js";
@@ -77,10 +78,63 @@ function sourceMenuText() {
 }
 
 // ===============================
+// Auth (for dashboard test send)
+// ===============================
+function parseCookieHeader(cookieHeader = "") {
+  const out = {};
+  cookieHeader.split(";").forEach((part) => {
+    const idx = part.indexOf("=");
+    if (idx === -1) return;
+    const k = part.slice(0, idx).trim();
+    const v = part.slice(idx + 1).trim();
+    if (k) out[k] = decodeURIComponent(v);
+  });
+  return out;
+}
+
+function getJwtSecret() {
+  return (
+    process.env.JWT_SECRET ||
+    process.env.JWT_SECRET_KEY ||
+    process.env.JWT_KEY ||
+    process.env.JWT_TOKEN_SECRET ||
+    ""
+  );
+}
+
+function requireClient(req, res, next) {
+  try {
+    // Prefer cookieParser if present, else parse header manually
+    const tokenFromParser = req.cookies?.token;
+    const tokenFromHeader = parseCookieHeader(req.headers.cookie || "").token;
+    const token = tokenFromParser || tokenFromHeader;
+
+    if (!token) return res.status(401).json({ ok: false, error: "Unauthorized" });
+
+    const secret = getJwtSecret();
+    if (!secret) {
+      log("error", "JWT secret missing (set JWT_SECRET or JWT_SECRET_KEY)");
+      return res.status(500).json({ ok: false, error: "Server misconfigured" });
+    }
+
+    const payload = jwt.verify(token, secret);
+
+    if (!payload || payload.role !== "client" || !payload.clientId) {
+      return res.status(401).json({ ok: false, error: "Unauthorized" });
+    }
+
+    req.user = payload; // { id, role, clientId, ... }
+    next();
+  } catch (e) {
+    return res.status(401).json({ ok: false, error: "Unauthorized" });
+  }
+}
+
+// ===============================
 // Token selection (System User token)
 // ===============================
-// If you only have ONE portfolio/token, set WHATSAPP_SYSTEM_USER_TOKEN in Render env.
-// If you have 2 portfolios, set both and store client.whatsappTokenKey = "bm2" for example.
+// Default: WHATSAPP_TOKEN
+// Per-portfolio: WHATSAPP_TOKEN_BM2 / WHATSAPP_TOKEN_BM3 etc via client.whatsappTokenKey = "bm2"
 function getSystemTokenForClient(client) {
   const key = String(client?.whatsappTokenKey || "").trim().toLowerCase();
 
@@ -89,6 +143,7 @@ function getSystemTokenForClient(client) {
   }
   return process.env.WHATSAPP_TOKEN || "";
 }
+
 // ===============================
 // Clients
 // ===============================
@@ -100,7 +155,6 @@ async function getClientByPhoneNumberId(whatsappPhoneNumberId) {
   });
 }
 
-// Optional: used by send-test endpoint
 async function getClientByClientId(clientId) {
   const db = await connectDB();
   return db.collection("Clients").findOne({
@@ -128,7 +182,7 @@ async function touchClientWebhook(clientMongoId, payload) {
 }
 
 // ===============================
-// Conversations (stored with source: "whatsapp")
+// Conversations
 // ===============================
 async function getConversation(clientId, userId) {
   const db = await connectDB();
@@ -180,23 +234,12 @@ async function upsertConversation({
 }
 
 // ===============================
-// Admin auth for test route
-// ===============================
-
-
-// ===============================
-// ✅ TEST SEND ENDPOINT (like IG)
+// ✅ TEST SEND ENDPOINT (dashboard)
 // POST /whatsapp/send-test
 // body: { clientId, to, text }
 // ===============================
-router.post("/send-test", async (req, res) => {
+router.post("/send-test", requireClient, async (req, res) => {
   try {
-    // ✅ rely on your existing login session
-    // If you don't have req.user here, see note below.
-    if (!req.user || req.user.role !== "client") {
-      return res.status(401).json({ ok: false, error: "Unauthorized" });
-    }
-
     const { clientId, to, text } = req.body || {};
     const toDigits = normalizePhoneDigits(to);
 
@@ -204,7 +247,7 @@ router.post("/send-test", async (req, res) => {
       return res.status(400).json({ ok: false, error: "Missing clientId, to, or text" });
     }
 
-    // ✅ don't allow sending for a different clientId
+    // Must match logged-in client
     if (String(clientId) !== String(req.user.clientId)) {
       return res.status(403).json({ ok: false, error: "Forbidden" });
     }
@@ -219,8 +262,16 @@ router.post("/send-test", async (req, res) => {
 
     const accessToken = getSystemTokenForClient(client);
     if (!accessToken) {
-      return res.status(500).json({ ok: false, error: "Missing WHATSAPP token env" });
+      return res.status(500).json({ ok: false, error: "Missing WHATSAPP_TOKEN env" });
     }
+
+    log("info", "WA send-test", {
+      clientId,
+      phoneNumberId,
+      to: toDigits,
+      tokenKey: client.whatsappTokenKey || "",
+      preview: String(text).slice(0, 80),
+    });
 
     await sendWhatsAppText({
       phoneNumberId,
@@ -275,7 +326,9 @@ router.post("/", async (req, res) => {
 
     const entries = body?.entry || [];
     if (!Array.isArray(entries) || !entries.length) {
-      log("warn", "Webhook body has no entry array", { bodyPreview: JSON.stringify(body || {}).slice(0, 300) });
+      log("warn", "Webhook body has no entry array", {
+        bodyPreview: JSON.stringify(body || {}).slice(0, 300),
+      });
       return;
     }
 
@@ -296,7 +349,6 @@ router.post("/", async (req, res) => {
           continue;
         }
 
-        // ✅ Use SYSTEM USER TOKEN (stable)
         const whatsappAccessToken = getSystemTokenForClient(client);
 
         const whatsappConnectedAt = client.whatsappConnectedAt || null;
@@ -319,7 +371,7 @@ router.post("/", async (req, res) => {
         });
 
         if (!whatsappAccessToken) {
-          log("warn", "Missing system user token env for this client", {
+          log("warn", "Missing WHATSAPP_TOKEN env for this client", {
             clientId: client.clientId,
             whatsappPhoneNumberId,
             tokenKey: client.whatsappTokenKey || "",
@@ -412,7 +464,6 @@ router.post("/", async (req, res) => {
               });
 
               if (shouldSendMenu) {
-                log("info", "Sending source menu", { clientId: client.clientId, to: fromDigits });
                 await sendWhatsAppText({
                   phoneNumberId: whatsappPhoneNumberId,
                   to: fromDigits,
@@ -477,13 +528,6 @@ router.post("/", async (req, res) => {
             awaitSource: false,
             sourceChoice: convo?.sourceChoice || "",
             meta: { whatsappPhoneNumberId, whatsappWabaId, whatsappDisplayPhone, whatsappTokenType },
-          });
-
-          log("info", "Sending WA reply", {
-            clientId: client.clientId,
-            whatsappPhoneNumberId,
-            to: fromDigits,
-            preview: combined.slice(0, 80),
           });
 
           try {
