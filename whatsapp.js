@@ -84,13 +84,13 @@ function sourceMenuText() {
 function getSystemTokenForClient(client) {
   const key = String(client?.whatsappTokenKey || "").trim().toLowerCase();
 
-  if (key === "bm2" && process.env.WHATSAPP_SYSTEM_USER_TOKEN_BM2) {
-    return process.env.WHATSAPP_SYSTEM_USER_TOKEN_BM2;
+  if (key === "bm2" && process.env.WHATSAPP_TOKEN) {
+    return process.env.WHATSAPP_TOKEN;
   }
-  if (key && process.env[`WHATSAPP_SYSTEM_USER_TOKEN_${key.toUpperCase()}`]) {
-    return process.env[`WHATSAPP_SYSTEM_USER_TOKEN_${key.toUpperCase()}`];
+  if (key && process.env[`WHATSAPP_TOKEN${key.toUpperCase()}`]) {
+    return process.env[`WHATSAPP_TOKEN${key.toUpperCase()}`];
   }
-  return process.env.WHATSAPP_SYSTEM_USER_TOKEN || "";
+  return process.env.WHATSAPP_TOKEN || "";
 }
 
 // ===============================
@@ -188,11 +188,11 @@ async function upsertConversation({
 // ===============================
 function requireAdmin(req, res, next) {
   const secret = req.header("x-admin-secret");
-  if (!process.env.ADMIN_SECRET) {
+  if (!process.env.FACEBOOK_APP_SECRET) {
     log("warn", "ADMIN_SECRET not set; refusing admin routes");
     return res.status(500).json({ ok: false, error: "Server misconfigured" });
   }
-  if (!secret || secret !== process.env.ADMIN_SECRET) {
+  if (!secret || secret !== process.env.FACEBOOK_APP_SECRET) {
     return res.status(401).json({ ok: false, error: "Unauthorized" });
   }
   next();
