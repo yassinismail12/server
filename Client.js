@@ -43,6 +43,10 @@ igName: { type: String, default: "" },     // display name
 igProfilePicUrl: { type: String, default: "" }
 ,
 whatsappVerifiedName: { type: String, default: "" },
+botBuilt: { type: Boolean, default: false },
+knowledgeStatus: { type: String, default: "empty" }, // "ready" | "empty"
+knowledgeVersion: { type: Number, default: 0 },
+knowledgeBuiltAt: { type: Date, default: null },
     // ✅ Flexible file storage
     files: [
         {
