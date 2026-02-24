@@ -774,10 +774,12 @@ async function createAdmin() {
   }
 }
 createAdmin();
-
 app.post("/api/register", async (req, res) => {
   try {
-    const { name, email, password } = req.body;
+    let { name, email, password } = req.body;
+
+    email = String(email || "").toLowerCase().trim();
+    name = String(name || "").trim();
 
     const existing = await User.findOne({ email });
     if (existing) return res.status(400).json({ error: "Email already registered" });
@@ -803,9 +805,11 @@ app.post("/api/register", async (req, res) => {
     });
     await client.save();
 
-    const token = jwt.sign({ id: user._id, role: user.role, clientId: user.clientId }, process.env.JWT_SECRET, {
-      expiresIn: "1h",
-    });
+    const token = jwt.sign(
+      { id: user._id, role: user.role, clientId: user.clientId },
+      process.env.JWT_SECRET,
+      { expiresIn: "1h" }
+    );
 
     res.cookie("token", token, {
       httpOnly: true,
@@ -814,7 +818,12 @@ app.post("/api/register", async (req, res) => {
       maxAge: 1000 * 60 * 60,
     });
 
-    res.status(201).json({ message: "✅ Registered successfully", user });
+    // ✅ return SAFE payload
+    res.status(201).json({
+      message: "✅ Registered successfully",
+      user: { id: user._id, name: user.name, email: user.email, role: user.role, clientId: user.clientId },
+      client: { clientId: client.clientId },
+    });
   } catch (err) {
     console.error("❌ Register error:", err);
     res.status(500).json({ error: "Server error" });
@@ -823,7 +832,8 @@ app.post("/api/register", async (req, res) => {
 
 app.post("/api/login", async (req, res) => {
   try {
-    const { email, password } = req.body;
+    let { email, password } = req.body;
+    email = String(email || "").toLowerCase().trim();
 
     const user = await User.findOne({ email });
     if (!user) return res.status(400).json({ error: "User not found" });
@@ -831,9 +841,11 @@ app.post("/api/login", async (req, res) => {
     const valid = await bcrypt.compare(password, user.password);
     if (!valid) return res.status(400).json({ error: "Invalid password" });
 
-    const token = jwt.sign({ id: user._id, role: user.role, clientId: user.clientId }, process.env.JWT_SECRET, {
-      expiresIn: "1h",
-    });
+    const token = jwt.sign(
+      { id: user._id, role: user.role, clientId: user.clientId },
+      process.env.JWT_SECRET,
+      { expiresIn: "1h" }
+    );
 
     res.cookie("token", token, {
       httpOnly: true,
@@ -842,7 +854,8 @@ app.post("/api/login", async (req, res) => {
       maxAge: 1000 * 60 * 60,
     });
 
-    res.json({ role: user.role });
+    // ✅ include clientId so frontend can store it if it wants
+    res.json({ role: user.role, clientId: user.clientId });
   } catch (err) {
     console.error(err);
     res.status(500).json({ error: "Server error" });
