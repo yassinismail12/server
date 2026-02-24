@@ -440,6 +440,11 @@ app.get("/api/clients/:id", verifyToken, requireClientOwnership, async (req, res
       whatsappConnectedAt: client.whatsappConnectedAt,
       whatsappTokenExpiresAt: client.whatsappTokenExpiresAt,
       whatsappVerifiedName: client.whatsappVerifiedName,
+      botBuilt: client.botBuilt || false,
+knowledgeStatus: client.knowledgeStatus || "empty",
+knowledgeVersion: client.knowledgeVersion || 0,
+knowledgeBotType: client.knowledgeBotType || "default",
+knowledgeBuiltAt: client.knowledgeBuiltAt || null,
     });
   } catch (err) {
     console.error("❌ Error fetching client:", err);

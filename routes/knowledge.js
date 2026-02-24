@@ -2,8 +2,8 @@ import express from "express";
 import multer from "multer";
 import jwt from "jsonwebtoken";
 
-import Client from "../Client.js";              // adjust path if needed
-import { connectToDB } from "../services/db.js"; // your Mongo native connection helper
+import Client from "../Client.js";               // adjust path if needed
+import { connectToDB } from "../services/db.js"; // native Mongo helper
 import { chunkSection } from "../utils/chunking.js"; // your chunker
 
 const router = express.Router();
@@ -27,10 +27,8 @@ function verifyToken(req, res, next) {
 function requireClientOwnership(req, res, next) {
   if (!req.user) return res.status(401).json({ ok: false, error: "Unauthorized" });
 
-  // admin can do anything
   if (req.user.role === "admin") return next();
 
-  // client can only use their own clientId
   const clientId =
     req.body?.clientId ||
     req.params?.clientId ||
@@ -65,8 +63,7 @@ function normalizeText(s) {
 }
 
 /**
- * Convert your quick form -> one text blob with headings
- * (So your chunker can split nicely)
+ * Convert quick form -> one blob with headings.
  */
 function formToText(data = {}) {
   const lines = [];
@@ -91,7 +88,7 @@ function formToText(data = {}) {
 function chooseSections(botType) {
   return botType === "restaurant"
     ? ["menu", "offers", "hours"]
-    : ["listings", "paymentPlans", "faqs"];
+    : ["listings", "paymentPlans", "faqs", "mixed"]; // ✅ include mixed for your form/paste
 }
 
 function pickTextFromClient(client, key) {
@@ -109,21 +106,56 @@ function pickTextFromClient(client, key) {
   return "";
 }
 
+/**
+ * ✅ IMPORTANT:
+ * We update "knowledge" fields using updateOne ($set/$inc) so it persists
+ * even if your Client schema does NOT include these fields yet.
+ * (But you SHOULD add them to schema for cleanliness.)
+ */
+async function markKnowledgeStatus(clientId, patch = {}) {
+  await Client.updateOne(
+    { clientId },
+    { $set: patch },
+    { upsert: false }
+  );
+}
+
+async function bumpKnowledgeVersionAndReady(clientId, botType, hasChunks) {
+  await Client.updateOne(
+    { clientId },
+    {
+      $set: {
+        botBuilt: Boolean(hasChunks),
+        knowledgeStatus: hasChunks ? "ready" : "empty",
+        knowledgeBotType: botType || "default",
+        knowledgeBuiltAt: new Date(),
+      },
+      $inc: { knowledgeVersion: 1 },
+    },
+    { upsert: false }
+  );
+}
+
 async function rebuildKnowledge({ clientId, botType = "default" }) {
-  const client = await Client.findOne({ clientId });
-  if (!client) {
-    return { ok: false, status: 404, error: "Client not found" };
-  }
+  const client = await Client.findOne({ clientId }).lean();
+  if (!client) return { ok: false, status: 404, error: "Client not found" };
+
+  // mark building
+  await markKnowledgeStatus(clientId, { knowledgeStatus: "building" });
 
   const db = await connectToDB();
+
+  // ✅ Choose ONE collection name and stick to it.
+  // If your Mongoose model is KnowledgeChunk, it probably uses "knowledgechunks".
+  // Your current code uses "knowledge_chunks". Keep as-is for now:
   const chunksCol = db.collection("knowledge_chunks");
 
   const sections = chooseSections(botType);
 
-  // delete old chunks for this client/botType
+  // delete old
   await chunksCol.deleteMany({ clientId, botType });
 
-  // build new chunks
+  // build new
   const docs = [];
   for (const section of sections) {
     const raw = normalizeText(pickTextFromClient(client, section));
@@ -133,6 +165,7 @@ async function rebuildKnowledge({ clientId, botType = "default" }) {
     for (const text of chunks) {
       const t = normalizeText(text);
       if (!t) continue;
+
       docs.push({
         clientId,
         botType,
@@ -145,15 +178,8 @@ async function rebuildKnowledge({ clientId, botType = "default" }) {
 
   if (docs.length) await chunksCol.insertMany(docs);
 
-  // update client status fields (for dashboard gate)
-  const nextVersion = Number(client.knowledgeVersion || 0) + 1;
-
-  client.botBuilt = docs.length > 0;
-  client.knowledgeStatus = docs.length > 0 ? "ready" : "empty";
-  client.knowledgeVersion = nextVersion;
-  client.knowledgeBuiltAt = new Date();
-
-  await client.save();
+  // ✅ Persist gate fields (even if schema doesn't have them yet)
+  await bumpKnowledgeVersionAndReady(clientId, botType, docs.length > 0);
 
   return {
     ok: true,
@@ -161,9 +187,7 @@ async function rebuildKnowledge({ clientId, botType = "default" }) {
     botType,
     inserted: docs.length,
     sections,
-    knowledgeStatus: client.knowledgeStatus,
-    knowledgeVersion: client.knowledgeVersion,
-    botBuilt: client.botBuilt,
+    knowledgeStatus: docs.length > 0 ? "ready" : "empty",
   };
 }
 
@@ -178,27 +202,35 @@ async function rebuildKnowledge({ clientId, botType = "default" }) {
 router.get("/status", verifyToken, requireClientOwnership, async (req, res) => {
   try {
     const clientId = String(req.query.clientId || "").trim();
+    const botType = String(req.query.botType || "default").trim();
+
     if (!clientId) return res.status(400).json({ ok: false, error: "Missing clientId" });
 
     const client = await Client.findOne({ clientId }).lean();
     if (!client) return res.status(404).json({ ok: false, error: "Client not found" });
 
-    // We can also check if chunks exist:
     const db = await connectToDB();
     const chunksCol = db.collection("knowledge_chunks");
-    const count = await chunksCol.countDocuments({ clientId }, { limit: 1 });
 
-    const ready = Boolean(client.botBuilt) || count > 0 || Number(client.knowledgeVersion || 0) >= 1;
+    const count = await chunksCol.countDocuments({ clientId, botType });
+
+    const ready =
+      Boolean(client.botBuilt) ||
+      count > 0 ||
+      Number(client.knowledgeVersion || 0) >= 1 ||
+      String(client.knowledgeStatus || "") === "ready";
 
     return res.json({
       ok: true,
       clientId,
+      botType,
       status: ready ? "ready" : "empty",
       ready,
       version: Number(client.knowledgeVersion || 0) || 0,
       knowledgeStatus: client.knowledgeStatus || (ready ? "ready" : "empty"),
       botBuilt: Boolean(client.botBuilt),
       knowledgeBuiltAt: client.knowledgeBuiltAt || null,
+      chunks: count,
     });
   } catch (err) {
     console.error("❌ /api/knowledge/status error:", err);
@@ -210,9 +242,9 @@ router.get("/status", verifyToken, requireClientOwnership, async (req, res) => {
  * POST /api/knowledge/build
  * Body:
  *  - { clientId, inputType: "form", data: {...}, botType? }
- *  - { clientId, inputType: "text", section: "faqs|listings|hours|mixed", text: "...", botType? }
+ *  - { clientId, inputType: "text", section: "...", text: "...", botType? }
  *
- * Saves into Client.files[] then rebuilds knowledge_chunks.
+ * Saves into Client.files[] then rebuilds.
  */
 router.post("/build", verifyToken, requireClientOwnership, async (req, res) => {
   try {
@@ -251,7 +283,6 @@ router.post("/build", verifyToken, requireClientOwnership, async (req, res) => {
 
     await client.save();
 
-    // Rebuild chunks from client stored data
     const built = await rebuildKnowledge({ clientId, botType: botType || "default" });
     if (!built.ok) return res.status(built.status || 500).json(built);
 
@@ -270,7 +301,8 @@ router.post("/build", verifyToken, requireClientOwnership, async (req, res) => {
  * POST /api/knowledge/upload
  * multipart/form-data:
  *  - clientId
- *  - section (faqs|listings|hours|mixed)
+ *  - section
+ *  - botType (optional)
  *  - file (.txt)
  */
 router.post("/upload", verifyToken, requireClientOwnership, upload.single("file"), async (req, res) => {
@@ -282,7 +314,6 @@ router.post("/upload", verifyToken, requireClientOwnership, upload.single("file"
     if (!clientId) return res.status(400).json({ ok: false, error: "Missing clientId" });
     if (!req.file) return res.status(400).json({ ok: false, error: "Missing file" });
 
-    // Only accept text
     const mimetype = req.file.mimetype || "";
     if (!mimetype.includes("text")) {
       return res.status(400).json({ ok: false, error: "Only text/plain files supported here." });
@@ -324,12 +355,14 @@ router.post("/upload", verifyToken, requireClientOwnership, upload.single("file"
 
 /**
  * POST /api/knowledge/rebuild/:clientId
- * FIXED: safe body access + supports frontend fallback
+ * Body: { botType?: "default" }
  */
 router.post("/rebuild/:clientId", verifyToken, requireClientOwnership, async (req, res) => {
   try {
     const clientId = String(req.params.clientId || "").trim();
-    const botType = req.body?.botType || "default"; // ✅ FIXED (no crash)
+    const botType = String(req.body?.botType || "default").trim();
+
+    if (!clientId) return res.status(400).json({ ok: false, error: "Missing clientId" });
 
     const built = await rebuildKnowledge({ clientId, botType });
     if (!built.ok) return res.status(built.status || 500).json(built);
