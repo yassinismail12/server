@@ -2,51 +2,61 @@
 import { MongoClient } from "mongodb";
 
 const uri = process.env.MONGODB_URI;
-const client = new MongoClient(uri);
+const mongo = new MongoClient(uri);
 const dbName = "Agent";
 
+async function getClientsCol() {
+  if (!mongo.topology || !mongo.topology.isConnected()) {
+    await mongo.connect();
+  }
+  return mongo.db(dbName).collection("Clients");
+}
+
 /**
- * Gets the system prompt for a client, using either clientId (Web) or pageId (Messenger).
- * Automatically includes any files the client has.
- * 
- * @param {Object} params - Object containing either `clientId` or `pageId`
- * @returns {string} Final prompt ready for AI
+ * Returns ONLY the system rules / persona prompt for the client.
+ * ❌ Does NOT append full files (KB) — KB must come from retrieval chunks.
+ *
+ * Accepts one of: clientId, pageId, igId
  */
-export async function SYSTEM_PROMPT({ clientId, pageId,igId }) {
-    if (!client.topology || !client.topology.isConnected()) {
-        await client.connect();
-    }
+export async function SYSTEM_PROMPT({ clientId, pageId, igId } = {}) {
+  const clients = await getClientsCol();
 
-    const db = client.db(dbName);
-    const clients = db.collection("Clients");
+  // ✅ FIX: priority order must be explicit (not else-if chain that blocks)
+  const query =
+    pageId ? { pageId: String(pageId) } :
+    igId ? { igId: String(igId) } :
+    clientId ? { clientId: String(clientId) } :
+    null;
 
-    // Use pageId if provided, otherwise fall back to clientId
-    let query = {};
-    if (pageId) query = { pageId };
-    else if (clientId) query = { clientId };
-    else if (igId) query = { igId };
+  if (!query) throw new Error("Missing identifier: clientId/pageId/igId");
 
+  const clientData = await clients.findOne(query);
+  if (!clientData) throw new Error("Client not found");
 
-    const clientData = await clients.findOne(query);
+  let finalPrompt = String(clientData.systemPrompt || "").trim();
 
-    if (!clientData) throw new Error("Client not found");
+  // ✅ Optional: safe placeholders replace (ONLY from known safe string fields)
+  // (prevents accidentally injecting huge strings or objects)
+  const safeReplacements = {
+    name: clientData.name || "",
+    email: clientData.email || "",
+    clientId: clientData.clientId || "",
+    PAGE_NAME: clientData.PAGE_NAME || "",
+    igUsername: clientData.igUsername || "",
+    whatsappDisplayPhone: clientData.whatsappDisplayPhone || "",
+  };
 
-    let finalPrompt = clientData.systemPrompt || "";
+  for (const [key, value] of Object.entries(safeReplacements)) {
+    finalPrompt = finalPrompt.replaceAll(`{{${key}}}`, String(value));
+  }
 
-    // If client has files, append them to the system prompt
-    if (clientData.files && clientData.files.length > 0) {
-        const filesText = clientData.files
-            .map(f => `--- File: ${f.name} ---\n${f.content}`)
-            .join("\n\n");
-        finalPrompt += `\n\n${filesText}`;
-    }
+  // ✅ If empty, provide a minimal default system prompt
+  if (!finalPrompt) {
+    finalPrompt =
+      `You are a helpful business assistant.\n` +
+      `Answer based only on the provided business data.\n` +
+      `If you don't know, say you don't know and ask a short follow-up question.\n`;
+  }
 
-    // Replace placeholders like {{faqs}}, {{listingsData}}, etc.
-    for (const [key, value] of Object.entries(clientData)) {
-        if (typeof value === "string" && finalPrompt) {
-            finalPrompt = finalPrompt.replaceAll(`{{${key}}}`, value);
-        }
-    }
-
-    return finalPrompt;
+  return finalPrompt;
 }
