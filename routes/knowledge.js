@@ -20,7 +20,7 @@ function pickTextFromClient(client, key) {
 
 router.post("/rebuild/:clientId", async (req, res) => {
   const { clientId } = req.params;
-  const botType = req.body.botType || "default";
+  const botType = req.body?.botType || "default";
 
   const client = await Client.findOne({ clientId });
   if (!client) return res.status(404).json({ ok: false, error: "Client not found" });
