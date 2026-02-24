@@ -43,11 +43,11 @@ igName: { type: String, default: "" },     // display name
 igProfilePicUrl: { type: String, default: "" }
 ,
 whatsappVerifiedName: { type: String, default: "" },
-botBuilt: client.botBuilt || false,
-knowledgeStatus: client.knowledgeStatus || "empty",
-knowledgeVersion: client.knowledgeVersion || 0,
-knowledgeBotType: client.knowledgeBotType || "default",
-knowledgeBuiltAt: client.knowledgeBuiltAt || null,
+botBuilt: { type: Boolean, default: false },
+knowledgeStatus: { type: String, default: "empty" },
+knowledgeVersion: { type: Number, default: 0 },
+knowledgeBotType: { type: String, default: "default" },
+knowledgeBuiltAt: { type: Date, default: null },
     // ✅ Flexible file storage
     files: [
         {
