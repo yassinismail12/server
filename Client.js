@@ -48,6 +48,8 @@ knowledgeStatus: { type: String, default: "empty" },
 knowledgeVersion: { type: Number, default: 0 },
 knowledgeBotType: { type: String, default: "default" },
 knowledgeBuiltAt: { type: Date, default: null },
+sectionsPresent: { type: [String], default: [] },
+coverageWarnings: { type: [String], default: [] },
     // ✅ Flexible file storage
     files: [
         {
