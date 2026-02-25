@@ -2,7 +2,7 @@ import express from "express";
 import multer from "multer";
 import jwt from "jsonwebtoken";
 
-import Client from "../Client.js";                // adjust path if needed
+import Client from "../Client.js"; // adjust path if needed
 import KnowledgeChunk from "../KnowledgeChunk.js"; // ✅ same model used by retrieveChunks
 import { chunkSection } from "../utils/chunking.js"; // your general chunker
 
@@ -29,11 +29,7 @@ function requireClientOwnership(req, res, next) {
 
   if (req.user.role === "admin") return next();
 
-  const clientId =
-    req.body?.clientId ||
-    req.params?.clientId ||
-    req.params?.id ||
-    req.query?.clientId;
+  const clientId = req.body?.clientId || req.params?.clientId || req.params?.id || req.query?.clientId;
 
   if (!clientId) return res.status(400).json({ ok: false, error: "Missing clientId" });
 
@@ -63,6 +59,20 @@ function normalizeText(s) {
     .trim();
 }
 
+function canonicalSectionName(s) {
+  const t = String(s || "").toLowerCase().trim();
+  if (["faq", "faqs", "qna"].includes(t)) return "faqs";
+  if (["hour", "hours", "workinghours"].includes(t)) return "hours";
+  if (["service", "services", "offers", "pricing"].includes(t)) return "offers";
+  if (["listing", "listings", "properties", "units", "inventory"].includes(t)) return "listings";
+  if (["payment", "paymentplans", "plans", "installments"].includes(t)) return "paymentPlans";
+  if (["policy", "policies", "rules"].includes(t)) return "policies";
+  if (["contact", "phone", "whatsapp", "address"].includes(t)) return "contact";
+  if (["profile", "about"].includes(t)) return "profile";
+  if (["mixed"].includes(t)) return "mixed";
+  return t || "mixed";
+}
+
 /**
  * Convert quick form -> one blob with headings.
  * We will SPLIT this later into sections.
@@ -83,33 +93,38 @@ function formToMixedText(data = {}) {
   push("Services", data.services);
   push("FAQs", data.faqs);
 
+  // ✅ align with dashboard quick form
+  push("Listings", data.listingsSummary);
+  push("Payment Plans", data.paymentPlans);
+  push("Policies", data.policies);
+
   return normalizeText(lines.join("\n"));
 }
 
 /**
  * ✅ Split "mixed" heading text into real sections:
- * faqs / offers / hours / profile / contact / other
+ * faqs / offers / hours / profile / contact / listings / paymentPlans / policies / other
  */
 function splitMixedToSections(mixedText = "") {
   const text = normalizeText(mixedText);
   if (!text) return {};
 
-const mapTitleToSection = (title) => {
-  const t = String(title || "").toLowerCase().trim();
+  const mapTitleToSection = (title) => {
+    const t = String(title || "").toLowerCase().trim();
 
-  if (t.includes("faq")) return "faqs";
-  if (t.includes("working hours") || t === "hours" || t.includes("open")) return "hours";
-  if (t.includes("services") || t.includes("offers") || t.includes("pricing")) return "offers";
+    if (t.includes("faq")) return "faqs";
+    if (t.includes("working hours") || t === "hours" || t.includes("open")) return "hours";
+    if (t.includes("services") || t.includes("offers") || t.includes("pricing")) return "offers";
 
-  // ✅ add these:
-  if (t.includes("listings") || t.includes("properties") || t.includes("inventory") || t.includes("units")) return "listings";
-  if (t.includes("payment") || t.includes("installment") || t.includes("plan")) return "paymentPlans";
+    if (t.includes("listing") || t.includes("properties") || t.includes("inventory") || t.includes("units")) return "listings";
+    if (t.includes("payment") || t.includes("installment") || t.includes("plan")) return "paymentPlans";
+    if (t.includes("policy") || t.includes("policies") || t.includes("rules")) return "policies";
 
-  if (t.includes("phone") || t.includes("whatsapp") || t.includes("contact") || t.includes("address")) return "contact";
-  if (t.includes("business name") || t.includes("business type") || t.includes("city")) return "profile";
+    if (t.includes("phone") || t.includes("whatsapp") || t.includes("contact") || t.includes("address")) return "contact";
+    if (t.includes("business name") || t.includes("business type") || t.includes("city")) return "profile";
 
-  return "other";
-};
+    return "other";
+  };
 
   const lines = text.split("\n");
   const out = {};
@@ -131,18 +146,6 @@ const mapTitleToSection = (title) => {
   }
   return result;
 }
-function canonicalSectionName(s) {
-  const t = String(s || "").toLowerCase().trim();
-  if (["faq","faqs","qna"].includes(t)) return "faqs";
-  if (["hour","hours","workinghours"].includes(t)) return "hours";
-  if (["service","services","offers","pricing"].includes(t)) return "offers";
-  if (["listing","listings","properties","units","inventory"].includes(t)) return "listings";
-  if (["payment","paymentplans","plans","installments"].includes(t)) return "paymentPlans";
-  if (["contact","phone","whatsapp","address"].includes(t)) return "contact";
-  if (["profile","about"].includes(t)) return "profile";
-  if (["mixed"].includes(t)) return "mixed";
-  return t || "mixed";
-}
 
 /**
  * ✅ FAQ chunker: 1 chunk per Q/A block
@@ -162,9 +165,9 @@ function chunkFaqs(faqText = "") {
  * (You can edit later)
  */
 function chooseSections(botType) {
-  if (botType === "restaurant") return ["menu", "offers", "hours", "faqs"];
+  if (botType === "restaurant") return ["menu", "offers", "hours", "faqs", "contact", "profile", "other"];
   // default real-estate
-  return ["listings", "paymentPlans", "offers", "hours", "faqs", "profile", "contact"];
+  return ["listings", "paymentPlans", "offers", "hours", "faqs", "policies", "profile", "contact", "other"];
 }
 
 /**
@@ -193,14 +196,13 @@ function pickTextFromClient(client, key) {
  * Save/replace a file in client.files[]
  */
 async function upsertClientFile(client, fileName, content, label = "bot-build") {
- fileName = canonicalSectionName(req.body?.section || "mixed");
+  const name = canonicalSectionName(fileName || "mixed");
   const clean = normalizeText(content);
-
   if (!clean) return;
 
-  const idx = (client.files || []).findIndex(
-    (f) => String(f.name || "").toLowerCase() === name.toLowerCase()
-  );
+  client.files ||= [];
+
+  const idx = client.files.findIndex((f) => String(f.name || "").toLowerCase() === name.toLowerCase());
 
   if (idx >= 0) {
     client.files[idx].content = clean;
@@ -222,16 +224,14 @@ async function rebuildKnowledge({ clientId, botType = "default" }) {
   const client = await Client.findOne({ clientId });
   if (!client) return { ok: false, status: 404, error: "Client not found" };
 
-  // mark building (persist even if schema doesn't have it)
+  // mark building
   await Client.updateOne({ clientId }, { $set: { knowledgeStatus: "building" } });
 
   // ✅ Delete old chunks from SAME storage used by retrieval
   await KnowledgeChunk.deleteMany({ clientId, botType });
 
   // ✅ If there is a mixed file, split and upsert sections
-  const mixedFile = (client.files || []).find(
-    (f) => String(f.name || "").toLowerCase() === "mixed"
-  );
+  const mixedFile = (client.files || []).find((f) => String(f.name || "").toLowerCase() === "mixed");
 
   if (mixedFile?.content) {
     const parts = splitMixedToSections(mixedFile.content);
@@ -272,60 +272,54 @@ async function rebuildKnowledge({ clientId, botType = "default" }) {
     }
   }
 
- if (docs.length) {
-  await KnowledgeChunk.insertMany(docs);
-}
-
-const hasChunks = docs.length > 0;
-
-// ✅ Coverage verification
-const presentSections = [...new Set(docs.map(d => d.section))];
-const expectedSections = chooseSections(botType);
-
-const missingSections = expectedSections.filter(
-  s => !presentSections.includes(s)
-);
-
-const coverageWarnings = [];
-
-if (missingSections.length > 0) {
-  coverageWarnings.push(
-    `Missing sections: ${missingSections.join(", ")}`
-  );
-}
-
-if (!presentSections.includes("listings") && expectedSections.includes("listings")) {
-  coverageWarnings.push(
-    "No listings detected. Make sure you added content under a 'Listings' heading or selected the Listings section."
-  );
-}
-
-if (!presentSections.includes("faqs") && expectedSections.includes("faqs")) {
-  coverageWarnings.push(
-    "No FAQs detected."
-  );
-}
-
-// Decide final status
-let finalStatus = "empty";
-if (hasChunks && coverageWarnings.length === 0) finalStatus = "ready";
-if (hasChunks && coverageWarnings.length > 0) finalStatus = "needs_review";
-
-// ✅ Update client with coverage info
-await Client.updateOne(
-  { clientId },
-  {
-    $set: {
-      botBuilt: hasChunks,
-      knowledgeStatus: finalStatus,
-      knowledgeBotType: botType,
-      knowledgeBuiltAt: new Date(),
-      sectionsPresent: presentSections,
-      coverageWarnings,
-    },
-    $inc: { knowledgeVersion: 1 },
+  if (docs.length) {
+    await KnowledgeChunk.insertMany(docs);
   }
-);
+
+  const hasChunks = docs.length > 0;
+
+  // ✅ Coverage verification
+  const presentSections = [...new Set(docs.map((d) => d.section))];
+  const expectedSections = sections;
+
+  const missingSections = expectedSections.filter((s) => !presentSections.includes(s));
+
+  const coverageWarnings = [];
+
+  if (missingSections.length > 0) {
+    coverageWarnings.push(`Missing sections: ${missingSections.join(", ")}`);
+  }
+
+  if (!presentSections.includes("listings") && expectedSections.includes("listings")) {
+    coverageWarnings.push(
+      "No listings detected. Make sure you added content under a 'Listings' heading or selected the Listings section."
+    );
+  }
+
+  if (!presentSections.includes("faqs") && expectedSections.includes("faqs")) {
+    coverageWarnings.push("No FAQs detected.");
+  }
+
+  // Decide final status
+  let finalStatus = "empty";
+  if (hasChunks && coverageWarnings.length === 0) finalStatus = "ready";
+  if (hasChunks && coverageWarnings.length > 0) finalStatus = "needs_review";
+
+  // ✅ Update client with coverage info
+  await Client.updateOne(
+    { clientId },
+    {
+      $set: {
+        botBuilt: hasChunks,
+        knowledgeStatus: finalStatus,
+        knowledgeBotType: botType,
+        knowledgeBuiltAt: new Date(),
+        sectionsPresent: presentSections,
+        coverageWarnings,
+      },
+      $inc: { knowledgeVersion: 1 },
+    }
+  );
 
   return {
     ok: true,
@@ -333,7 +327,9 @@ await Client.updateOne(
     botType,
     inserted: docs.length,
     sections,
-    knowledgeStatus: hasChunks ? "ready" : "empty",
+    knowledgeStatus: finalStatus,
+    sectionsPresent: presentSections,
+    coverageWarnings,
   };
 }
 
@@ -355,23 +351,22 @@ router.get("/status", verifyToken, requireClientOwnership, async (req, res) => {
 
     const count = await KnowledgeChunk.countDocuments({ clientId, botType });
 
-    const ready =
-      Boolean(client.botBuilt) ||
-      count > 0 ||
-      Number(client.knowledgeVersion || 0) >= 1 ||
-      String(client.knowledgeStatus || "") === "ready";
+    const status = String(client.knowledgeStatus || "").trim() || (count > 0 ? "ready" : "empty");
+    const ready = status === "ready" || status === "needs_review" || count > 0;
 
     return res.json({
       ok: true,
       clientId,
       botType,
-      status: ready ? "ready" : "empty",
+      status,
       ready,
       version: Number(client.knowledgeVersion || 0) || 0,
-      knowledgeStatus: client.knowledgeStatus || (ready ? "ready" : "empty"),
+      knowledgeStatus: status,
       botBuilt: Boolean(client.botBuilt),
       knowledgeBuiltAt: client.knowledgeBuiltAt || null,
       chunks: count,
+      sectionsPresent: Array.isArray(client.sectionsPresent) ? client.sectionsPresent : [],
+      coverageWarnings: Array.isArray(client.coverageWarnings) ? client.coverageWarnings : [],
     });
   } catch (err) {
     console.error("❌ /api/knowledge/status error:", err);
@@ -400,7 +395,7 @@ router.post("/build", verifyToken, requireClientOwnership, async (req, res) => {
       content = formToMixedText(req.body?.data || {});
       fileName = "mixed";
     } else if (inputType === "text") {
-     fileName = canonicalSectionName(req.body?.section || "mixed");
+      fileName = canonicalSectionName(req.body?.section || "mixed");
       content = normalizeText(req.body?.text || "");
     } else {
       return res.status(400).json({ ok: false, error: "Invalid inputType. Use 'form' or 'text'." });
@@ -432,19 +427,20 @@ router.post("/build", verifyToken, requireClientOwnership, async (req, res) => {
 router.post("/upload", verifyToken, requireClientOwnership, upload.single("file"), async (req, res) => {
   try {
     const clientId = String(req.body?.clientId || "").trim();
-    const section = String(req.body?.section || "mixed").trim() || "mixed";
+    const sectionRaw = String(req.body?.section || "mixed").trim() || "mixed";
+    const section = canonicalSectionName(sectionRaw);
     const botType = String(req.body?.botType || "default").trim();
 
     if (!clientId) return res.status(400).json({ ok: false, error: "Missing clientId" });
     if (!req.file) return res.status(400).json({ ok: false, error: "Missing file" });
 
     const mimetype = req.file.mimetype || "";
- const name = req.file.originalname || "";
-const isTxt = name.toLowerCase().endsWith(".txt");
+    const name = req.file.originalname || "";
+    const isTxt = name.toLowerCase().endsWith(".txt");
 
-if (!mimetype.includes("text") && !isTxt) {
-  return res.status(400).json({ ok:false, error:"Only .txt supported." });
-}
+    if (!mimetype.includes("text") && !isTxt) {
+      return res.status(400).json({ ok: false, error: "Only .txt supported." });
+    }
 
     const content = normalizeText(req.file.buffer.toString("utf8"));
     if (!content) return res.status(400).json({ ok: false, error: "Empty file." });
