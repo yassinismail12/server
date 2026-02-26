@@ -1,3 +1,4 @@
+// routes/knowledge.js
 import express from "express";
 import multer from "multer";
 import jwt from "jsonwebtoken";
@@ -26,10 +27,14 @@ function verifyToken(req, res, next) {
 
 function requireClientOwnership(req, res, next) {
   if (!req.user) return res.status(401).json({ ok: false, error: "Unauthorized" });
-
   if (req.user.role === "admin") return next();
 
-  const clientId = req.body?.clientId || req.params?.clientId || req.params?.id || req.query?.clientId;
+  // ✅ support ALL request styles (GET query, route params, POST body)
+  const clientId =
+    req.body?.clientId ||
+    req.params?.clientId ||
+    req.params?.id ||
+    req.query?.clientId;
 
   if (!clientId) return res.status(400).json({ ok: false, error: "Missing clientId" });
 
@@ -93,7 +98,7 @@ function formToMixedText(data = {}) {
   push("Services", data.services);
   push("FAQs", data.faqs);
 
-  // ✅ align with dashboard quick form
+  // optional
   push("Listings", data.listingsSummary);
   push("Payment Plans", data.paymentPlans);
   push("Policies", data.policies);
@@ -129,15 +134,22 @@ function splitMixedToSections(mixedText = "") {
   const lines = text.split("\n");
   const out = {};
   let current = null;
+  let sawHeading = false;
 
   for (const line of lines) {
     const m = line.match(/^##\s+(.*)$/);
     if (m) {
+      sawHeading = true;
       current = mapTitleToSection(m[1]);
       out[current] ||= [];
       continue;
     }
     if (current) out[current].push(line);
+  }
+
+  // ✅ If user pasted mixed text WITHOUT headings, treat it as "other"
+  if (!sawHeading) {
+    return { other: text };
   }
 
   const result = {};
@@ -161,31 +173,34 @@ function chunkFaqs(faqText = "") {
 }
 
 /**
- * Decide which sections your bot uses
- * (You can edit later)
+ * ✅ IMPORTANT FIX:
+ * "default" must be GENERIC (works for pharmacy/clinic/anything),
+ * and NOT force real-estate sections.
  */
 function chooseSections(botType) {
-  if (botType === "restaurant") return ["menu", "offers", "hours", "faqs", "contact", "profile", "other"];
-  // default real-estate
-  return ["listings", "paymentPlans", "offers", "hours", "faqs", "policies", "profile", "contact", "other"];
+  const bt = String(botType || "default").toLowerCase().trim();
+
+  if (bt === "restaurant") return ["menu", "offers", "hours", "faqs", "contact", "profile", "policies", "other"];
+  if (bt === "realestate") return ["listings", "paymentPlans", "offers", "hours", "faqs", "policies", "profile", "contact", "other"];
+
+  // ✅ default generic (pharmacy/clinic/anything)
+  return ["offers", "hours", "faqs", "policies", "profile", "contact", "other"];
 }
 
 /**
  * Get text for a section from Client
  * - Prefer files[]
- * - fallback old fields
+ * - fallback old fields (legacy)
  */
 function pickTextFromClient(client, key) {
-  const file = (client.files || []).find(
-    (f) => String(f.name || "").toLowerCase() === String(key || "").toLowerCase()
-  );
+  const wanted = String(key || "").toLowerCase();
+  const file = (client.files || []).find((f) => String(f.name || "").toLowerCase() === wanted);
   if (file?.content) return file.content;
 
+  // legacy fallback fields (keep, but these can cause mixing if user previously stored real-estate)
   if (key === "faqs") return client.faqs || "";
   if (key === "listings") return client.listingsData || "";
   if (key === "paymentPlans") return client.paymentPlans || "";
-
-  // optional fallback fields if you later store them:
   if (key === "hours") return client.hours || "";
   if (key === "offers") return client.offers || "";
 
@@ -214,21 +229,42 @@ async function upsertClientFile(client, fileName, content, label = "bot-build") 
 }
 
 /**
+ * ✅ NEW: hard reset client stored knowledge sources (prevents old real-estate bleeding into pharmacy)
+ */
+function resetClientKnowledgeSources(client) {
+  // clear files
+  client.files = [];
+
+  // clear legacy fields that might still be read by pickTextFromClient()
+  client.faqs = "";
+  client.listingsData = "";
+  client.paymentPlans = "";
+  client.hours = "";
+  client.offers = "";
+}
+
+/**
  * ✅ The ONE rebuild function
- * - deletes old chunks (clientId+botType)
+ * - deletes old chunks
+ * - optionally resets sources (files + legacy fields)
  * - splits mixed into real sections
  * - builds chunks per section
  * - updates client gate fields
  */
-async function rebuildKnowledge({ clientId, botType = "default" }) {
+async function rebuildKnowledge({ clientId, botType = "default", replace = false }) {
   const client = await Client.findOne({ clientId });
   if (!client) return { ok: false, status: 404, error: "Client not found" };
 
   // mark building
   await Client.updateOne({ clientId }, { $set: { knowledgeStatus: "building" } });
 
-  // ✅ Delete old chunks from SAME storage used by retrieval
-  await KnowledgeChunk.deleteMany({ clientId, botType });
+  // ✅ Replace mode: delete ALL botType chunks for this client (safest)
+  if (replace) {
+    await KnowledgeChunk.deleteMany({ clientId });
+    resetClientKnowledgeSources(client);
+  } else {
+    await KnowledgeChunk.deleteMany({ clientId, botType });
+  }
 
   // ✅ If there is a mixed file, split and upsert sections
   const mixedFile = (client.files || []).find((f) => String(f.name || "").toLowerCase() === "mixed");
@@ -240,8 +276,10 @@ async function rebuildKnowledge({ clientId, botType = "default" }) {
     for (const [section, text] of Object.entries(parts)) {
       if (text) await upsertClientFile(client, section, text, "mixed-split");
     }
-    await client.save();
   }
+
+  // persist possible resets + mixed split writes
+  await client.save();
 
   const sections = chooseSections(botType);
 
@@ -290,13 +328,11 @@ async function rebuildKnowledge({ clientId, botType = "default" }) {
     coverageWarnings.push(`Missing sections: ${missingSections.join(", ")}`);
   }
 
-  if (!presentSections.includes("listings") && expectedSections.includes("listings")) {
-    coverageWarnings.push(
-      "No listings detected. Make sure you added content under a 'Listings' heading or selected the Listings section."
-    );
+  // only warn for listings if this bot type expects listings
+  if (expectedSections.includes("listings") && !presentSections.includes("listings")) {
+    coverageWarnings.push("No listings detected.");
   }
-
-  if (!presentSections.includes("faqs") && expectedSections.includes("faqs")) {
+  if (expectedSections.includes("faqs") && !presentSections.includes("faqs")) {
     coverageWarnings.push("No FAQs detected.");
   }
 
@@ -327,6 +363,7 @@ async function rebuildKnowledge({ clientId, botType = "default" }) {
     botType,
     inserted: docs.length,
     sections,
+    replace: Boolean(replace),
     knowledgeStatus: finalStatus,
     sectionsPresent: presentSections,
     coverageWarnings,
@@ -377,16 +414,24 @@ router.get("/status", verifyToken, requireClientOwnership, async (req, res) => {
 /**
  * POST /api/knowledge/build
  * Body:
- * - { clientId, inputType:"form", data:{...}, botType? }
- * - { clientId, inputType:"text", section:"faqs|offers|hours|listings|mixed", text:"...", botType? }
+ * - { clientId, inputType:"form", data:{...}, botType?, replace? }
+ * - { clientId, inputType:"text", section:"faqs|offers|hours|listings|mixed", text:"...", botType?, replace? }
+ *
+ * ✅ replace=true will wipe old stored sources + chunks to prevent mixing (pharmacy won't inherit old real estate).
  */
 router.post("/build", verifyToken, requireClientOwnership, async (req, res) => {
   try {
-    const { clientId, inputType, botType } = req.body || {};
+    const { clientId, inputType, botType, replace } = req.body || {};
     if (!clientId) return res.status(400).json({ ok: false, error: "Missing clientId" });
 
     const client = await Client.findOne({ clientId });
     if (!client) return res.status(404).json({ ok: false, error: "Client not found" });
+
+    const doReplace = Boolean(replace);
+
+    if (doReplace) {
+      resetClientKnowledgeSources(client);
+    }
 
     let fileName = "mixed";
     let content = "";
@@ -403,10 +448,10 @@ router.post("/build", verifyToken, requireClientOwnership, async (req, res) => {
 
     if (!content) return res.status(400).json({ ok: false, error: "No content to save." });
 
-    await upsertClientFile(client, fileName, content, "bot-build");
+    await upsertClientFile(client, fileName, content, doReplace ? "bot-build-replace" : "bot-build");
     await client.save();
 
-    const built = await rebuildKnowledge({ clientId, botType: botType || "default" });
+    const built = await rebuildKnowledge({ clientId, botType: botType || "default", replace: doReplace });
     if (!built.ok) return res.status(built.status || 500).json(built);
 
     return res.json({ ok: true, savedAs: fileName, build: built });
@@ -422,6 +467,7 @@ router.post("/build", verifyToken, requireClientOwnership, async (req, res) => {
  * - clientId
  * - section
  * - botType (optional)
+ * - replace (optional: "true")
  * - file (.txt)
  */
 router.post("/upload", verifyToken, requireClientOwnership, upload.single("file"), async (req, res) => {
@@ -430,6 +476,7 @@ router.post("/upload", verifyToken, requireClientOwnership, upload.single("file"
     const sectionRaw = String(req.body?.section || "mixed").trim() || "mixed";
     const section = canonicalSectionName(sectionRaw);
     const botType = String(req.body?.botType || "default").trim();
+    const replace = String(req.body?.replace || "").toLowerCase() === "true";
 
     if (!clientId) return res.status(400).json({ ok: false, error: "Missing clientId" });
     if (!req.file) return res.status(400).json({ ok: false, error: "Missing file" });
@@ -448,10 +495,14 @@ router.post("/upload", verifyToken, requireClientOwnership, upload.single("file"
     const client = await Client.findOne({ clientId });
     if (!client) return res.status(404).json({ ok: false, error: "Client not found" });
 
-    await upsertClientFile(client, section, content, "bot-upload");
+    if (replace) {
+      resetClientKnowledgeSources(client);
+    }
+
+    await upsertClientFile(client, section, content, replace ? "bot-upload-replace" : "bot-upload");
     await client.save();
 
-    const built = await rebuildKnowledge({ clientId, botType });
+    const built = await rebuildKnowledge({ clientId, botType, replace });
     if (!built.ok) return res.status(built.status || 500).json(built);
 
     return res.json({ ok: true, savedAs: section, build: built });
@@ -463,15 +514,17 @@ router.post("/upload", verifyToken, requireClientOwnership, upload.single("file"
 
 /**
  * POST /api/knowledge/rebuild/:clientId
- * Body: { botType?: "default" }
+ * Body: { botType?: "default", replace?: boolean }
  */
 router.post("/rebuild/:clientId", verifyToken, requireClientOwnership, async (req, res) => {
   try {
     const clientId = String(req.params.clientId || "").trim();
     const botType = String(req.body?.botType || "default").trim();
+    const replace = Boolean(req.body?.replace);
+
     if (!clientId) return res.status(400).json({ ok: false, error: "Missing clientId" });
 
-    const built = await rebuildKnowledge({ clientId, botType });
+    const built = await rebuildKnowledge({ clientId, botType, replace });
     if (!built.ok) return res.status(built.status || 500).json(built);
 
     return res.json(built);
