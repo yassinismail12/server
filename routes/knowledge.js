@@ -195,16 +195,7 @@ function chooseSections(botType) {
 function pickTextFromClient(client, key) {
   const wanted = String(key || "").toLowerCase();
   const file = (client.files || []).find((f) => String(f.name || "").toLowerCase() === wanted);
-  if (file?.content) return file.content;
-
-  // legacy fallback fields (keep, but these can cause mixing if user previously stored real-estate)
-  if (key === "faqs") return client.faqs || "";
-  if (key === "listings") return client.listingsData || "";
-  if (key === "paymentPlans") return client.paymentPlans || "";
-  if (key === "hours") return client.hours || "";
-  if (key === "offers") return client.offers || "";
-
-  return "";
+  return file?.content || ""; // ✅ no legacy fallback
 }
 
 /**
@@ -261,7 +252,7 @@ async function rebuildKnowledge({ clientId, botType = "default", replace = false
   // ✅ Replace mode: delete ALL botType chunks for this client (safest)
   if (replace) {
     await KnowledgeChunk.deleteMany({ clientId });
-    resetClientKnowledgeSources(client);
+ 
   } else {
     await KnowledgeChunk.deleteMany({ clientId, botType });
   }
