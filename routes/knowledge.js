@@ -3,9 +3,9 @@ import express from "express";
 import multer from "multer";
 import jwt from "jsonwebtoken";
 
-import Client from "../Client.js"; // adjust path if needed
-import KnowledgeChunk from "../KnowledgeChunk.js"; // ✅ same model used by retrieveChunks
-import { chunkSection } from "../utils/chunking.js"; // your general chunker
+import Client from "../Client.js";
+import KnowledgeChunk from "../KnowledgeChunk.js";
+import { chunkSection } from "../utils/chunking.js";
 
 const router = express.Router();
 
@@ -29,13 +29,7 @@ function requireClientOwnership(req, res, next) {
   if (!req.user) return res.status(401).json({ ok: false, error: "Unauthorized" });
   if (req.user.role === "admin") return next();
 
-  // ✅ support ALL request styles (GET query, route params, POST body)
-  const clientId =
-    req.body?.clientId ||
-    req.params?.clientId ||
-    req.params?.id ||
-    req.query?.clientId;
-
+  const clientId = req.body?.clientId || req.params?.clientId || req.params?.id || req.query?.clientId;
   if (!clientId) return res.status(400).json({ ok: false, error: "Missing clientId" });
 
   if (String(clientId) !== String(req.user.clientId)) {
@@ -78,10 +72,6 @@ function canonicalSectionName(s) {
   return t || "mixed";
 }
 
-/**
- * Convert quick form -> one blob with headings.
- * We will SPLIT this later into sections.
- */
 function formToMixedText(data = {}) {
   const lines = [];
   const push = (title, value) => {
@@ -98,7 +88,6 @@ function formToMixedText(data = {}) {
   push("Services", data.services);
   push("FAQs", data.faqs);
 
-  // optional
   push("Listings", data.listingsSummary);
   push("Payment Plans", data.paymentPlans);
   push("Policies", data.policies);
@@ -106,10 +95,6 @@ function formToMixedText(data = {}) {
   return normalizeText(lines.join("\n"));
 }
 
-/**
- * ✅ Split "mixed" heading text into real sections:
- * faqs / offers / hours / profile / contact / listings / paymentPlans / policies / other
- */
 function splitMixedToSections(mixedText = "") {
   const text = normalizeText(mixedText);
   if (!text) return {};
@@ -147,10 +132,7 @@ function splitMixedToSections(mixedText = "") {
     if (current) out[current].push(line);
   }
 
-  // ✅ If user pasted mixed text WITHOUT headings, treat it as "other"
-  if (!sawHeading) {
-    return { other: text };
-  }
+  if (!sawHeading) return { other: text };
 
   const result = {};
   for (const k of Object.keys(out)) {
@@ -159,12 +141,6 @@ function splitMixedToSections(mixedText = "") {
   return result;
 }
 
-/**
- * ✅ FAQ chunker: 1 chunk per Q/A block
- * Supports:
- *  - Q? newline A...
- *  - Blank lines separate blocks
- */
 function chunkFaqs(faqText = "") {
   const t = normalizeText(faqText);
   if (!t) return [];
@@ -172,42 +148,28 @@ function chunkFaqs(faqText = "") {
   return blocks.map((b) => `FAQ:\n${b}`);
 }
 
-/**
- * ✅ IMPORTANT FIX:
- * "default" must be GENERIC (works for pharmacy/clinic/anything),
- * and NOT force real-estate sections.
- */
 function chooseSections(botType) {
   const bt = String(botType || "default").toLowerCase().trim();
 
   if (bt === "restaurant") return ["menu", "offers", "hours", "faqs", "contact", "profile", "policies", "other"];
   if (bt === "realestate") return ["listings", "paymentPlans", "offers", "hours", "faqs", "policies", "profile", "contact", "other"];
 
-  // ✅ default generic (pharmacy/clinic/anything)
+  // default generic (pharmacy/clinic/anything)
   return ["offers", "hours", "faqs", "policies", "profile", "contact", "other"];
 }
 
-/**
- * Get text for a section from Client
- * - Prefer files[]
- * - fallback old fields (legacy)
- */
 function pickTextFromClient(client, key) {
   const wanted = String(key || "").toLowerCase();
   const file = (client.files || []).find((f) => String(f.name || "").toLowerCase() === wanted);
-  return file?.content || ""; // ✅ no legacy fallback
+  return file?.content || "";
 }
 
-/**
- * Save/replace a file in client.files[]
- */
 async function upsertClientFile(client, fileName, content, label = "bot-build") {
   const name = canonicalSectionName(fileName || "mixed");
   const clean = normalizeText(content);
   if (!clean) return;
 
   client.files ||= [];
-
   const idx = client.files.findIndex((f) => String(f.name || "").toLowerCase() === name.toLowerCase());
 
   if (idx >= 0) {
@@ -219,14 +181,8 @@ async function upsertClientFile(client, fileName, content, label = "bot-build") 
   }
 }
 
-/**
- * ✅ NEW: hard reset client stored knowledge sources (prevents old real-estate bleeding into pharmacy)
- */
 function resetClientKnowledgeSources(client) {
-  // clear files
   client.files = [];
-
-  // clear legacy fields that might still be read by pickTextFromClient()
   client.faqs = "";
   client.listingsData = "";
   client.paymentPlans = "";
@@ -235,104 +191,85 @@ function resetClientKnowledgeSources(client) {
 }
 
 /**
- * ✅ The ONE rebuild function
- * - deletes old chunks
- * - optionally resets sources (files + legacy fields)
- * - splits mixed into real sections
- * - builds chunks per section
- * - updates client gate fields
+ * ✅ KEY FIXES:
+ * 1) replace=true MUST NOT wipe client.files AFTER you saved new content.
+ *    So: we ONLY delete chunks here. Source reset happens in /build and /upload BEFORE saving.
+ * 2) We also auto-include sections that exist in client.files (so listings/paymentPlans won't be skipped on default).
  */
+function detectSectionsFromClient(client, botType) {
+  const base = new Set(chooseSections(botType));
+
+  // include any sections that exist in files (except "mixed")
+  for (const f of client.files || []) {
+    const name = canonicalSectionName(f.name);
+    if (name && name !== "mixed") base.add(name);
+  }
+
+  // always include other
+  base.add("other");
+
+  return Array.from(base);
+}
+
 async function rebuildKnowledge({ clientId, botType = "default", replace = false }) {
   const client = await Client.findOne({ clientId });
   if (!client) return { ok: false, status: 404, error: "Client not found" };
 
-  // mark building
   await Client.updateOne({ clientId }, { $set: { knowledgeStatus: "building" } });
 
-  // ✅ Replace mode: delete ALL botType chunks for this client (safest)
+  // ✅ replace: delete ALL chunks for client (all botTypes) to prevent mixing
   if (replace) {
     await KnowledgeChunk.deleteMany({ clientId });
- 
   } else {
     await KnowledgeChunk.deleteMany({ clientId, botType });
   }
 
-  // ✅ If there is a mixed file, split and upsert sections
+  // split mixed -> real sections (do NOT clear files here)
   const mixedFile = (client.files || []).find((f) => String(f.name || "").toLowerCase() === "mixed");
-
   if (mixedFile?.content) {
     const parts = splitMixedToSections(mixedFile.content);
-
-    // store split parts as separate files (so future rebuilds are cleaner)
     for (const [section, text] of Object.entries(parts)) {
       if (text) await upsertClientFile(client, section, text, "mixed-split");
     }
   }
 
-  // persist possible resets + mixed split writes
   await client.save();
 
-  const sections = chooseSections(botType);
+  // ✅ IMPORTANT: auto-detect sections from files so listings/paymentPlans don't get skipped
+  const sections = detectSectionsFromClient(client, botType);
 
   const docs = [];
   for (const section of sections) {
     const raw = normalizeText(pickTextFromClient(client, section));
     if (!raw) continue;
 
-    let chunks = [];
-
-    if (section === "faqs") {
-      chunks = chunkFaqs(raw);
-    } else {
-      chunks = chunkSection(section, raw) || [];
-    }
+    const chunks = section === "faqs" ? chunkFaqs(raw) : chunkSection(section, raw) || [];
 
     for (const text of chunks) {
       const t = normalizeText(text);
       if (!t) continue;
-
-      docs.push({
-        clientId,
-        botType,
-        section,
-        text: t,
-        createdAt: new Date(),
-      });
+      docs.push({ clientId, botType, section, text: t, createdAt: new Date() });
     }
   }
 
-  if (docs.length) {
-    await KnowledgeChunk.insertMany(docs);
-  }
+  if (docs.length) await KnowledgeChunk.insertMany(docs);
 
   const hasChunks = docs.length > 0;
-
-  // ✅ Coverage verification
   const presentSections = [...new Set(docs.map((d) => d.section))];
   const expectedSections = sections;
 
   const missingSections = expectedSections.filter((s) => !presentSections.includes(s));
-
   const coverageWarnings = [];
 
-  if (missingSections.length > 0) {
-    coverageWarnings.push(`Missing sections: ${missingSections.join(", ")}`);
-  }
+  if (missingSections.length > 0) coverageWarnings.push(`Missing sections: ${missingSections.join(", ")}`);
+  if (expectedSections.includes("listings") && !presentSections.includes("listings")) coverageWarnings.push("No listings detected.");
+  if (expectedSections.includes("paymentPlans") && !presentSections.includes("paymentPlans")) coverageWarnings.push("No payment plans detected.");
+  if (expectedSections.includes("faqs") && !presentSections.includes("faqs")) coverageWarnings.push("No FAQs detected.");
 
-  // only warn for listings if this bot type expects listings
-  if (expectedSections.includes("listings") && !presentSections.includes("listings")) {
-    coverageWarnings.push("No listings detected.");
-  }
-  if (expectedSections.includes("faqs") && !presentSections.includes("faqs")) {
-    coverageWarnings.push("No FAQs detected.");
-  }
-
-  // Decide final status
   let finalStatus = "empty";
   if (hasChunks && coverageWarnings.length === 0) finalStatus = "ready";
   if (hasChunks && coverageWarnings.length > 0) finalStatus = "needs_review";
 
-  // ✅ Update client with coverage info
   await Client.updateOne(
     { clientId },
     {
@@ -365,9 +302,6 @@ async function rebuildKnowledge({ clientId, botType = "default", replace = false
    Endpoints
 ---------------------------- */
 
-/**
- * GET /api/knowledge/status?clientId=...&botType=default
- */
 router.get("/status", verifyToken, requireClientOwnership, async (req, res) => {
   try {
     const clientId = String(req.query.clientId || "").trim();
@@ -402,14 +336,6 @@ router.get("/status", verifyToken, requireClientOwnership, async (req, res) => {
   }
 });
 
-/**
- * POST /api/knowledge/build
- * Body:
- * - { clientId, inputType:"form", data:{...}, botType?, replace? }
- * - { clientId, inputType:"text", section:"faqs|offers|hours|listings|mixed", text:"...", botType?, replace? }
- *
- * ✅ replace=true will wipe old stored sources + chunks to prevent mixing (pharmacy won't inherit old real estate).
- */
 router.post("/build", verifyToken, requireClientOwnership, async (req, res) => {
   try {
     const { clientId, inputType, botType, replace } = req.body || {};
@@ -420,9 +346,8 @@ router.post("/build", verifyToken, requireClientOwnership, async (req, res) => {
 
     const doReplace = Boolean(replace);
 
-    if (doReplace) {
-      resetClientKnowledgeSources(client);
-    }
+    // ✅ IMPORTANT: reset sources BEFORE saving new content (this is where replace belongs)
+    if (doReplace) resetClientKnowledgeSources(client);
 
     let fileName = "mixed";
     let content = "";
@@ -452,15 +377,6 @@ router.post("/build", verifyToken, requireClientOwnership, async (req, res) => {
   }
 });
 
-/**
- * POST /api/knowledge/upload
- * multipart/form-data:
- * - clientId
- * - section
- * - botType (optional)
- * - replace (optional: "true")
- * - file (.txt)
- */
 router.post("/upload", verifyToken, requireClientOwnership, upload.single("file"), async (req, res) => {
   try {
     const clientId = String(req.body?.clientId || "").trim();
@@ -476,9 +392,7 @@ router.post("/upload", verifyToken, requireClientOwnership, upload.single("file"
     const name = req.file.originalname || "";
     const isTxt = name.toLowerCase().endsWith(".txt");
 
-    if (!mimetype.includes("text") && !isTxt) {
-      return res.status(400).json({ ok: false, error: "Only .txt supported." });
-    }
+    if (!mimetype.includes("text") && !isTxt) return res.status(400).json({ ok: false, error: "Only .txt supported." });
 
     const content = normalizeText(req.file.buffer.toString("utf8"));
     if (!content) return res.status(400).json({ ok: false, error: "Empty file." });
@@ -486,9 +400,8 @@ router.post("/upload", verifyToken, requireClientOwnership, upload.single("file"
     const client = await Client.findOne({ clientId });
     if (!client) return res.status(404).json({ ok: false, error: "Client not found" });
 
-    if (replace) {
-      resetClientKnowledgeSources(client);
-    }
+    // ✅ replace reset BEFORE saving new file
+    if (replace) resetClientKnowledgeSources(client);
 
     await upsertClientFile(client, section, content, replace ? "bot-upload-replace" : "bot-upload");
     await client.save();
@@ -503,10 +416,6 @@ router.post("/upload", verifyToken, requireClientOwnership, upload.single("file"
   }
 });
 
-/**
- * POST /api/knowledge/rebuild/:clientId
- * Body: { botType?: "default", replace?: boolean }
- */
 router.post("/rebuild/:clientId", verifyToken, requireClientOwnership, async (req, res) => {
   try {
     const clientId = String(req.params.clientId || "").trim();
@@ -515,6 +424,8 @@ router.post("/rebuild/:clientId", verifyToken, requireClientOwnership, async (re
 
     if (!clientId) return res.status(400).json({ ok: false, error: "Missing clientId" });
 
+    // ⚠️ rebuild-only replace will delete chunks but will NOT wipe files here.
+    // If you want wipe+rebuild, use /build or /upload with replace=true.
     const built = await rebuildKnowledge({ clientId, botType, replace });
     if (!built.ok) return res.status(built.status || 500).json(built);
 
