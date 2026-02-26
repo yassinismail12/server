@@ -46,22 +46,20 @@ export async function retrieveChunks({ clientId, botType = "default", userText }
 }
 
 /** helper */
-function groupAndCap(results, { alwaysIncludeHours = true, clientId, botType } = {}) {
-  // caps per section
+async function groupAndCap(results, { alwaysIncludeHours = true, clientId, botType } = {}) {
   const caps = { menu: 15, offers: 6, faqs: 6, listings: 8, hours: 1, paymentPlans: 4, policies: 4, other: 4 };
-
   const grouped = {};
+
   for (const r of results) {
     const s = r.section || "other";
     grouped[s] ||= [];
-
     if (grouped[s].length < (caps[s] ?? 6)) grouped[s].push(r);
   }
 
-  // Always include hours if exists
-  // NOTE: since this helper isn't async, we do hours inclusion in caller
-  // We'll return grouped now; caller ensures hours via async step if needed
-  
+  if (alwaysIncludeHours && (!grouped.hours || grouped.hours.length === 0)) {
+    const hour = await KnowledgeChunk.findOne({ clientId, botType, section: "hours" }).sort({ createdAt: -1 }).lean();
+    if (hour) grouped.hours = [hour];
+  }
+
   return grouped;
-  
 }
