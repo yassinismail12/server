@@ -39,6 +39,11 @@ function normalizePhoneDigits(p) {
   return String(p || "").trim().replace(/[^\d]/g, "");
 }
 
+function normalizeIdString(s) {
+  // phone_number_id is digits; normalize anyway
+  return String(s || "").trim();
+}
+
 function isNewDay(lastDate) {
   const today = new Date();
   const d = lastDate ? new Date(lastDate) : null;
@@ -104,7 +109,6 @@ function getJwtSecret() {
 
 function requireClient(req, res, next) {
   try {
-    // Prefer cookieParser if present, else parse header manually
     const tokenFromParser = req.cookies?.token;
     const tokenFromHeader = parseCookieHeader(req.headers.cookie || "").token;
     const token = tokenFromParser || tokenFromHeader;
@@ -123,21 +127,23 @@ function requireClient(req, res, next) {
       return res.status(401).json({ ok: false, error: "Unauthorized" });
     }
 
-    req.user = payload; // { id, role, clientId, ... }
+    req.user = payload;
     next();
-  } catch (e) {
+  } catch {
     return res.status(401).json({ ok: false, error: "Unauthorized" });
   }
 }
 
 // ===============================
-// Token selection (System User token)
+// Token selection
 // ===============================
-// Default: WHATSAPP_TOKEN
-// Per-portfolio: WHATSAPP_TOKEN_BM2 / WHATSAPP_TOKEN_BM3 etc via client.whatsappTokenKey = "bm2"
-function getSystemTokenForClient(client) {
-  const key = String(client?.whatsappTokenKey || "").trim().toLowerCase();
+// ✅ Prefer per-client token stored in Mongo (embedded signup).
+// ✅ Fallback to env System User token for legacy/testing.
+function getAccessTokenForClient(client) {
+  const dbToken = String(client?.whatsappAccessToken || "").trim();
+  if (dbToken) return dbToken;
 
+  const key = String(client?.whatsappTokenKey || "").trim().toLowerCase();
   if (key && process.env[`WHATSAPP_TOKEN_${key.toUpperCase()}`]) {
     return process.env[`WHATSAPP_TOKEN_${key.toUpperCase()}`];
   }
@@ -149,10 +155,22 @@ function getSystemTokenForClient(client) {
 // ===============================
 async function getClientByPhoneNumberId(whatsappPhoneNumberId) {
   const db = await connectDB();
-  return db.collection("Clients").findOne({
-    whatsappPhoneNumberId: String(whatsappPhoneNumberId || "").trim(),
+  const pnid = normalizeIdString(whatsappPhoneNumberId);
+
+  // try exact match first
+  let client = await db.collection("Clients").findOne({
+    whatsappPhoneNumberId: pnid,
     active: { $ne: false },
   });
+
+  // fallback: some people accidentally store numeric / spaced variants
+  if (!client) {
+    client = await db.collection("Clients").findOne({
+      whatsappPhoneNumberId: { $in: [String(pnid), String(pnid).trim()] },
+      active: { $ne: false },
+    });
+  }
+  return client;
 }
 
 async function getClientByClientId(clientId) {
@@ -247,7 +265,6 @@ router.post("/send-test", requireClient, async (req, res) => {
       return res.status(400).json({ ok: false, error: "Missing clientId, to, or text" });
     }
 
-    // Must match logged-in client
     if (String(clientId) !== String(req.user.clientId)) {
       return res.status(403).json({ ok: false, error: "Forbidden" });
     }
@@ -260,16 +277,16 @@ router.post("/send-test", requireClient, async (req, res) => {
       return res.status(400).json({ ok: false, error: "Client missing whatsappPhoneNumberId" });
     }
 
-    const accessToken = getSystemTokenForClient(client);
+    const accessToken = getAccessTokenForClient(client);
     if (!accessToken) {
-      return res.status(500).json({ ok: false, error: "Missing WHATSAPP_TOKEN env" });
+      return res.status(500).json({ ok: false, error: "Missing WhatsApp access token (DB or env)" });
     }
 
     log("info", "WA send-test", {
       clientId,
       phoneNumberId,
       to: toDigits,
-      tokenKey: client.whatsappTokenKey || "",
+      tokenType: client.whatsappTokenType || "unknown",
       preview: String(text).slice(0, 80),
     });
 
@@ -311,7 +328,8 @@ router.get("/", (req, res) => {
 // WhatsApp webhook receiver
 // ===============================
 router.post("/", async (req, res) => {
-  console.log("🔥 WA POST HIT", new Date().toISOString(), "keys:", Object.keys(req.body || {}));
+  // ✅ if you don't see this log when sending "hi", webhook is NOT hitting this route
+  console.log("🔥 WA POST HIT", new Date().toISOString(), "topKeys:", Object.keys(req.body || {}));
 
   log("info", "🔥 WHATSAPP WEBHOOK HIT", {
     hasBody: Boolean(req.body),
@@ -323,7 +341,6 @@ router.post("/", async (req, res) => {
 
   try {
     const body = req.body;
-
     const entries = body?.entry || [];
     if (!Array.isArray(entries) || !entries.length) {
       log("warn", "Webhook body has no entry array", {
@@ -336,8 +353,8 @@ router.post("/", async (req, res) => {
       const changes = entry?.changes || [];
       for (const change of changes) {
         const value = change?.value || {};
-
         const whatsappPhoneNumberId = value?.metadata?.phone_number_id;
+
         if (!whatsappPhoneNumberId) {
           log("warn", "Missing metadata.phone_number_id", { valueKeys: Object.keys(value || {}) });
           continue;
@@ -345,48 +362,35 @@ router.post("/", async (req, res) => {
 
         const client = await getClientByPhoneNumberId(whatsappPhoneNumberId);
         if (!client) {
-          log("warn", "No client matched whatsappPhoneNumberId", { whatsappPhoneNumberId });
-          continue;
-        }
-
-        const whatsappAccessToken = getSystemTokenForClient(client);
-
-        const whatsappConnectedAt = client.whatsappConnectedAt || null;
-        const whatsappVerifiedName = client.whatsappVerifiedName || "";
-        const whatsappDisplayPhone = client.whatsappDisplayPhone || "";
-        const whatsappTokenExpiresAt = client.whatsappTokenExpiresAt || null;
-        const whatsappTokenType = client.whatsappTokenType || "system_user";
-        const whatsappWabaId = client.whatsappWabaId || "";
-
-        log("info", "Client matched for WA webhook", {
-          clientId: client.clientId,
-          whatsappPhoneNumberId,
-          whatsappWabaId,
-          whatsappDisplayPhone,
-          whatsappVerifiedName,
-          whatsappTokenType,
-          whatsappTokenExpiresAt,
-          whatsappConnectedAt,
-          whatsappTokenKey: client.whatsappTokenKey || "",
-        });
-
-        if (!whatsappAccessToken) {
-          log("warn", "Missing WHATSAPP_TOKEN env for this client", {
-            clientId: client.clientId,
-            whatsappPhoneNumberId,
-            tokenKey: client.whatsappTokenKey || "",
+          log("warn", "No client matched whatsappPhoneNumberId", {
+            whatsappPhoneNumberId: String(whatsappPhoneNumberId),
+            hint: "Check Clients.whatsappPhoneNumberId matches metadata.phone_number_id",
           });
           continue;
         }
 
+        const whatsappAccessToken = getAccessTokenForClient(client);
+        if (!whatsappAccessToken) {
+          log("warn", "Missing WhatsApp access token (DB/env) for this client", {
+            clientId: client.clientId,
+            whatsappPhoneNumberId,
+          });
+          continue;
+        }
+
+        // ✅ staff numbers: support both staffNumbers[] and staffWhatsApp string
+        const staffDigits = [
+          ...(Array.isArray(client.staffNumbers) ? client.staffNumbers : []),
+          ...(client.staffWhatsApp ? [client.staffWhatsApp] : []),
+        ].map(normalizePhoneDigits);
+
+        const clientAwaitSource = Boolean(client.awaitSource);
+
         await touchClientWebhook(client._id, {
           clientId: client.clientId,
-          whatsappPhoneNumberId,
+          whatsappPhoneNumberId: String(whatsappPhoneNumberId),
           hasMessages: Boolean(value?.messages?.length),
           meta: value?.metadata || null,
-          whatsappWabaId,
-          whatsappDisplayPhone,
-          whatsappTokenType,
         });
 
         const messages = value?.messages || [];
@@ -397,9 +401,6 @@ router.post("/", async (req, res) => {
           });
           continue;
         }
-
-        const staffDigits = (client.staffNumbers || []).map(normalizePhoneDigits);
-        const clientAwaitSource = Boolean(client.awaitSource);
 
         for (const msg of messages) {
           log("info", "Inbound WA message", {
@@ -414,7 +415,7 @@ router.post("/", async (req, res) => {
           const text = msg?.text?.body || "";
 
           if (!fromDigits) {
-            log("warn", "Message missing from", { msg: msg?.id });
+            log("warn", "Message missing from", { msgId: msg?.id });
             continue;
           }
           if (!text) {
@@ -445,10 +446,10 @@ router.post("/", async (req, res) => {
           if (needsChoice) {
             const picked = parseSourceChoice(text);
 
+            history.push({ role: "user", content: text, createdAt: inboundAt });
+
             if (!picked) {
               const shouldSendMenu = !convo || isNewDay(convo.lastInteraction) || convo?.awaitSource !== true;
-
-              history.push({ role: "user", content: text, createdAt: inboundAt });
 
               await upsertConversation({
                 clientId: client.clientId,
@@ -460,12 +461,12 @@ router.post("/", async (req, res) => {
                 lastDirection: "in",
                 awaitSource: true,
                 sourceChoice: "",
-                meta: { whatsappPhoneNumberId, whatsappWabaId, whatsappDisplayPhone, whatsappTokenType },
+                meta: { whatsappPhoneNumberId: String(whatsappPhoneNumberId) },
               });
 
               if (shouldSendMenu) {
                 await sendWhatsAppText({
-                  phoneNumberId: whatsappPhoneNumberId,
+                  phoneNumberId: String(whatsappPhoneNumberId),
                   to: fromDigits,
                   text: sourceMenuText(),
                   accessToken: whatsappAccessToken,
@@ -473,8 +474,6 @@ router.post("/", async (req, res) => {
               }
               continue;
             }
-
-            history.push({ role: "user", content: text, createdAt: inboundAt });
 
             await upsertConversation({
               clientId: client.clientId,
@@ -486,11 +485,11 @@ router.post("/", async (req, res) => {
               lastDirection: "in",
               awaitSource: false,
               sourceChoice: picked,
-              meta: { whatsappPhoneNumberId, whatsappWabaId, whatsappDisplayPhone, whatsappTokenType },
+              meta: { whatsappPhoneNumberId: String(whatsappPhoneNumberId) },
             });
 
             await sendWhatsAppText({
-              phoneNumberId: whatsappPhoneNumberId,
+              phoneNumberId: String(whatsappPhoneNumberId),
               to: fromDigits,
               text: `✅ Got it. You selected: ${picked}.\nHow can I help you?`,
               accessToken: whatsappAccessToken,
@@ -527,12 +526,12 @@ router.post("/", async (req, res) => {
             lastDirection: "in",
             awaitSource: false,
             sourceChoice: convo?.sourceChoice || "",
-            meta: { whatsappPhoneNumberId, whatsappWabaId, whatsappDisplayPhone, whatsappTokenType },
+            meta: { whatsappPhoneNumberId: String(whatsappPhoneNumberId) },
           });
 
           try {
             await sendWhatsAppText({
-              phoneNumberId: whatsappPhoneNumberId,
+              phoneNumberId: String(whatsappPhoneNumberId),
               to: fromDigits,
               text: combined,
               accessToken: whatsappAccessToken,
