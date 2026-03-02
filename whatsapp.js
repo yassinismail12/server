@@ -350,6 +350,60 @@ router.post("/send-template-test", requireClient, async (req, res) => {
     return res.status(500).json({ ok: false, error: e.message, details: e?.data || null });
   }
 });
+// ===============================
+// ✅ LIST TEMPLATES (for UI "Sync Templates")
+// GET /api/whatsapp/templates?clientId=...
+// returns: { ok: true, templates: [{ name, status, language }] }
+// ===============================
+router.get("/api/whatsapp/templates", requireClient, async (req, res) => {
+  try {
+    const clientId = String(req.query.clientId || "").trim();
+    if (!clientId) return res.status(400).json({ ok: false, error: "Missing clientId" });
+
+    if (String(clientId) !== String(req.user.clientId)) {
+      return res.status(403).json({ ok: false, error: "Forbidden" });
+    }
+
+    const client = await getClientByClientId(clientId);
+    if (!client) return res.status(404).json({ ok: false, error: "Client not found" });
+
+    const wabaId = String(client.whatsappWabaId || "").trim();
+    if (!wabaId) return res.status(400).json({ ok: false, error: "Client missing whatsappWabaId" });
+
+    const accessToken = getAccessTokenForClient(client);
+    if (!accessToken) return res.status(500).json({ ok: false, error: "Missing WhatsApp access token (DB or env)" });
+
+    // Graph API
+    const API_VERSION = (process.env.WHATSAPP_API_VERSION || "v20.0").trim();
+    const url =
+      `https://graph.facebook.com/${API_VERSION}/${encodeURIComponent(wabaId)}/message_templates` +
+      `?fields=name,status,language` +
+      `&limit=200`;
+
+    const resp = await fetch(url, {
+      headers: { Authorization: `Bearer ${accessToken}` },
+    });
+
+    const text = await resp.text();
+    let data;
+    try { data = JSON.parse(text); } catch { data = { raw: text }; }
+
+    if (!resp.ok) {
+      return res.status(resp.status).json({ ok: false, error: data });
+    }
+
+    const templates = (data?.data || []).map((t) => ({
+      name: t.name,
+      status: t.status,
+      language: t.language,
+    }));
+
+    return res.json({ ok: true, templates });
+  } catch (e) {
+    log("error", "WA templates fetch failed", { err: e?.message });
+    return res.status(500).json({ ok: false, error: e.message });
+  }
+});
 router.get("/", (req, res) => {
   const mode = req.query["hub.mode"];
   const token = req.query["hub.verify_token"];
