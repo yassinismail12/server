@@ -1330,6 +1330,29 @@ app.get("/api/webhooks/last/:clientId", verifyToken, requireClientOwnership, asy
     return res.status(500).json({ error: "Last webhook fetch failed" });
   }
 });
+async function subscribeWabaToApp({ wabaId, accessToken }) {
+  const url = `https://graph.facebook.com/v20.0/${encodeURIComponent(wabaId)}/subscribed_apps`;
+
+  // Note: Body not required for this edge. Auth header is enough.
+  const resp = await fetch(url, {
+    method: "POST",
+    headers: {
+      Authorization: `Bearer ${accessToken}`,
+    },
+  });
+
+  const text = await resp.text();
+  let data;
+  try { data = JSON.parse(text); } catch { data = { raw: text }; }
+
+  if (!resp.ok) {
+    const err = new Error(`subscribeWabaToApp failed: ${resp.status}`);
+    err.data = data;
+    throw err;
+  }
+
+  return data; // typically { success: true }
+}
 app.get("/auth/whatsapp", async (req, res) => {
   try {
     const { clientId } = req.query;
@@ -1437,43 +1460,69 @@ app.get("/auth/whatsapp/callback", async (req, res) => {
     const whatsappWabaId = wabas[0].id;
 
     // 4) From WABA -> phone numbers
-    const phonesUrl =
-      `https://graph.facebook.com/v20.0/${encodeURIComponent(whatsappWabaId)}/phone_numbers` +
-      `?fields=id,display_phone_number,verified_name,quality_rating,code_verification_status` +
-      `&access_token=${encodeURIComponent(userAccessToken)}`;
+   let webhookSubscribed = false;
+try {
+  const sub = await subscribeWabaToApp({ wabaId: whatsappWabaId, accessToken: userAccessToken });
+  webhookSubscribed = Boolean(sub?.success);
+  console.log("✅ WABA subscribed_apps:", sub);
+} catch (e) {
+  webhookSubscribed = false;
+  console.error("⚠️ Failed to subscribe WABA to app webhooks:", e?.data || e?.message || e);
+  // I recommend: DON'T fail the whole OAuth for this.
+  // You can surface it in UI + allow retry.
+}
 
-    const phonesData = await fetchJson(phonesUrl);
-    const phones = phonesData?.data || [];
+// 4) From WABA -> phone numbers
+const phonesUrl =
+  `https://graph.facebook.com/v20.0/${encodeURIComponent(whatsappWabaId)}/phone_numbers` +
+  `?fields=id,display_phone_number,verified_name,quality_rating,code_verification_status` +
+  `&access_token=${encodeURIComponent(userAccessToken)}`;
 
-    console.log("📞 phone_numbers:", phones.map(p => ({ id: p.id, display: p.display_phone_number, name: p.verified_name })));
+const phonesData = await fetchJson(phonesUrl);
+const phones = phonesData?.data || [];
 
-    if (!phones.length) {
-      return res.status(400).send("No phone numbers found in this WABA.");
-    }
+if (!phones.length) {
+  return res.status(400).send("No phone numbers found in this WABA.");
+}
 
-    const whatsappPhoneNumberId = phones[0].id;
-    const whatsappDisplayPhone = phones[0].display_phone_number || "";
-const whatsappVerifiedName = phones[0].verified_name || "";
-    // 5) Store in Mongo (your schema fields)
-    await upsertClientWhatsAppConnection({
-      clientId,
-      whatsappWabaId,
-      whatsappPhoneNumberId,
-      whatsappAccessToken: userAccessToken,
-      whatsappDisplayPhone,
-       whatsappVerifiedName,
-      whatsappTokenExpiresAt,
-      whatsappTokenType: "user",
-    });
+const primaryPhone = phones[0];
+const whatsappPhoneNumberId = primaryPhone.id;
 
-    // 6) Redirect back
-    return res.redirect(
-      `${FRONTEND_URL}/client?whatsapp=connected` +
-        `&clientId=${encodeURIComponent(clientId)}` +
-        `&wabaId=${encodeURIComponent(whatsappWabaId)}` +
-        `&phoneNumberId=${encodeURIComponent(whatsappPhoneNumberId)}` +
-        `&display=${encodeURIComponent(whatsappDisplayPhone)}`
-    );
+const whatsappDisplayPhone = primaryPhone.display_phone_number || "";
+const whatsappVerifiedName = primaryPhone.verified_name || "";
+
+// ✅ detect verification state and send to frontend
+const codeVerificationStatus = primaryPhone.code_verification_status || ""; 
+const phoneVerified = String(codeVerificationStatus).toUpperCase() === "VERIFIED";
+
+// 5) Store in Mongo (add fields if you want)
+await upsertClientWhatsAppConnection({
+  clientId,
+  whatsappWabaId,
+  whatsappPhoneNumberId,
+  whatsappAccessToken: userAccessToken,
+  whatsappDisplayPhone,
+  whatsappVerifiedName,
+  whatsappTokenExpiresAt,
+  whatsappTokenType: "user",
+
+  // optional extras if your schema supports:
+  // whatsappWebhookSubscribed: webhookSubscribed,
+  // whatsappCodeVerificationStatus: codeVerificationStatus,
+  // whatsappPhoneVerified: phoneVerified,
+});
+
+// 6) Redirect back (include subscribe + verify flags)
+return res.redirect(
+  `${FRONTEND_URL}/client?whatsapp=connected` +
+    `&clientId=${encodeURIComponent(clientId)}` +
+    `&wabaId=${encodeURIComponent(whatsappWabaId)}` +
+    `&phoneNumberId=${encodeURIComponent(whatsappPhoneNumberId)}` +
+    `&display=${encodeURIComponent(whatsappDisplayPhone)}` +
+    `&webhookSubscribed=${encodeURIComponent(String(webhookSubscribed))}` +
+    `&codeVerificationStatus=${encodeURIComponent(codeVerificationStatus)}` +
+    `&phoneVerified=${encodeURIComponent(String(phoneVerified))}`
+);
   } catch (err) {
     console.error("❌ WhatsApp OAuth callback error:", err?.data || err);
     return res.status(500).send("WhatsApp OAuth callback error");
