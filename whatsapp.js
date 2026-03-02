@@ -5,7 +5,7 @@ import jwt from "jsonwebtoken";
 
 import { getChatCompletion } from "./services/openai.js";
 import { sendWhatsAppText } from "./services/whatsappText.js";
-
+import { sendWhatsAppTemplate } from "./services/whatsappTemplate.js";
 const router = express.Router();
 
 const mongoClient = new MongoClient(process.env.MONGODB_URI);
@@ -307,6 +307,49 @@ router.post("/send-test", requireClient, async (req, res) => {
 // ===============================
 // Webhook verification (Meta)
 // ===============================
+router.post("/send-template-test", requireClient, async (req, res) => {
+  try {
+    const { clientId, to, templateName, languageCode, params } = req.body || {};
+    const toDigits = normalizePhoneDigits(to);
+
+    if (!clientId || !toDigits || !templateName) {
+      return res.status(400).json({ ok: false, error: "Missing clientId, to, or templateName" });
+    }
+
+    if (String(clientId) !== String(req.user.clientId)) {
+      return res.status(403).json({ ok: false, error: "Forbidden" });
+    }
+
+    const client = await getClientByClientId(clientId);
+    if (!client) return res.status(404).json({ ok: false, error: "Client not found" });
+
+    const phoneNumberId = String(client.whatsappPhoneNumberId || "").trim();
+    if (!phoneNumberId) {
+      return res.status(400).json({ ok: false, error: "Client missing whatsappPhoneNumberId" });
+    }
+
+    const accessToken = getAccessTokenForClient(client);
+    if (!accessToken) {
+      return res.status(500).json({ ok: false, error: "Missing WhatsApp access token (DB or env)" });
+    }
+
+    const bodyParams = Array.isArray(params) ? params.map(String) : [];
+
+    await sendWhatsAppTemplate({
+      phoneNumberId,
+      to: toDigits,
+      templateName: String(templateName).trim(),
+      languageCode: String(languageCode || "en_US").trim(),
+      bodyParams,
+      accessToken,
+    });
+
+    return res.json({ ok: true });
+  } catch (e) {
+    log("error", "WA send-template-test failed", { err: e?.data || e.message });
+    return res.status(500).json({ ok: false, error: e.message, details: e?.data || null });
+  }
+});
 router.get("/", (req, res) => {
   const mode = req.query["hub.mode"];
   const token = req.query["hub.verify_token"];
