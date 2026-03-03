@@ -804,7 +804,7 @@ app.post("/api/register", async (req, res) => {
       name,
       email,
       clientId: user.clientId,
-      messageLimit: 100,
+      messageLimit: 1000,
       messageCount: 0,
       files: [],
     });
