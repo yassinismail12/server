@@ -1,8 +1,8 @@
 // instagram.js (FULL — Messenger parity + memory + WhatsApp order + human escalation)
 // ✅ No auto-create clients from webhook
 // ✅ Idempotency store (ProcessedEventsIG) unique(igBusinessId + eventKey) + TTL
-// ✅ Skip echo events
-// ✅ Only process inbound USER TEXT DMs
+// ✅ ECHO EVENTS: DO NOT AI-REPLY (avoid loops) BUT DO RECORD THEM IN CONVERSATION
+// ✅ Only AI-process inbound USER TEXT DMs
 // ✅ Retrieval + runtime injection (same style as messenger.js)
 // ✅ Memory: inject last N conversation turns into OpenAI
 // ✅ Flags: [Human_request], [ORDER_REQUEST], [TOUR_REQUEST]
@@ -29,7 +29,6 @@ import { SYSTEM_PROMPT } from "./utils/systemPrompt.js";
 import { sendQuotaWarning } from "./sendQuotaWarning.js";
 
 import Order from "./order.js";
-
 import { sendTourEmail } from "./sendEmail.js";
 import { extractTourData } from "./extractTourData.js";
 
@@ -170,7 +169,6 @@ function requireOwnerOrAdmin(req, res, next) {
   const role = req.user?.role;
   if (role === "admin") return next();
 
-  // client can only access their own clientId
   const requestedClientId = normalizeId(req.query.clientId || req.body?.clientId);
   if (!requestedClientId) return res.status(400).json({ ok: false, error: "Missing clientId" });
 
@@ -235,7 +233,7 @@ async function getClientByIgBusinessId(igBusinessId) {
 
   if (!client) return null;
 
-  const clientId = normalizeId(client.clientId); // ✅ business string (e.g. "realestate")
+  const clientId = normalizeId(client.clientId); // ✅ business string
 
   const pageId = normalizeId(client.pageId || client.PAGE_ID || client.page_id);
   const pageAccessToken = sanitizeAccessToken(
@@ -245,7 +243,7 @@ async function getClientByIgBusinessId(igBusinessId) {
       client.page_token ||
       client.pageToken ||
       client.PAGE_TOKEN ||
-      client.igAccessToken || // sometimes you store it here
+      client.igAccessToken ||
       ""
   );
 
@@ -349,7 +347,7 @@ async function saveConversationIG(igBusinessId, userId, history, lastInteraction
     {
       $set: {
         igBusinessId: igStr,
-        clientId: cid, // ✅ business string
+        clientId: cid,
         userId,
         history,
         lastInteraction,
@@ -365,6 +363,24 @@ async function saveConversationIG(igBusinessId, userId, history, lastInteraction
       },
     },
     { upsert: true }
+  );
+}
+
+async function appendTurnIG({ igBusinessId, userId, role, content, clientId }) {
+  const text = String(content || "").trim();
+  if (!text) return;
+
+  const convo = await getConversationIG(igBusinessId, userId, "instagram");
+  const history = Array.isArray(convo?.history) ? convo.history : [];
+  history.push({ role, content: text, createdAt: new Date() });
+
+  await saveConversationIG(
+    igBusinessId,
+    userId,
+    history,
+    new Date(),
+    normalizeId(clientId || convo?.clientId || ""),
+    "instagram"
   );
 }
 
@@ -436,7 +452,7 @@ function extractLineValue(text, label) {
   return m ? m[1].trim() : "";
 }
 
-// inbound USER text only
+// inbound USER text only (for AI processing)
 function isInboundUserText(igBusinessId, ev) {
   const msg = ev?.message;
   if (!msg?.text) return false;
@@ -445,9 +461,7 @@ function isInboundUserText(igBusinessId, ev) {
   const senderId = normalizeId(ev?.sender?.id);
   if (!senderId) return false;
 
-  // sender must NOT be the igBusinessId itself
   if (senderId === normalizeId(igBusinessId)) return false;
-
   return true;
 }
 
@@ -456,7 +470,6 @@ function injectHistory(messages, compactHistory) {
   const arr = Array.isArray(compactHistory) ? compactHistory : [];
   if (!arr.length) return messages;
 
-  // keep only user/assistant
   const filtered = arr
     .filter((m) => m && (m.role === "user" || m.role === "assistant") && typeof m.content === "string")
     .map((m) => ({ role: m.role, content: m.content }));
@@ -469,7 +482,6 @@ function injectHistory(messages, compactHistory) {
 
   const out = messages.slice();
 
-  // If last is current user, insert history before it
   if (out.length && out[out.length - 1]?.role === "user") {
     const last = out.pop();
     out.push(...tail);
@@ -494,7 +506,6 @@ async function sendInstagramDM({ pageId, pageAccessToken, recipientId, text }) {
   if (!rid) throw new Error("Missing recipientId for IG send");
   if (!text) return;
 
-  // Keep version consistent with rest of your project
   const url = new URL(`https://graph.facebook.com/v21.0/${encodeURIComponent(pid)}/messages`);
   url.searchParams.set("access_token", token);
 
@@ -524,15 +535,7 @@ async function fetchIgBusinessProfile({ igId, pageAccessToken }) {
   const url = new URL(`https://graph.facebook.com/v21.0/${encodeURIComponent(id)}`);
   url.searchParams.set(
     "fields",
-    [
-      "id",
-      "username",
-      "name",
-      "biography",
-      "followers_count",
-      "media_count",
-      "profile_picture_url",
-    ].join(",")
+    ["id", "username", "name", "biography", "followers_count", "media_count", "profile_picture_url"].join(",")
   );
   url.searchParams.set("access_token", token);
 
@@ -552,10 +555,7 @@ async function fetchIgBusinessMedia({ igId, pageAccessToken, limit = 6 }) {
   if (!isLikelyValidToken(token)) throw new Error("Missing/invalid page access token");
 
   const url = new URL(`https://graph.facebook.com/v21.0/${encodeURIComponent(id)}/media`);
-  url.searchParams.set(
-    "fields",
-    ["id", "caption", "media_type", "media_url", "permalink", "timestamp"].join(",")
-  );
+  url.searchParams.set("fields", ["id", "caption", "media_type", "media_url", "permalink", "timestamp"].join(","));
   url.searchParams.set("limit", String(Math.max(1, Math.min(25, Number(limit) || 6))));
   url.searchParams.set("access_token", token);
 
@@ -634,7 +634,6 @@ async function createOrderFlow({ clientId, igBusinessId, senderId, orderSummaryT
   const cid = normalizeId(clientId);
   if (!cid) throw new Error("Missing clientId (string) for createOrderFlow");
 
-  // ensure client exists (by string)
   const client = await db.collection("Clients").findOne({ clientId: cid });
   if (!client) throw new Error(`Client not found for clientId=${cid}`);
 
@@ -680,7 +679,7 @@ async function createOrderFlow({ clientId, igBusinessId, senderId, orderSummaryT
 
   try {
     const order = await Order.create({
-      clientId: cid, // ✅ string
+      clientId: cid,
       channel,
       customer: {
         name: customerName,
@@ -731,9 +730,8 @@ router.get("/", async (req, res) => {
 });
 
 // ===============================
-// ✅ REVIEW ENDPOINTS (for App Review screencast)
+// ✅ REVIEW ENDPOINTS
 // ===============================
-// 1) GET /instagram/review/profile?clientId=...
 router.get("/review/profile", requireDashboardAuth, requireOwnerOrAdmin, async (req, res) => {
   try {
     const clientId = normalizeId(req.query.clientId);
@@ -750,7 +748,6 @@ router.get("/review/profile", requireDashboardAuth, requireOwnerOrAdmin, async (
 
     const data = await fetchIgBusinessProfile({ igId, pageAccessToken: pageToken });
 
-    // Best-effort: store identity fields so your dashboard can display handle/ID
     try {
       const db = await connectDB();
       await db.collection("Clients").updateOne(
@@ -774,7 +771,6 @@ router.get("/review/profile", requireDashboardAuth, requireOwnerOrAdmin, async (
   }
 });
 
-// 2) GET /instagram/review/media?clientId=...
 router.get("/review/media", requireDashboardAuth, requireOwnerOrAdmin, async (req, res) => {
   try {
     const clientId = normalizeId(req.query.clientId);
@@ -798,8 +794,6 @@ router.get("/review/media", requireDashboardAuth, requireOwnerOrAdmin, async (re
   }
 });
 
-// 3) POST /instagram/review/send-dm  { clientId, recipientId?, text }
-// - If recipientId missing, it will try client's lastIgSenderId (saved from webhook)
 router.post("/review/send-dm", requireDashboardAuth, requireOwnerOrAdmin, express.json(), async (req, res) => {
   try {
     const clientId = normalizeId(req.body?.clientId);
@@ -837,16 +831,21 @@ router.post("/review/send-dm", requireDashboardAuth, requireOwnerOrAdmin, expres
       text,
     });
 
+    // ✅ record outbound immediately (even if echo webhook doesn’t arrive)
+    await appendTurnIG({
+      igBusinessId: client.resolvedIgId || client.igBusinessId || client.igId || "",
+      userId: recipientId,
+      role: "assistant",
+      content: text,
+      clientId,
+    });
+
     return res.json({ ok: true, out, usedRecipientId: recipientId });
   } catch (e) {
     return res.status(400).json({ ok: false, error: e.message });
   }
 });
 
-// ===============================
-// Hard-coded IG send test
-// /instagram/ig-test-send?pageId=...&pageToken=...&recipientId=...&text=...
-// ===============================
 router.get("/ig-test-send", async (req, res) => {
   const pageId = normalizeId(req.query.pageId || process.env.PAGE_ID);
   const pageToken = sanitizeAccessToken(req.query.pageToken || process.env.PAGE_ACCESS_TOKEN);
@@ -880,6 +879,7 @@ router.post("/", async (req, res) => {
       const senderId = normalizeId(webhook_event?.sender?.id);
       const recipientId = normalizeId(webhook_event?.recipient?.id);
       const isEcho = Boolean(webhook_event?.message?.is_echo);
+      const msgText = String(webhook_event?.message?.text || "").trim();
 
       const metaBase = {
         igBusinessId,
@@ -897,37 +897,62 @@ router.post("/", async (req, res) => {
       }
       await markProcessedIg(igBusinessId, eventKey, metaBase);
 
-      // Only inbound user text
-      if (!isInboundUserText(igBusinessId, webhook_event)) {
-        if (isEcho) log("info", "Echo event ignored", { igBusinessId, eventKey });
+      // ✅ Resolve client once per event (needed for both echo + inbound)
+      let clientDoc = null;
+      try {
+        clientDoc = await getClientByIgBusinessId(igBusinessId);
+      } catch {}
+      if (!clientDoc) {
+        log("warn", "IG webhook for unknown igBusinessId; ignoring", { igBusinessId });
+        await logToDb("warn", "instagram", "IG webhook for unknown igBusinessId; ignoring", { igBusinessId });
+        continue;
+      }
+      if (clientDoc.active === false) continue;
+
+      const clientId = normalizeId(clientDoc.clientId);
+      if (!clientId) {
+        log("error", "Client missing clientId string (required). Fix Clients document.", {
+          igBusinessId,
+          clientMongoId: String(clientDoc._id),
+        });
+        await logToDb("error", "instagram", "Client missing clientId string (required).", {
+          igBusinessId,
+          clientMongoId: String(clientDoc._id),
+        });
         continue;
       }
 
-      const userText = webhook_event.message.text;
+      // ✅ 1) ECHO: DO NOT AI-REPLY (avoid loops) BUT RECORD IT
+      if (isEcho) {
+        log("info", "Echo event recorded (no AI)", { igBusinessId, eventKey });
+
+        // In echo events, recipientId is usually the CUSTOMER
+        const customerId = normalizeId(recipientId);
+        if (customerId && msgText) {
+          try {
+            await appendTurnIG({
+              igBusinessId,
+              userId: customerId,
+              role: "assistant",
+              content: msgText,
+              clientId,
+            });
+          } catch (e) {
+            log("warn", "Failed to record echo to conversation", { igBusinessId, eventKey, err: e.message });
+          }
+        }
+        continue;
+      }
+
+      // ✅ 2) If not echo and not inbound user text, ignore (no AI + nothing to record)
+      if (!isInboundUserText(igBusinessId, webhook_event)) {
+        log("info", "Non-inbound/non-text IG event ignored", { igBusinessId, eventKey, senderId, recipientId });
+        continue;
+      }
+
+      const userText = msgText;
 
       try {
-        // ✅ Only process onboarded clients (NO auto-create)
-        const clientDoc = await getClientByIgBusinessId(igBusinessId);
-        if (!clientDoc) {
-          log("warn", "IG webhook for unknown igBusinessId; ignoring", { igBusinessId });
-          await logToDb("warn", "instagram", "IG webhook for unknown igBusinessId; ignoring", { igBusinessId });
-          continue;
-        }
-        if (clientDoc.active === false) continue;
-
-        // ✅ must have clientId string
-        if (!clientDoc.clientId) {
-          log("error", "Client missing clientId string (required). Fix Clients document.", {
-            igBusinessId,
-            clientMongoId: String(clientDoc._id),
-          });
-          await logToDb("error", "instagram", "Client missing clientId string (required).", {
-            igBusinessId,
-            clientMongoId: String(clientDoc._id),
-          });
-          continue;
-        }
-
         // Track webhook freshness + store last inbound sender for review DM reply
         try {
           const db = await connectDB();
@@ -1000,12 +1025,31 @@ router.post("/", async (req, res) => {
             recipientId: senderId,
             text: "✅ Bot is reactivated!",
           });
+
+          // record outbound immediately
+          await appendTurnIG({
+            igBusinessId,
+            userId: senderId,
+            role: "assistant",
+            content: "✅ Bot is reactivated!",
+            clientId,
+          });
+
           continue;
         }
 
-        // If human escalation active → ignore bot
+        // If human escalation active → ignore bot (but you still may want to record inbound)
         if (convoCheck?.humanEscalation === true) {
-          log("info", "IG human escalation active; bot ignoring message", metaBase);
+          // ✅ record inbound user message even when bot is paused
+          await appendTurnIG({
+            igBusinessId,
+            userId: senderId,
+            role: "user",
+            content: userText,
+            clientId,
+          });
+
+          log("info", "IG human escalation active; bot ignoring message (recorded inbound)", metaBase);
           continue;
         }
 
@@ -1014,7 +1058,6 @@ router.post("/", async (req, res) => {
         // ===============================
         const rulesPrompt = await SYSTEM_PROMPT({ igId: igBusinessId });
 
-        const clientId = clientDoc.clientId; // ✅ string like "realestate"
         const botType = clientDoc?.botType || "default";
         const sectionsOrder = clientDoc?.sectionsOrder || ["menu", "offers", "hours"];
 
@@ -1035,12 +1078,22 @@ router.post("/", async (req, res) => {
         const usage = await incrementMessageCountForIgClient(igBusinessId);
         if (!usage.allowed) {
           if (usage.reason === "client_not_found") continue;
+
           await sendInstagramDM({
             pageId,
             pageAccessToken: pageToken,
             recipientId: senderId,
             text: "⚠️ Message limit reached.",
           });
+
+          await appendTurnIG({
+            igBusinessId,
+            userId: senderId,
+            role: "assistant",
+            content: "⚠️ Message limit reached.",
+            clientId,
+          });
+
           continue;
         }
 
@@ -1091,6 +1144,9 @@ router.post("/", async (req, res) => {
           assistantMessage = assistantMessage.replace("[TOUR_REQUEST]", "").trim();
         }
 
+        // Record inbound user message (always)
+        compactHistory.push({ role: "user", content: userText, createdAt: new Date() });
+
         // Human escalation
         if (flags.human) {
           const botResumeAt = new Date(Date.now() + 2 * 60 * 60 * 1000);
@@ -1104,22 +1160,26 @@ router.post("/", async (req, res) => {
             { upsert: true }
           );
 
+          const msg =
+            "👤 A human agent will take over shortly.\nYou can type !bot anytime to return to the assistant.\n\nسيقوم أحد موظفي الدعم بالرد عليك قريبًا.";
+
           await sendInstagramDM({
             pageId,
             pageAccessToken: pageToken,
             recipientId: senderId,
-            text:
-              "👤 A human agent will take over shortly.\nYou can type !bot anytime to return to the assistant.\n\nسيقوم أحد موظفي الدعم بالرد عليك قريبًا.",
+            text: msg,
           });
 
-          // save conversation turns
-          compactHistory.push({ role: "user", content: userText, createdAt: new Date() });
           compactHistory.push({ role: "assistant", content: assistantMessage, createdAt: new Date() });
           await saveConversationIG(igBusinessId, senderId, compactHistory, new Date(), clientId, "instagram");
+
+          // also record the actual outbound text we sent
+          await appendTurnIG({ igBusinessId, userId: senderId, role: "assistant", content: msg, clientId });
+
           continue;
         }
 
-        // Order handling -> WhatsApp notify + Order.create
+        // Order handling
         if (flags.order) {
           await db.collection("Conversations").updateOne(
             { igBusinessId: normalizeId(igBusinessId), userId: senderId, source: "instagram" },
@@ -1136,32 +1196,38 @@ router.post("/", async (req, res) => {
               channel: "instagram",
             });
 
+            const msg =
+              "✅ Your order request has been received.\nA staff member will contact you shortly.\n\nتم استلام طلبك وسيتم التواصل معك قريبًا.";
+
             await sendInstagramDM({
               pageId,
               pageAccessToken: pageToken,
               recipientId: senderId,
-              text:
-                "✅ Your order request has been received.\nA staff member will contact you shortly.\n\nتم استلام طلبك وسيتم التواصل معك قريبًا.",
+              text: msg,
             });
 
-            compactHistory.push({ role: "user", content: userText, createdAt: new Date() });
             compactHistory.push({ role: "assistant", content: assistantMessage, createdAt: new Date() });
             await saveConversationIG(igBusinessId, senderId, compactHistory, new Date(), clientId, "instagram");
+
+            await appendTurnIG({ igBusinessId, userId: senderId, role: "assistant", content: msg, clientId });
             continue;
           } catch (err) {
             log("error", "IG Order flow failed", { ...metaBase, err: err.message });
             await logToDb("error", "order", "IG Order flow failed", { ...metaBase, err: err.message });
 
+            const msg = "⚠️ We couldn't process your order right now. Please try again.";
+
             await sendInstagramDM({
               pageId,
               pageAccessToken: pageToken,
               recipientId: senderId,
-              text: "⚠️ We couldn't process your order right now. Please try again.",
+              text: msg,
             });
 
-            compactHistory.push({ role: "user", content: userText, createdAt: new Date() });
             compactHistory.push({ role: "assistant", content: assistantMessage, createdAt: new Date() });
             await saveConversationIG(igBusinessId, senderId, compactHistory, new Date(), clientId, "instagram");
+
+            await appendTurnIG({ igBusinessId, userId: senderId, role: "assistant", content: msg, clientId });
             continue;
           }
         }
@@ -1185,8 +1251,7 @@ router.post("/", async (req, res) => {
           }
         }
 
-        // Save conversation
-        compactHistory.push({ role: "user", content: userText, createdAt: new Date() });
+        // Save conversation (stores AI output in history)
         compactHistory.push({ role: "assistant", content: assistantMessage, createdAt: new Date() });
         await saveConversationIG(igBusinessId, senderId, compactHistory, new Date(), clientId, "instagram");
 
@@ -1198,20 +1263,28 @@ router.post("/", async (req, res) => {
           recipientId: senderId,
           text: combinedMessage,
         });
+
+        // ✅ record outbound immediately (don’t depend on echo webhook)
+        await appendTurnIG({ igBusinessId, userId: senderId, role: "assistant", content: combinedMessage, clientId });
       } catch (error) {
         log("error", "IG handler error", { ...metaBase, err: error.message });
         await logToDb("error", "instagram", "IG handler error", { ...metaBase, err: error.message });
 
         // Best-effort fail message
         try {
-          const clientDoc = await getClientByIgBusinessId(igBusinessId);
-          if (clientDoc?.resolvedPageId && isLikelyValidToken(clientDoc?.resolvedPageAccessToken)) {
+          const pageId = clientDoc?.resolvedPageId;
+          const pageToken = clientDoc?.resolvedPageAccessToken;
+          if (pageId && isLikelyValidToken(pageToken)) {
+            const msg = "⚠️ حصلت مشكلة. جرب تاني بعد شوية.";
+
             await sendInstagramDM({
-              pageId: clientDoc.resolvedPageId,
-              pageAccessToken: clientDoc.resolvedPageAccessToken,
+              pageId,
+              pageAccessToken: pageToken,
               recipientId: senderId,
-              text: "⚠️ حصلت مشكلة. جرب تاني بعد شوية.",
+              text: msg,
             });
+
+            await appendTurnIG({ igBusinessId, userId: senderId, role: "assistant", content: msg, clientId: clientDoc?.clientId });
           }
         } catch {}
       }
