@@ -355,7 +355,7 @@ router.post("/send-template-test", requireClient, async (req, res) => {
 // GET /api/whatsapp/templates?clientId=...
 // returns: { ok: true, templates: [{ name, status, language }] }
 // ===============================
-router.get("/api/whatsapp/templates", requireClient, async (req, res) => {
+router.get("/templates", requireClient, async (req, res) => {
   try {
     const clientId = String(req.query.clientId || "").trim();
     if (!clientId) return res.status(400).json({ ok: false, error: "Missing clientId" });
