@@ -25,7 +25,7 @@ import { retrieveChunks } from "./services/retrieval.js";
 import { buildChatMessages } from "./services/promptBuilder.js";
 
 import { getChatCompletion } from "./services/openai.js";
-import { SYSTEM_PROMPT } from "./utils/systemPrompt.js";
+import { buildRulesPrompt } from "./utils/systemPrompt.js";
 import { sendQuotaWarning } from "./sendQuotaWarning.js";
 
 import Order from "./order.js";
@@ -1056,9 +1056,9 @@ router.post("/", async (req, res) => {
         // ===============================
         // Main processing (retrieval + runtime injection + MEMORY)
         // ===============================
-        const rulesPrompt = await SYSTEM_PROMPT({ igId: igBusinessId });
+      const rulesPrompt = buildRulesPrompt(clientDoc);
 
-        const botType = clientDoc?.botType || "default";
+      const botType = clientDoc?.knowledgeBotType || "default";
         const sectionsOrder = clientDoc?.sectionsOrder || ["menu", "offers", "hours"];
 
         // load conversation history from DB
@@ -1108,12 +1108,15 @@ router.post("/", async (req, res) => {
         }
 
         // build base messages
-        const { messages: baseMessages } = buildChatMessages({
-          rulesPrompt,
-          groupedChunks: grouped,
-          userText,
-          sectionsOrder,
-        });
+      const { messages: baseMessages, meta } = buildChatMessages({
+  rulesPrompt,
+  groupedChunks: grouped,
+  userText,
+  sectionsOrder,
+});
+if (meta?.code) {
+  log("warn", "IG prompt builder warning", { ...metaBase, meta });
+}
 
         // inject memory
         const messagesForOpenAI = injectHistory(baseMessages, compactHistory);
@@ -1252,21 +1255,17 @@ router.post("/", async (req, res) => {
         }
 
         // Save conversation (stores AI output in history)
-        compactHistory.push({ role: "assistant", content: assistantMessage, createdAt: new Date() });
-        await saveConversationIG(igBusinessId, senderId, compactHistory, new Date(), clientId, "instagram");
+   const combinedMessage = greeting ? `${greeting}\n\n${assistantMessage}` : assistantMessage;
 
-        const combinedMessage = greeting ? `${greeting}\n\n${assistantMessage}` : assistantMessage;
+compactHistory.push({ role: "assistant", content: combinedMessage, createdAt: new Date() });
+await saveConversationIG(igBusinessId, senderId, compactHistory, new Date(), clientId, "instagram");
 
-        await sendInstagramDM({
-          pageId,
-          pageAccessToken: pageToken,
-          recipientId: senderId,
-          text: combinedMessage,
-        });
-
-        // ✅ record outbound immediately (don’t depend on echo webhook)
-        await appendTurnIG({ igBusinessId, userId: senderId, role: "assistant", content: combinedMessage, clientId });
-      } catch (error) {
+await sendInstagramDM({
+  pageId,
+  pageAccessToken: pageToken,
+  recipientId: senderId,
+  text: combinedMessage,
+});  } catch (error) {
         log("error", "IG handler error", { ...metaBase, err: error.message });
         await logToDb("error", "instagram", "IG handler error", { ...metaBase, err: error.message });
 

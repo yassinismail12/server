@@ -1,8 +1,4 @@
-// promptBuilder.js
-
 function estimateTokens(str = "") {
-  // Very practical approximation:
-  // English ~ 4 chars/token, Arabic can be a bit different but this is fine for budget warnings.
   return Math.ceil(String(str).length / 4);
 }
 
@@ -13,15 +9,10 @@ function hardTrimToTokenBudget(text, budgetTokens) {
   return text.slice(0, maxChars) + "\n…[trimmed]";
 }
 
-/**
- * Build a data block that fits within a token budget.
- * groupedChunks: { [sectionName]: [{ text: "..." , ... }, ...] }
- * sectionsOrder: ["properties", "policies", ...]
- */
 export function buildDataBlockBudgeted(groupedChunks, sectionsOrder, opts = {}) {
   const {
-    maxDataTokens = 2500,     // how much of the prompt is allowed for KB chunks
-    perChunkMaxTokens = 300,  // cap any single chunk so one chunk can't blow budget
+    maxDataTokens = 2500,
+    perChunkMaxTokens = 300,
     includeEmptySections = false,
   } = opts;
 
@@ -29,13 +20,15 @@ export function buildDataBlockBudgeted(groupedChunks, sectionsOrder, opts = {}) 
   const outSections = [];
   let includedChunkCount = 0;
 
-  for (const section of sectionsOrder) {
+  for (const section of sectionsOrder || []) {
     const items = groupedChunks?.[section] || [];
+
     if (!items.length) {
       if (includeEmptySections) {
-        const header = `${section.toUpperCase()}\n\n`;
+        const header = `${String(section).toUpperCase()}\n\n`;
         const body = `No relevant data found.\n`;
         const cost = estimateTokens(header + body);
+
         if (usedTokens + cost <= maxDataTokens) {
           outSections.push(header + body);
           usedTokens += cost;
@@ -44,46 +37,42 @@ export function buildDataBlockBudgeted(groupedChunks, sectionsOrder, opts = {}) 
       continue;
     }
 
-    // Start section
-    const header = `${section.toUpperCase()}\n\n`;
-    let sectionText = "";
-    let headerCost = estimateTokens(header);
+    const header = `${String(section).toUpperCase()}\n\n`;
+    const headerCost = estimateTokens(header);
 
-    // If we can't even afford the header, stop completely
     if (usedTokens + headerCost >= maxDataTokens) break;
 
-    // Add chunks under this section until budget
-    for (const item of items) {
-      if (usedTokens + headerCost >= maxDataTokens) break;
+    let sectionText = "";
 
+    for (const item of items) {
       let chunkText = String(item?.text || "").trim();
       if (!chunkText) continue;
 
-      // Cap per chunk
-      const chunkTokens = estimateTokens(chunkText);
-      if (chunkTokens > perChunkMaxTokens) {
+      if (estimateTokens(chunkText) > perChunkMaxTokens) {
         chunkText = hardTrimToTokenBudget(chunkText, perChunkMaxTokens);
       }
 
       const addition = (sectionText ? "\n" : "") + chunkText;
-      const additionCost = estimateTokens(addition);
+      const projectedCost =
+        usedTokens + headerCost + estimateTokens(sectionText) + estimateTokens(addition);
 
-      // If adding the whole chunk exceeds budget, try trimming it to fit
-      if (usedTokens + headerCost + estimateTokens(sectionText) + additionCost > maxDataTokens) {
-        const remaining = maxDataTokens - (usedTokens + headerCost + estimateTokens(sectionText));
-        if (remaining <= 30) {
-          // too little space left to add meaningful text
-          break;
-        }
+      if (projectedCost > maxDataTokens) {
+        const remaining =
+          maxDataTokens - (usedTokens + headerCost + estimateTokens(sectionText));
+
+        if (remaining <= 30) break;
+
         const trimmed = hardTrimToTokenBudget(chunkText, remaining);
         const trimmedAddition = (sectionText ? "\n" : "") + trimmed;
+        const finalProjectedCost =
+          usedTokens + headerCost + estimateTokens(sectionText) + estimateTokens(trimmedAddition);
 
-        // final check
-        if (usedTokens + headerCost + estimateTokens(sectionText) + estimateTokens(trimmedAddition) <= maxDataTokens) {
+        if (finalProjectedCost <= maxDataTokens) {
           sectionText += trimmedAddition;
           includedChunkCount += 1;
         }
-        break; // budget exhausted for this section
+
+        break;
       }
 
       sectionText += addition;
@@ -91,8 +80,9 @@ export function buildDataBlockBudgeted(groupedChunks, sectionsOrder, opts = {}) 
     }
 
     if (sectionText.trim()) {
-      outSections.push(header + sectionText);
-      usedTokens += estimateTokens(header + sectionText);
+      const block = header + sectionText;
+      outSections.push(block);
+      usedTokens += estimateTokens(block);
     }
   }
 
@@ -108,29 +98,28 @@ export function buildChatMessages({
   groupedChunks,
   userText,
   sectionsOrder,
-  // budgets
-  maxTotalTokens = 3500, // total tokens allowed for EVERYTHING here (system + user + data)
+  maxTotalTokens = 3500,
   maxDataTokens = 2500,
   perChunkMaxTokens = 300,
 } = {}) {
   const safeRulesPrompt = String(rulesPrompt || "").trim();
   const safeUserText = String(userText || "").trim();
 
-  // 1) Build KB block with its own budget first
-  const { dataBlock, usedTokens: dataTokens, includedChunkCount } = buildDataBlockBudgeted(
-    groupedChunks,
-    sectionsOrder,
-    { maxDataTokens, perChunkMaxTokens }
-  );
+  const {
+    dataBlock,
+    usedTokens: dataTokens,
+    includedChunkCount,
+  } = buildDataBlockBudgeted(groupedChunks, sectionsOrder, {
+    maxDataTokens,
+    perChunkMaxTokens,
+  });
 
-  // 2) Build final user content
-  // IMPORTANT: don't add "No relevant data found." everywhere — it wastes budget.
   const userContent =
     (dataBlock ? `${dataBlock}\n\n` : "") +
     `User message:\n${safeUserText}`;
 
-  // 3) Final budget check (system + user)
-  const totalTokens = estimateTokens(safeRulesPrompt) + estimateTokens(userContent);
+  const totalTokens =
+    estimateTokens(safeRulesPrompt) + estimateTokens(userContent);
 
   const meta = {
     totalTokens,
@@ -140,38 +129,46 @@ export function buildChatMessages({
     advice: null,
   };
 
-  // 4) If too big, shrink further: first shrink data budget, then trim user content last
   if (totalTokens > maxTotalTokens) {
     meta.code = "PROMPT_RISK_LONG_MESSAGE";
     meta.advice =
-      "Outgoing prompt too large. Reduce retrieved chunks (K), reduce per-chunk size, or reduce conversation window.";
+      "Outgoing prompt too large. Reduce retrieved chunks, reduce per-chunk size, or reduce memory window.";
 
-    // Reduce data budget aggressively and rebuild once
     const reducedDataBudget = Math.max(600, Math.floor(maxDataTokens * 0.5));
+    const reducedPerChunkMax = Math.max(120, Math.floor(perChunkMaxTokens * 0.7));
+
     const rebuilt = buildDataBlockBudgeted(groupedChunks, sectionsOrder, {
       maxDataTokens: reducedDataBudget,
-      perChunkMaxTokens: Math.max(120, Math.floor(perChunkMaxTokens * 0.7)),
+      perChunkMaxTokens: reducedPerChunkMax,
     });
 
     const rebuiltUserContent =
       (rebuilt.dataBlock ? `${rebuilt.dataBlock}\n\n` : "") +
       `User message:\n${safeUserText}`;
 
-    const rebuiltTotalTokens = estimateTokens(safeRulesPrompt) + estimateTokens(rebuiltUserContent);
+    const rebuiltTotalTokens =
+      estimateTokens(safeRulesPrompt) + estimateTokens(rebuiltUserContent);
 
     meta.dataTokens = rebuilt.usedTokens;
     meta.includedChunkCount = rebuilt.includedChunkCount;
     meta.totalTokens = rebuiltTotalTokens;
 
-    // If STILL too big, trim user text slightly (rare)
     let finalUserContent = rebuiltUserContent;
+
     if (rebuiltTotalTokens > maxTotalTokens) {
-      const allowedForUser = Math.max(200, maxTotalTokens - estimateTokens(safeRulesPrompt) - estimateTokens(rebuilt.dataBlock));
+      const allowedForUser = Math.max(
+        200,
+        maxTotalTokens -
+          estimateTokens(safeRulesPrompt) -
+          estimateTokens(rebuilt.dataBlock || "")
+      );
+
       finalUserContent =
         (rebuilt.dataBlock ? `${rebuilt.dataBlock}\n\n` : "") +
         `User message:\n${hardTrimToTokenBudget(safeUserText, allowedForUser)}`;
 
-      meta.totalTokens = estimateTokens(safeRulesPrompt) + estimateTokens(finalUserContent);
+      meta.totalTokens =
+        estimateTokens(safeRulesPrompt) + estimateTokens(finalUserContent);
     }
 
     return {

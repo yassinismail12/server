@@ -72,6 +72,22 @@ function canonicalSectionName(s) {
   return t || "mixed";
 }
 
+function prettySectionName(section) {
+  const map = {
+    faqs: "FAQs",
+    hours: "Business Hours",
+    offers: "Services / Offers",
+    listings: "Listings / Properties",
+    paymentPlans: "Payment Plans",
+    policies: "Policies",
+    contact: "Contact Information",
+    profile: "Business Profile",
+    other: "Other Information",
+    mixed: "Mixed Content",
+  };
+  return map[section] || section;
+}
+
 function formToMixedText(data = {}) {
   const lines = [];
   const push = (title, value) => {
@@ -151,10 +167,14 @@ function chunkFaqs(faqText = "") {
 function chooseSections(botType) {
   const bt = String(botType || "default").toLowerCase().trim();
 
-  if (bt === "restaurant") return ["menu", "offers", "hours", "faqs", "contact", "profile", "policies", "other"];
-  if (bt === "realestate") return ["listings", "paymentPlans", "offers", "hours", "faqs", "policies", "profile", "contact", "other"];
+  if (bt === "restaurant") {
+    return ["menu", "offers", "hours", "faqs", "contact", "profile", "policies", "other"];
+  }
 
-  // default generic (pharmacy/clinic/anything)
+  if (bt === "realestate") {
+    return ["listings", "paymentPlans", "offers", "hours", "faqs", "policies", "profile", "contact", "other"];
+  }
+
   return ["offers", "hours", "faqs", "policies", "profile", "contact", "other"];
 }
 
@@ -190,25 +210,75 @@ function resetClientKnowledgeSources(client) {
   client.offers = "";
 }
 
-/**
- * ✅ KEY FIXES:
- * 1) replace=true MUST NOT wipe client.files AFTER you saved new content.
- *    So: we ONLY delete chunks here. Source reset happens in /build and /upload BEFORE saving.
- * 2) We also auto-include sections that exist in client.files (so listings/paymentPlans won't be skipped on default).
- */
 function detectSectionsFromClient(client, botType) {
   const base = new Set(chooseSections(botType));
 
-  // include any sections that exist in files (except "mixed")
   for (const f of client.files || []) {
     const name = canonicalSectionName(f.name);
     if (name && name !== "mixed") base.add(name);
   }
 
-  // always include other
   base.add("other");
 
   return Array.from(base);
+}
+
+function buildCoverageWarnings({ expectedSections, presentSections }) {
+  const missingSections = expectedSections.filter((s) => !presentSections.includes(s));
+  const coverageWarnings = [];
+
+  if (missingSections.length > 0) {
+    coverageWarnings.push(
+      `Missing sections: ${missingSections.map(prettySectionName).join(", ")}`
+    );
+  }
+
+  if (expectedSections.includes("listings") && !presentSections.includes("listings")) {
+    coverageWarnings.push("No listings detected.");
+  }
+  if (expectedSections.includes("paymentPlans") && !presentSections.includes("paymentPlans")) {
+    coverageWarnings.push("No payment plans detected.");
+  }
+  if (expectedSections.includes("faqs") && !presentSections.includes("faqs")) {
+    coverageWarnings.push("No FAQs detected.");
+  }
+
+  return { missingSections, coverageWarnings };
+}
+
+function buildNextAction({ hasChunks, missingSections }) {
+  if (!hasChunks) return "Add business information and rebuild the bot.";
+  if (missingSections.includes("listings")) return "Upload listings data and rebuild.";
+  if (missingSections.includes("paymentPlans")) return "Add payment plans and rebuild.";
+  if (missingSections.includes("faqs")) return "Add FAQs to improve customer answers.";
+  if (missingSections.includes("hours")) return "Add business hours so customers can ask about opening times.";
+  if (missingSections.includes("contact")) return "Add contact information so customers can reach the business easily.";
+  return "Bot is ready to answer customer messages.";
+}
+
+function buildUiSummary({
+  knowledgeStatus,
+  inserted,
+  presentSections,
+  missingSections,
+  completeness,
+  nextAction,
+}) {
+  return {
+    statusLabel:
+      knowledgeStatus === "ready"
+        ? "Ready"
+        : knowledgeStatus === "needs_review"
+        ? "Needs Review"
+        : knowledgeStatus === "empty"
+        ? "Empty"
+        : "Building",
+    insertedChunks: inserted,
+    detectedSections: presentSections.map(prettySectionName),
+    missingSections: missingSections.map(prettySectionName),
+    completeness,
+    nextAction,
+  };
 }
 
 async function rebuildKnowledge({ clientId, botType = "default", replace = false }) {
@@ -217,14 +287,12 @@ async function rebuildKnowledge({ clientId, botType = "default", replace = false
 
   await Client.updateOne({ clientId }, { $set: { knowledgeStatus: "building" } });
 
-  // ✅ replace: delete ALL chunks for client (all botTypes) to prevent mixing
   if (replace) {
     await KnowledgeChunk.deleteMany({ clientId });
   } else {
     await KnowledgeChunk.deleteMany({ clientId, botType });
   }
 
-  // split mixed -> real sections (do NOT clear files here)
   const mixedFile = (client.files || []).find((f) => String(f.name || "").toLowerCase() === "mixed");
   if (mixedFile?.content) {
     const parts = splitMixedToSections(mixedFile.content);
@@ -235,7 +303,6 @@ async function rebuildKnowledge({ clientId, botType = "default", replace = false
 
   await client.save();
 
-  // ✅ IMPORTANT: auto-detect sections from files so listings/paymentPlans don't get skipped
   const sections = detectSectionsFromClient(client, botType);
 
   const docs = [];
@@ -257,18 +324,29 @@ async function rebuildKnowledge({ clientId, botType = "default", replace = false
   const hasChunks = docs.length > 0;
   const presentSections = [...new Set(docs.map((d) => d.section))];
   const expectedSections = sections;
+  const sectionsOrder = expectedSections.filter((s) => presentSections.includes(s));
+  const completeness = expectedSections.length
+    ? Math.round((presentSections.length / expectedSections.length) * 100)
+    : 0;
 
-  const missingSections = expectedSections.filter((s) => !presentSections.includes(s));
-  const coverageWarnings = [];
-
-  if (missingSections.length > 0) coverageWarnings.push(`Missing sections: ${missingSections.join(", ")}`);
-  if (expectedSections.includes("listings") && !presentSections.includes("listings")) coverageWarnings.push("No listings detected.");
-  if (expectedSections.includes("paymentPlans") && !presentSections.includes("paymentPlans")) coverageWarnings.push("No payment plans detected.");
-  if (expectedSections.includes("faqs") && !presentSections.includes("faqs")) coverageWarnings.push("No FAQs detected.");
+  const { missingSections, coverageWarnings } = buildCoverageWarnings({
+    expectedSections,
+    presentSections,
+  });
 
   let finalStatus = "empty";
   if (hasChunks && coverageWarnings.length === 0) finalStatus = "ready";
   if (hasChunks && coverageWarnings.length > 0) finalStatus = "needs_review";
+
+  const nextAction = buildNextAction({ hasChunks, missingSections });
+  const uiSummary = buildUiSummary({
+    knowledgeStatus: finalStatus,
+    inserted: docs.length,
+    presentSections,
+    missingSections,
+    completeness,
+    nextAction,
+  });
 
   await Client.updateOne(
     { clientId },
@@ -279,7 +357,10 @@ async function rebuildKnowledge({ clientId, botType = "default", replace = false
         knowledgeBotType: botType,
         knowledgeBuiltAt: new Date(),
         sectionsPresent: presentSections,
+        sectionsOrder,
         coverageWarnings,
+        completeness,
+        nextAction,
       },
       $inc: { knowledgeVersion: 1 },
     }
@@ -294,7 +375,11 @@ async function rebuildKnowledge({ clientId, botType = "default", replace = false
     replace: Boolean(replace),
     knowledgeStatus: finalStatus,
     sectionsPresent: presentSections,
+    sectionsOrder,
     coverageWarnings,
+    completeness,
+    nextAction,
+    uiSummary,
   };
 }
 
@@ -316,6 +401,12 @@ router.get("/status", verifyToken, requireClientOwnership, async (req, res) => {
     const status = String(client.knowledgeStatus || "").trim() || (count > 0 ? "ready" : "empty");
     const ready = status === "ready" || status === "needs_review" || count > 0;
 
+    const sectionsPresent = Array.isArray(client.sectionsPresent) ? client.sectionsPresent : [];
+    const sectionsOrder = Array.isArray(client.sectionsOrder) ? client.sectionsOrder : [];
+    const coverageWarnings = Array.isArray(client.coverageWarnings) ? client.coverageWarnings : [];
+    const completeness = Number(client.completeness || 0) || 0;
+    const nextAction = String(client.nextAction || "").trim() || "Add business information and rebuild the bot.";
+
     return res.json({
       ok: true,
       clientId,
@@ -327,8 +418,26 @@ router.get("/status", verifyToken, requireClientOwnership, async (req, res) => {
       botBuilt: Boolean(client.botBuilt),
       knowledgeBuiltAt: client.knowledgeBuiltAt || null,
       chunks: count,
-      sectionsPresent: Array.isArray(client.sectionsPresent) ? client.sectionsPresent : [],
-      coverageWarnings: Array.isArray(client.coverageWarnings) ? client.coverageWarnings : [],
+      sectionsPresent,
+      sectionsOrder,
+      coverageWarnings,
+      completeness,
+      nextAction,
+      uiSummary: {
+        statusLabel:
+          status === "ready"
+            ? "Ready"
+            : status === "needs_review"
+            ? "Needs Review"
+            : status === "empty"
+            ? "Empty"
+            : "Building",
+        insertedChunks: count,
+        detectedSections: sectionsPresent.map(prettySectionName),
+        missingSections: [],
+        completeness,
+        nextAction,
+      },
     });
   } catch (err) {
     console.error("❌ /api/knowledge/status error:", err);
@@ -346,7 +455,6 @@ router.post("/build", verifyToken, requireClientOwnership, async (req, res) => {
 
     const doReplace = Boolean(replace);
 
-    // ✅ IMPORTANT: reset sources BEFORE saving new content (this is where replace belongs)
     if (doReplace) resetClientKnowledgeSources(client);
 
     let fileName = "mixed";
@@ -370,7 +478,12 @@ router.post("/build", verifyToken, requireClientOwnership, async (req, res) => {
     const built = await rebuildKnowledge({ clientId, botType: botType || "default", replace: doReplace });
     if (!built.ok) return res.status(built.status || 500).json(built);
 
-    return res.json({ ok: true, savedAs: fileName, build: built });
+    return res.json({
+      ok: true,
+      savedAs: fileName,
+      message: built.nextAction,
+      build: built,
+    });
   } catch (err) {
     console.error("❌ /api/knowledge/build error:", err);
     return res.status(500).json({ ok: false, error: "Build failed" });
@@ -392,7 +505,9 @@ router.post("/upload", verifyToken, requireClientOwnership, upload.single("file"
     const name = req.file.originalname || "";
     const isTxt = name.toLowerCase().endsWith(".txt");
 
-    if (!mimetype.includes("text") && !isTxt) return res.status(400).json({ ok: false, error: "Only .txt supported." });
+    if (!mimetype.includes("text") && !isTxt) {
+      return res.status(400).json({ ok: false, error: "Only .txt supported." });
+    }
 
     const content = normalizeText(req.file.buffer.toString("utf8"));
     if (!content) return res.status(400).json({ ok: false, error: "Empty file." });
@@ -400,7 +515,6 @@ router.post("/upload", verifyToken, requireClientOwnership, upload.single("file"
     const client = await Client.findOne({ clientId });
     if (!client) return res.status(404).json({ ok: false, error: "Client not found" });
 
-    // ✅ replace reset BEFORE saving new file
     if (replace) resetClientKnowledgeSources(client);
 
     await upsertClientFile(client, section, content, replace ? "bot-upload-replace" : "bot-upload");
@@ -409,7 +523,12 @@ router.post("/upload", verifyToken, requireClientOwnership, upload.single("file"
     const built = await rebuildKnowledge({ clientId, botType, replace });
     if (!built.ok) return res.status(built.status || 500).json(built);
 
-    return res.json({ ok: true, savedAs: section, build: built });
+    return res.json({
+      ok: true,
+      savedAs: section,
+      message: built.nextAction,
+      build: built,
+    });
   } catch (err) {
     console.error("❌ /api/knowledge/upload error:", err);
     return res.status(500).json({ ok: false, error: "Upload failed" });
@@ -424,12 +543,13 @@ router.post("/rebuild/:clientId", verifyToken, requireClientOwnership, async (re
 
     if (!clientId) return res.status(400).json({ ok: false, error: "Missing clientId" });
 
-    // ⚠️ rebuild-only replace will delete chunks but will NOT wipe files here.
-    // If you want wipe+rebuild, use /build or /upload with replace=true.
     const built = await rebuildKnowledge({ clientId, botType, replace });
     if (!built.ok) return res.status(built.status || 500).json(built);
 
-    return res.json(built);
+    return res.json({
+      ...built,
+      message: built.nextAction,
+    });
   } catch (err) {
     console.error("❌ /api/knowledge/rebuild error:", err);
     return res.status(500).json({ ok: false, error: "Rebuild failed" });

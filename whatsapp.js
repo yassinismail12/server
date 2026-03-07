@@ -2,10 +2,13 @@
 import express from "express";
 import { MongoClient } from "mongodb";
 import jwt from "jsonwebtoken";
-
+import { retrieveChunks } from "./services/retrieval.js";
+import { buildChatMessages } from "./services/promptBuilder.js";
+import { buildRulesPrompt } from "./utils/systemPrompt.js";
 import { getChatCompletion } from "./services/openai.js";
 import { sendWhatsAppText } from "./services/whatsappText.js";
 import { sendWhatsAppTemplate } from "./services/whatsappTemplate.js";
+
 const router = express.Router();
 
 const mongoClient = new MongoClient(process.env.MONGODB_URI);
@@ -55,13 +58,6 @@ function isNewDay(lastDate) {
   );
 }
 
-function buildSystemPromptFromClient(client) {
-  const base = client.systemPrompt || "You are a helpful assistant.";
-  const faqs = client.faqs ? `\n\nFAQs:\n${client.faqs}` : "";
-  const listings = client.listingsData ? `\n\nListings:\n${client.listingsData}` : "";
-  const plans = client.paymentPlans ? `\n\nPayment Plans:\n${client.paymentPlans}` : "";
-  return `${base}${faqs}${listings}${plans}`.trim();
-}
 
 function parseSourceChoice(text) {
   const t = String(text || "").trim().toLowerCase();
@@ -525,7 +521,11 @@ router.post("/", async (req, res) => {
           }
 
           const convo = await getConversation(client.clientId, fromDigits);
-
+const botType = client?.knowledgeBotType || "default";
+const sectionsOrder =
+  Array.isArray(client?.sectionsPresent) && client.sectionsPresent.length
+    ? client.sectionsPresent
+    : ["faqs", "listings", "paymentPlans"];
           if (convo?.humanEscalation === true) {
             log("info", "Human escalation active; ignoring", { from: fromDigits, clientId: client.clientId });
             continue;
@@ -534,8 +534,8 @@ router.post("/", async (req, res) => {
           const inboundAt = new Date();
           const inboundPreview = text.slice(0, 200);
 
-          const systemPrompt = buildSystemPromptFromClient(client);
-          let history = convo?.history || [{ role: "system", content: systemPrompt }];
+     const rulesPrompt = buildRulesPrompt(client);
+let history = Array.isArray(convo?.history) ? convo.history : [];
 
           const sourceChoiceExisting = convo?.sourceChoice || "";
           const needsChoice = clientAwaitSource && !sourceChoiceExisting;
@@ -548,19 +548,18 @@ router.post("/", async (req, res) => {
             if (!picked) {
               const shouldSendMenu = !convo || isNewDay(convo.lastInteraction) || convo?.awaitSource !== true;
 
-              await upsertConversation({
-                clientId: client.clientId,
-                userId: fromDigits,
-                history,
-                lastInteraction: inboundAt,
-                lastMessage: inboundPreview,
-                lastMessageAt: inboundAt,
-                lastDirection: "in",
-                awaitSource: true,
-                sourceChoice: "",
-                meta: { whatsappPhoneNumberId: String(whatsappPhoneNumberId) },
-              });
-
+       await upsertConversation({
+  clientId: client.clientId,
+  userId: fromDigits,
+  history,
+  lastInteraction: outboundAt,
+  lastMessage: combined.slice(0, 500),
+  lastMessageAt: outboundAt,
+  lastDirection: "out",
+  awaitSource: false,
+  sourceChoice: convo?.sourceChoice || "",
+  meta: { whatsappPhoneNumberId: String(whatsappPhoneNumberId) },
+});
               if (shouldSendMenu) {
                 await sendWhatsAppText({
                   phoneNumberId: String(whatsappPhoneNumberId),
@@ -595,24 +594,57 @@ router.post("/", async (req, res) => {
             continue;
           }
 
-          let greeting = "";
-          if (!convo || isNewDay(convo.lastInteraction)) greeting = "Hi 👋";
+        let greeting = "";
+if (!convo || isNewDay(convo.lastInteraction)) greeting = "Hi 👋";
 
-          history.push({ role: "user", content: text, createdAt: inboundAt });
+let grouped = {};
+try {
+  grouped = await retrieveChunks({
+    db: await connectDB(),
+    clientId: client.clientId,
+    botType,
+    userText: text,
+  });
+} catch (e) {
+  grouped = {};
+  log("warn", "WA retrieveChunks failed", {
+    err: e.message,
+    clientId: client.clientId,
+    from: fromDigits,
+  });
+}
 
-          let assistantMessage = "";
-          try {
-            assistantMessage = await getChatCompletion(history);
-          } catch (err) {
-            log("error", "OpenAI error", { err: err.message, clientId: client.clientId, from: fromDigits });
-            assistantMessage = "⚠️ I'm having trouble right now. Please try again shortly.";
-          }
+const { messages: messagesForOpenAI, meta } = buildChatMessages({
+  rulesPrompt,
+  groupedChunks: grouped,
+  userText: text,
+  sectionsOrder,
+});
 
-          const combined = greeting ? `${greeting}\n\n${assistantMessage}` : assistantMessage;
+if (meta?.code) {
+  log("warn", "WA prompt builder warning", {
+    clientId: client.clientId,
+    from: fromDigits,
+    meta,
+  });
+}
 
-          const outboundAt = new Date();
-          history.push({ role: "assistant", content: assistantMessage, createdAt: outboundAt });
+let assistantMessage = "";
+try {
+  assistantMessage = await getChatCompletion(messagesForOpenAI);
+} catch (err) {
+  log("error", "OpenAI error", {
+    err: err.message,
+    clientId: client.clientId,
+    from: fromDigits,
+  });
+  assistantMessage = "⚠️ I'm having trouble right now. Please try again shortly.";
+}
+const combined = greeting ? `${greeting}\n\n${assistantMessage}` : assistantMessage;
 
+const outboundAt = new Date();
+history.push({ role: "user", content: text, createdAt: inboundAt });
+history.push({ role: "assistant", content: combined, createdAt: outboundAt });
           await upsertConversation({
             clientId: client.clientId,
             userId: fromDigits,

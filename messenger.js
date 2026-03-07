@@ -8,7 +8,7 @@ import { retrieveChunks } from "./services/retrieval.js";
 import { buildChatMessages } from "./services/promptBuilder.js";
 
 import { getChatCompletion } from "./services/openai.js";
-import { SYSTEM_PROMPT } from "./utils/systemPrompt.js";
+import { buildRulesPrompt } from "./utils/systemPrompt.js";
 import { sendMessengerReply, sendMarkAsRead } from "./services/messenger.js";
 import { sendQuotaWarning } from "./sendQuotaWarning.js";
 import Order from "./order.js";
@@ -64,12 +64,10 @@ function normalizeToken(t) {
 // ===============================
 async function ensureIndexes(db) {
   try {
-    // Idempotency store: unique (pageId + eventKey) + TTL
     const col = db.collection("ProcessedEvents");
     await col.createIndex({ pageId: 1, eventKey: 1 }, { unique: true });
-    await col.createIndex({ createdAt: 1 }, { expireAfterSeconds: 60 * 60 * 24 }); // 24h
+    await col.createIndex({ createdAt: 1 }, { expireAfterSeconds: 60 * 60 * 24 });
   } catch (e) {
-    // non-fatal
     console.warn("⚠️ ensureIndexes failed:", e.message);
   }
 }
@@ -81,7 +79,6 @@ async function connectDB() {
     mongoConnected = true;
     log("info", "MongoDB connected");
 
-    // Best-effort index creation
     try {
       const db = mongoClient.db(dbName);
       await ensureIndexes(db);
@@ -101,7 +98,6 @@ function buildEventKey(webhook_event) {
 
   if (mid) return `mid:${String(mid).trim()}`;
 
-  // fallback for text-only events without mid (rare)
   const sender = webhook_event?.sender?.id ? String(webhook_event.sender.id).trim() : "";
   const ts = webhook_event?.timestamp ? String(webhook_event.timestamp).trim() : "";
   const text = webhook_event?.message?.text ? String(webhook_event.message.text).slice(0, 80) : "";
@@ -177,7 +173,6 @@ async function incrementMessageCountForClient(pageId) {
   const clients = db.collection("Clients");
   const pageIdStr = normalizePageId(pageId);
 
-  // Increment only if client exists
   const updateRes = await clients.updateOne(
     { pageId: pageIdStr },
     { $inc: { messageCount: 1 }, $set: { updatedAt: new Date() } }
@@ -242,7 +237,6 @@ async function saveConversation(pageId, userId, history, lastInteraction, source
     return;
   }
 
-  // Ensure clientId exists
   let clientId = client.clientId;
   if (!clientId) {
     clientId = newClientId();
@@ -257,7 +251,7 @@ async function saveConversation(pageId, userId, history, lastInteraction, source
     {
       $set: {
         pageId: pageIdStr,
-        clientId, // ✅ clientId only
+        clientId,
         history,
         lastInteraction,
         source,
@@ -413,7 +407,7 @@ async function createOrderFlow({ pageId, sender_psid, orderSummaryText, channel 
   const fallbackOrderId = `ORD-${Date.now()}`;
 
   const notifyResult = await notifyClientStaffNewOrder({
-    clientId: client.clientId, // ✅ clientId only
+    clientId: client.clientId,
     payload: {
       customerName: waSafeParam(customerName),
       customerPhone: waSafeParam(customerPhone),
@@ -427,7 +421,7 @@ async function createOrderFlow({ pageId, sender_psid, orderSummaryText, channel 
 
   try {
     const order = await Order.create({
-      clientId: client.clientId, // ✅ clientId only
+      clientId: client.clientId,
       channel,
       customer: {
         name: customerName,
@@ -477,7 +471,7 @@ router.get("/", async (req, res) => {
 });
 
 // ===============================
-// Messenger webhook receiver (MESSAGES ONLY — NO COMMENT HANDLING)
+// Messenger webhook receiver
 // ===============================
 router.post("/", async (req, res) => {
   const body = req.body;
@@ -486,13 +480,11 @@ router.post("/", async (req, res) => {
     return res.sendStatus(404);
   }
 
-  // respond fast
   res.status(200).send("EVENT_RECEIVED");
 
   for (const entry of body.entry || []) {
     const pageId = normalizePageId(entry.id);
 
-    // ✅ Only process events for onboarded clients (NO auto-create)
     const clientForEntry = await getClientByPageId(pageId);
     if (!clientForEntry) {
       log("warn", "Webhook event for unknown pageId; ignoring", { pageId });
@@ -501,7 +493,6 @@ router.post("/", async (req, res) => {
     }
     if (clientForEntry.active === false) continue;
 
-    // Track webhook freshness (best effort)
     try {
       const db = await connectDB();
       await db.collection("Clients").updateOne(
@@ -528,7 +519,6 @@ router.post("/", async (req, res) => {
         await logToDb("warn", "messenger", "PageId mismatch between entry.id and recipient.id", metaBase);
       }
 
-      // ✅ Idempotency
       const eventKey = buildEventKey(webhook_event);
       if (eventKey && (await wasProcessed(pageId, eventKey))) {
         log("info", "Skipping duplicate webhook event", { ...metaBase, eventKey });
@@ -537,7 +527,6 @@ router.post("/", async (req, res) => {
       await markProcessed(pageId, eventKey, metaBase);
 
       try {
-        // refresh client doc (ensure latest token/settings)
         const clientDoc = await getClientByPageId(pageId);
         if (!clientDoc) continue;
         if (clientDoc.active === false) continue;
@@ -550,7 +539,6 @@ router.post("/", async (req, res) => {
           });
         }
 
-        // ===== Attachment handler
         if (webhook_event.message?.attachments?.length > 0) {
           await sendMessengerReply(
             sender_psid,
@@ -560,7 +548,6 @@ router.post("/", async (req, res) => {
           continue;
         }
 
-        // ===== Text message
         if (webhook_event.message?.text) {
           const userMessage = webhook_event.message.text;
           const db = await connectDB();
@@ -577,7 +564,6 @@ router.post("/", async (req, res) => {
 
           let convoCheck = await getFreshConvo();
 
-          // Auto-resume bot if timer expired
           if (
             convoCheck?.humanEscalation === true &&
             convoCheck?.botResumeAt &&
@@ -598,7 +584,6 @@ router.post("/", async (req, res) => {
             convoCheck = await getFreshConvo();
           }
 
-          // Resume bot command
           if (userMessage.trim().toLowerCase() === "!bot") {
             await db.collection("Conversations").updateOne(
               { pageId: pageIdStr, userId: sender_psid, source: "messenger" },
@@ -617,33 +602,29 @@ router.post("/", async (req, res) => {
             continue;
           }
 
-          // If human escalation active → ignore bot
           if (convoCheck?.humanEscalation === true) {
             log("info", "Human escalation active; bot ignoring message", metaBase);
             continue;
           }
 
-          // ===============================
-          // Main processing (retrieval + runtime injection)
-          // ===============================
           async function processMessageWithTyping() {
             const db = await connectDB();
 
-            // ✅ RULES ONLY (SYSTEM_PROMPT should be rules, not huge datasets)
-            const rulesPrompt = await SYSTEM_PROMPT({ pageId });
-
-            // Pull fresh client doc once
             const clientDocFresh = await getClientByPageId(pageIdStr);
             if (!clientDocFresh) {
               await sendMessengerReply(sender_psid, "⚠️ Setup issue: client not found.", pageId);
               return;
             }
 
-            const clientId = clientDocFresh.clientId; // ✅ MUST be clientId (string)
-            const botType = clientDocFresh?.botType || "default";
-            const sectionsOrder = clientDocFresh?.sectionsOrder || ["menu", "offers", "hours"];
+            const rulesPrompt = buildRulesPrompt(clientDocFresh);
 
-            // Load conversation (compact history only)
+            const clientId = clientDocFresh.clientId;
+            const botType = clientDocFresh?.knowledgeBotType || "default";
+            const sectionsOrder =
+              Array.isArray(clientDocFresh?.sectionsOrder) && clientDocFresh.sectionsOrder.length
+                ? clientDocFresh.sectionsOrder
+                : ["menu", "offers", "hours"];
+
             const convo = await getConversation(pageId, sender_psid, "messenger");
             const compactHistory = Array.isArray(convo?.history) ? convo.history : [];
 
@@ -662,15 +643,13 @@ router.post("/", async (req, res) => {
               greeting = `Hi ${firstName}, good to see you today 👋`;
             }
 
-            // ✅ Usage check (NO upsert/create)
             const usage = await incrementMessageCountForClient(pageId);
             if (!usage.allowed) {
-              if (usage.reason === "client_not_found") return; // silently ignore unknown clients
+              if (usage.reason === "client_not_found") return;
               await sendMessengerReply(sender_psid, "⚠️ Message limit reached.", pageId);
               return;
             }
 
-            // ✅ Retrieve only relevant slices of data for THIS message
             let grouped = {};
             try {
               grouped = await retrieveChunks({
@@ -685,14 +664,16 @@ router.post("/", async (req, res) => {
               await logToDb("warn", "retrieval", "retrieveChunks failed", { ...metaBase, err: e.message });
             }
 
-            // ✅ Build messages (rules + compact history + runtime data injection)
-         const { messages: messagesForOpenAI, meta } = buildChatMessages({
-  rulesPrompt,
-  groupedChunks: grouped,
-  userText: userMessage,
-  sectionsOrder,
-});
+            const { messages: messagesForOpenAI, meta } = buildChatMessages({
+              rulesPrompt,
+              groupedChunks: grouped,
+              userText: userMessage,
+              sectionsOrder,
+            });
 
+            if (meta?.code) {
+              log("warn", "Prompt builder warning", { ...metaBase, meta });
+            }
 
             let assistantMessage;
             try {
@@ -703,7 +684,6 @@ router.post("/", async (req, res) => {
               assistantMessage = "⚠️ I'm having trouble right now. Please try again shortly.";
             }
 
-            // Flags
             const flags = { human: false, tour: false, order: false };
 
             if (assistantMessage.includes("[Human_request]")) {
@@ -719,7 +699,6 @@ router.post("/", async (req, res) => {
               assistantMessage = assistantMessage.replace("[TOUR_REQUEST]", "").trim();
             }
 
-            // Human escalation
             if (flags.human) {
               const botResumeAt = new Date(Date.now() + 2 * 60 * 60 * 1000);
 
@@ -745,12 +724,13 @@ router.post("/", async (req, res) => {
               );
 
               compactHistory.push({ role: "user", content: userMessage, createdAt: new Date() });
-              compactHistory.push({ role: "assistant", content: assistantMessage, createdAt: new Date() });
+              if (assistantMessage) {
+                compactHistory.push({ role: "assistant", content: assistantMessage, createdAt: new Date() });
+              }
               await saveConversation(pageId, sender_psid, compactHistory, new Date(), "messenger");
               return;
             }
 
-            // Order handling
             if (flags.order) {
               await db.collection("Conversations").updateOne(
                 { pageId: pageIdStr, userId: sender_psid, source: "messenger" },
@@ -793,7 +773,6 @@ router.post("/", async (req, res) => {
               }
             }
 
-            // Tour counter
             if (flags.tour) {
               await db.collection("Conversations").updateOne(
                 { pageId: pageIdStr, userId: sender_psid, source: "messenger" },
@@ -802,7 +781,6 @@ router.post("/", async (req, res) => {
               );
             }
 
-            // Save conversation (ONLY real turns)
             compactHistory.push({ role: "user", content: userMessage, createdAt: new Date() });
             compactHistory.push({ role: "assistant", content: assistantMessage, createdAt: new Date() });
             await saveConversation(pageId, sender_psid, compactHistory, new Date(), "messenger");
@@ -826,7 +804,6 @@ router.post("/", async (req, res) => {
           });
         }
 
-        // ===== Postbacks
         if (webhook_event.postback?.payload) {
           const payload = webhook_event.postback.payload;
 
