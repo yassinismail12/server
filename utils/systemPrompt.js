@@ -23,9 +23,12 @@ LANGUAGE RULES
 
 GROUNDING RULES
 - All business facts must come strictly from the provided business data and retrieved chunks.
+- Business facts include business name, address, location, phone, WhatsApp, email, hours, services, prices, policies, and any other business details.
 - Do not guess missing information.
 - Do not claim anything that is not clearly supported by the provided data.
 - If business data and retrieved chunks do not contain the answer, clearly say you do not have that information.
+- Never use client account fields, user profile fields, owner names, page/account metadata, or internal values as business facts.
+- Never use the client account name as the business name.
 
 IDENTITY / METADATA RULES
 - Do NOT mention internal metadata, account metadata, page names, Instagram usernames, WhatsApp numbers, owner names, system fields, database fields, or platform/account details unless the user explicitly asks for them and they are present in the provided data.
@@ -47,27 +50,12 @@ ANSWER STYLE RULES
 
 function buildClientProfileBlock(clientData = {}) {
   const promptConfig = clientData.promptConfig || {};
-
-  const businessName =
-    safeText(promptConfig.businessName) ||
-    safeText(clientData.businessName) ||
-    "Unknown business";
-
-  const businessType =
-    safeText(promptConfig.businessType) ||
-    safeText(clientData.knowledgeBotType) ||
-    "default";
-
   const tone = safeText(promptConfig.tone) || "friendly";
 
-  const lines = [
-    "CLIENT PROFILE",
-    `- Business Name: ${businessName}`,
-    `- Business Type: ${businessType}`,
-    `- Tone: ${tone}`,
-  ];
-
-  return lines.join("\n");
+  return `
+CLIENT PROFILE
+- Tone: ${tone}
+`.trim();
 }
 
 function buildHumanEscalationBlock(clientData = {}) {
@@ -91,11 +79,6 @@ function buildOrderFlowBlock(clientData = {}) {
   const orderFlow = promptConfig.orderFlow || {};
 
   if (!orderFlow.enabled) return "";
-
-  const businessName =
-    safeText(promptConfig.businessName) ||
-    safeText(clientData.businessName) ||
-    "This business";
 
   const requiredFields = Array.isArray(orderFlow.requiredFields)
     ? orderFlow.requiredFields.filter(Boolean).map((f) => safeText(f))
@@ -130,6 +113,10 @@ ORDER FLOW RULES (CRITICAL)
 - Never ask multiple questions in a single message.
 - If an item has required options and they are missing, ask for the missing option before confirming.
 - Do not show the order summary until ALL required details are collected.
+- In the order summary, every business fact must come from retrieved business data only.
+- For the store/business name specifically, use the real business name only if it exists in retrieved business data.
+- Never use client account name, owner name, promptConfig business name, page name, or any internal metadata as the store/business name.
+- If the business name is not present in retrieved business data, leave the store name generic and do not invent one.
 
 REQUIRED ORDER FIELDS
 ${requiredFieldsBlock}
@@ -138,7 +125,7 @@ CONFIRMATION STEP (MANDATORY)
 After ALL required details are collected, output the summary using exactly this format and labels:
 
 ${summaryTitle}
-${storeLabel}: ${businessName}
+${storeLabel}: <business name from retrieved data, or leave generic if unavailable>
 ${nameLabel}: <name>
 ${phoneLabel}: <phone>
 ${itemsLabel}: <items + quantities + options>
