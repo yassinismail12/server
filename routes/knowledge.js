@@ -490,7 +490,7 @@ router.post("/build", verifyToken, requireClientOwnership, async (req, res) => {
   }
 });
 
-router.post("/upload", verifyToken, requireClientOwnership, upload.single("file"), async (req, res) => {
+router.post("/upload", verifyToken, upload.single("file"), requireClientOwnership, async (req, res) => {
   try {
     const clientId = String(req.body?.clientId || "").trim();
     const sectionRaw = String(req.body?.section || "mixed").trim() || "mixed";
