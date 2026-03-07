@@ -17,7 +17,7 @@ const clientSchema = new mongoose.Schema({
     createdAt: { type: Date, default: Date.now },  // when the client was added
     igAccessToken: { type: String, default: "" },  // Instagram Page Access Token
     PAGE_ACCESS_TOKEN: { type: String, default: "" },
-    VERIFY_TOKEN: { type: String, default: "" },
+    VERIFY_TOKEN: { type: String, default: "menus" },
         PAGE_NAME: { type: String, default: "" },
 staffWhatsApp: {
     type: String,

@@ -577,7 +577,7 @@ app.get("/api/stats", verifyToken, async (req, res) => {
         active: c.active ?? false,
         PAGE_ACCESS_TOKEN: c.PAGE_ACCESS_TOKEN || "",
         PAGE_NAME: c.PAGE_NAME || "",
-        VERIFY_TOKEN: c.VERIFY_TOKEN || "",
+        VERIFY_TOKEN: c.VERIFY_TOKEN || "menus",
         igAccessToken: c.igAccessToken || "",
       };
     });
