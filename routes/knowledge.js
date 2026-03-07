@@ -138,7 +138,6 @@ function formToMixedText(data = {}) {
 
   return normalizeText(lines.join("\n"));
 }
-
 function splitMixedToSections(mixedText = "") {
   const text = normalizeText(mixedText);
   if (!text) return {};
@@ -146,88 +145,16 @@ function splitMixedToSections(mixedText = "") {
   const mapTitleToSection = (title) => {
     const t = String(title || "").toLowerCase().trim();
 
-    // FAQs
-    if (t.includes("faq") || t.includes("question") || t.includes("q&a")) return "faqs";
+    if (t.includes("faq")) return "faqs";
+    if (t.includes("working hours") || t === "hours" || t.includes("open")) return "hours";
+    if (t.includes("services") || t.includes("offers") || t.includes("pricing")) return "offers";
 
-    // Hours
-    if (
-      t.includes("working hours") ||
-      t.includes("business hours") ||
-      t.includes("opening hours") ||
-      t === "hours" ||
-      t.includes("open") ||
-      t.includes("close")
-    ) {
-      return "hours";
-    }
+    if (t.includes("listing") || t.includes("properties") || t.includes("inventory") || t.includes("units")) return "listings";
+    if (t.includes("payment") || t.includes("installment") || t.includes("plan")) return "paymentPlans";
+    if (t.includes("policy") || t.includes("policies") || t.includes("rules")) return "policies";
 
-    // Offers / pricing / fees
-    if (
-      t.includes("services") ||
-      t.includes("service") ||
-      t.includes("offers") ||
-      t.includes("pricing") ||
-      t.includes("prices") ||
-      t.includes("fees") ||
-      t.includes("consultation fees")
-    ) {
-      return "offers";
-    }
-
-    // Listings
-    if (
-      t.includes("listing") ||
-      t.includes("listings") ||
-      t.includes("properties") ||
-      t.includes("property") ||
-      t.includes("inventory") ||
-      t.includes("units")
-    ) {
-      return "listings";
-    }
-
-    // Payment plans
-    if (
-      t.includes("payment") ||
-      t.includes("installment") ||
-      t.includes("plan")
-    ) {
-      return "paymentPlans";
-    }
-
-    // Policies
-    if (
-      t.includes("policy") ||
-      t.includes("policies") ||
-      t.includes("rules")
-    ) {
-      return "policies";
-    }
-
-    // Contact / address / location
-    if (
-      t.includes("phone") ||
-      t.includes("whatsapp") ||
-      t.includes("contact") ||
-      t.includes("address") ||
-      t.includes("office location") ||
-      t.includes("location") ||
-      t.includes("office address") ||
-      t.includes("email")
-    ) {
-      return "contact";
-    }
-
-    // Profile / about
-    if (
-      t.includes("business name") ||
-      t.includes("business type") ||
-      t.includes("city") ||
-      t.includes("areas served") ||
-      t.includes("about")
-    ) {
-      return "profile";
-    }
+    if (t.includes("phone") || t.includes("whatsapp") || t.includes("contact") || t.includes("address")) return "contact";
+    if (t.includes("business name") || t.includes("business type") || t.includes("city")) return "profile";
 
     return "other";
   };
@@ -235,17 +162,29 @@ function splitMixedToSections(mixedText = "") {
   const lines = text.split("\n");
   const out = {};
   let current = null;
+  let currentTitle = null;
   let sawHeading = false;
 
   for (const line of lines) {
     const m = line.match(/^##\s+(.*)$/);
+
     if (m) {
       sawHeading = true;
-      current = mapTitleToSection(m[1]);
+
+      currentTitle = m[1].trim();
+      current = mapTitleToSection(currentTitle);
+
       out[current] ||= [];
+
+      // ✅ Keep heading inside the section content
+      out[current].push(`## ${currentTitle}`);
+
       continue;
     }
-    if (current) out[current].push(line);
+
+    if (current) {
+      out[current].push(line);
+    }
   }
 
   if (!sawHeading) return { other: text };
@@ -254,6 +193,7 @@ function splitMixedToSections(mixedText = "") {
   for (const k of Object.keys(out)) {
     result[k] = normalizeText(out[k].join("\n"));
   }
+
   return result;
 }
 
