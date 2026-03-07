@@ -50,7 +50,7 @@ function buildClientProfileBlock(clientData = {}) {
 
   const businessName =
     safeText(promptConfig.businessName) ||
-    safeText(clientData.name) ||
+    safeText(clientData.businessName) ||
     "Unknown business";
 
   const businessType =
@@ -94,7 +94,7 @@ function buildOrderFlowBlock(clientData = {}) {
 
   const businessName =
     safeText(promptConfig.businessName) ||
-    safeText(clientData.name) ||
+    safeText(clientData.businessName) ||
     "This business";
 
   const requiredFields = Array.isArray(orderFlow.requiredFields)
