@@ -60,15 +60,44 @@ function normalizeText(s) {
 
 function canonicalSectionName(s) {
   const t = String(s || "").toLowerCase().trim();
-  if (["faq", "faqs", "qna"].includes(t)) return "faqs";
-  if (["hour", "hours", "workinghours"].includes(t)) return "hours";
-  if (["service", "services", "offers", "pricing"].includes(t)) return "offers";
+
+  if (["faq", "faqs", "qna", "questions"].includes(t)) return "faqs";
+  if (["hour", "hours", "workinghours", "working hours", "business hours", "opening hours"].includes(t)) return "hours";
+  if (
+    [
+      "service",
+      "services",
+      "offers",
+      "pricing",
+      "prices",
+      "fees",
+      "consultation fees",
+      "consultationfees",
+    ].includes(t)
+  ) {
+    return "offers";
+  }
   if (["listing", "listings", "properties", "units", "inventory"].includes(t)) return "listings";
-  if (["payment", "paymentplans", "plans", "installments"].includes(t)) return "paymentPlans";
+  if (["payment", "paymentplans", "plans", "installments", "payment plans"].includes(t)) return "paymentPlans";
   if (["policy", "policies", "rules"].includes(t)) return "policies";
-  if (["contact", "phone", "whatsapp", "address"].includes(t)) return "contact";
-  if (["profile", "about"].includes(t)) return "profile";
+  if (
+    [
+      "contact",
+      "phone",
+      "whatsapp",
+      "address",
+      "location",
+      "office location",
+      "office address",
+      "email",
+      "contact information",
+    ].includes(t)
+  ) {
+    return "contact";
+  }
+  if (["profile", "about", "business name", "business type", "city", "areas served"].includes(t)) return "profile";
   if (["mixed"].includes(t)) return "mixed";
+
   return t || "mixed";
 }
 
@@ -103,7 +132,6 @@ function formToMixedText(data = {}) {
   push("Phone / WhatsApp", data.phoneWhatsapp);
   push("Services", data.services);
   push("FAQs", data.faqs);
-
   push("Listings", data.listingsSummary);
   push("Payment Plans", data.paymentPlans);
   push("Policies", data.policies);
@@ -118,16 +146,88 @@ function splitMixedToSections(mixedText = "") {
   const mapTitleToSection = (title) => {
     const t = String(title || "").toLowerCase().trim();
 
-    if (t.includes("faq")) return "faqs";
-    if (t.includes("working hours") || t === "hours" || t.includes("open")) return "hours";
-    if (t.includes("services") || t.includes("offers") || t.includes("pricing")) return "offers";
+    // FAQs
+    if (t.includes("faq") || t.includes("question") || t.includes("q&a")) return "faqs";
 
-    if (t.includes("listing") || t.includes("properties") || t.includes("inventory") || t.includes("units")) return "listings";
-    if (t.includes("payment") || t.includes("installment") || t.includes("plan")) return "paymentPlans";
-    if (t.includes("policy") || t.includes("policies") || t.includes("rules")) return "policies";
+    // Hours
+    if (
+      t.includes("working hours") ||
+      t.includes("business hours") ||
+      t.includes("opening hours") ||
+      t === "hours" ||
+      t.includes("open") ||
+      t.includes("close")
+    ) {
+      return "hours";
+    }
 
-    if (t.includes("phone") || t.includes("whatsapp") || t.includes("contact") || t.includes("address")) return "contact";
-    if (t.includes("business name") || t.includes("business type") || t.includes("city")) return "profile";
+    // Offers / pricing / fees
+    if (
+      t.includes("services") ||
+      t.includes("service") ||
+      t.includes("offers") ||
+      t.includes("pricing") ||
+      t.includes("prices") ||
+      t.includes("fees") ||
+      t.includes("consultation fees")
+    ) {
+      return "offers";
+    }
+
+    // Listings
+    if (
+      t.includes("listing") ||
+      t.includes("listings") ||
+      t.includes("properties") ||
+      t.includes("property") ||
+      t.includes("inventory") ||
+      t.includes("units")
+    ) {
+      return "listings";
+    }
+
+    // Payment plans
+    if (
+      t.includes("payment") ||
+      t.includes("installment") ||
+      t.includes("plan")
+    ) {
+      return "paymentPlans";
+    }
+
+    // Policies
+    if (
+      t.includes("policy") ||
+      t.includes("policies") ||
+      t.includes("rules")
+    ) {
+      return "policies";
+    }
+
+    // Contact / address / location
+    if (
+      t.includes("phone") ||
+      t.includes("whatsapp") ||
+      t.includes("contact") ||
+      t.includes("address") ||
+      t.includes("office location") ||
+      t.includes("location") ||
+      t.includes("office address") ||
+      t.includes("email")
+    ) {
+      return "contact";
+    }
+
+    // Profile / about
+    if (
+      t.includes("business name") ||
+      t.includes("business type") ||
+      t.includes("city") ||
+      t.includes("areas served") ||
+      t.includes("about")
+    ) {
+      return "profile";
+    }
 
     return "other";
   };
@@ -278,6 +378,21 @@ function buildUiSummary({
     missingSections: missingSections.map(prettySectionName),
     completeness,
     nextAction,
+  };
+}
+
+function mergePromptConfig(oldConfig = {}, newConfig = {}) {
+  return {
+    ...oldConfig,
+    ...newConfig,
+    humanEscalation: {
+      ...(oldConfig?.humanEscalation || {}),
+      ...(newConfig?.humanEscalation || {}),
+    },
+    orderFlow: {
+      ...(oldConfig?.orderFlow || {}),
+      ...(newConfig?.orderFlow || {}),
+    },
   };
 }
 
@@ -447,7 +562,7 @@ router.get("/status", verifyToken, requireClientOwnership, async (req, res) => {
 
 router.post("/build", verifyToken, requireClientOwnership, async (req, res) => {
   try {
-    const { clientId, inputType, botType, replace } = req.body || {};
+    const { clientId, inputType, botType, replace, promptConfig } = req.body || {};
     if (!clientId) return res.status(400).json({ ok: false, error: "Missing clientId" });
 
     const client = await Client.findOne({ clientId });
@@ -456,6 +571,11 @@ router.post("/build", verifyToken, requireClientOwnership, async (req, res) => {
     const doReplace = Boolean(replace);
 
     if (doReplace) resetClientKnowledgeSources(client);
+
+    // ✅ Save promptConfig so dynamic prompt actually changes per client
+    if (promptConfig && typeof promptConfig === "object") {
+      client.promptConfig = mergePromptConfig(client.promptConfig || {}, promptConfig);
+    }
 
     let fileName = "mixed";
     let content = "";
@@ -483,6 +603,7 @@ router.post("/build", verifyToken, requireClientOwnership, async (req, res) => {
       savedAs: fileName,
       message: built.nextAction,
       build: built,
+      promptConfigSaved: Boolean(promptConfig && typeof promptConfig === "object"),
     });
   } catch (err) {
     console.error("❌ /api/knowledge/build error:", err);
