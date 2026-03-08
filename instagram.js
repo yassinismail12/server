@@ -972,31 +972,7 @@ router.post("/", async (req, res) => {
 
             log("info", "IG bot resumed by staff", { igBusinessId, customerId });
 
-            try {
-              const pageId = clientDoc.resolvedPageId;
-              const pageToken = clientDoc.resolvedPageAccessToken;
-
-              await sendInstagramDM({
-                pageId,
-                pageAccessToken: pageToken,
-                recipientId: customerId,
-                text: "✅ The assistant is back. You can continue chatting now.\n\nتمت إعادة تفعيل المساعد.",
-              });
-
-              await appendTurnIG({
-                igBusinessId,
-                userId: customerId,
-                role: "assistant",
-                content: "✅ The assistant is back. You can continue chatting now.\n\nتمت إعادة تفعيل المساعد.",
-                clientId,
-              });
-            } catch (e) {
-              log("warn", "Failed sending IG resume confirmation after staff !bot", {
-                igBusinessId,
-                customerId,
-                err: e.message,
-              });
-            }
+           
 
             continue;
           }

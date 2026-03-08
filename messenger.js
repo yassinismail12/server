@@ -548,9 +548,19 @@ router.post("/", async (req, res) => {
         // Staff/Page sent messages (echo)
         // Only use !bot from staff/page inbox to resume assistant
         // ===============================
-        if (webhook_event.message?.is_echo === true) {
+               if (webhook_event.message?.is_echo === true) {
+          console.log("MESSENGER ECHO DETECTED:", JSON.stringify(webhook_event, null, 2));
+
           const echoText = webhook_event?.message?.text || "";
-          const targetUserPsid = normalizePsid(webhook_event?.recipient?.id);
+          const senderId = normalizePsid(webhook_event?.sender?.id);
+          const recipientId = normalizePsid(webhook_event?.recipient?.id);
+
+          const targetUserPsid =
+            senderId && senderId !== pageId
+              ? senderId
+              : recipientId && recipientId !== pageId
+              ? recipientId
+              : "";
 
           if (isBotResumeCommand(echoText)) {
             const db = await connectDB();
@@ -560,10 +570,14 @@ router.post("/", async (req, res) => {
               log("warn", "Echo !bot received but target user PSID missing", {
                 pageId: pageIdStr,
                 echoText,
+                senderId,
+                recipientId,
               });
               await logToDb("warn", "messenger", "Echo !bot received but target user PSID missing", {
                 pageId: pageIdStr,
                 echoText,
+                senderId,
+                recipientId,
               });
               continue;
             }
@@ -597,23 +611,8 @@ router.post("/", async (req, res) => {
               pageId: pageIdStr,
               targetUserPsid,
             });
-
-            try {
-              await sendMessengerReply(
-                targetUserPsid,
-                "✅ The assistant is back. You can continue chatting now.\n\nتمت إعادة تفعيل المساعد.",
-                pageId
-              );
-            } catch (e) {
-              log("warn", "Failed sending resume confirmation after staff !bot", {
-                pageId: pageIdStr,
-                targetUserPsid,
-                err: e.message,
-              });
-            }
           }
 
-          // Skip all echo messages so the bot never processes staff/page messages as user input
           continue;
         }
 
