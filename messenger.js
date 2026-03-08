@@ -13,7 +13,7 @@ import { sendMessengerReply, sendMarkAsRead } from "./services/messenger.js";
 import { sendQuotaWarning } from "./sendQuotaWarning.js";
 import Order from "./order.js";
 import { notifyClientStaffNewOrder } from "./utils/notifyClientStaffWhatsApp.js";
-
+import { notifyClientStaffHumanNeeded } from "./utils/notifyClientStaffHumanNeeded.js";
 const router = express.Router();
 
 const mongoClient = new MongoClient(process.env.MONGODB_URI);
@@ -64,9 +64,12 @@ function normalizeToken(t) {
 // ===============================
 async function ensureIndexes(db) {
   try {
-    const col = db.collection("ProcessedEvents");
-    await col.createIndex({ pageId: 1, eventKey: 1 }, { unique: true });
-    await col.createIndex({ createdAt: 1 }, { expireAfterSeconds: 60 * 60 * 24 });
+    const processed = db.collection("ProcessedEvents");
+    await processed.createIndex({ pageId: 1, eventKey: 1 }, { unique: true });
+    await processed.createIndex({ createdAt: 1 }, { expireAfterSeconds: 60 * 60 * 24 });
+
+    const convos = db.collection("Conversations");
+    await convos.createIndex({ pageId: 1, userId: 1, source: 1 });
   } catch (e) {
     console.warn("⚠️ ensureIndexes failed:", e.message);
   }
@@ -126,7 +129,7 @@ async function markProcessed(pageId, eventKey, meta = {}) {
       createdAt: new Date(),
       meta,
     });
-  } catch (e) {
+  } catch {
     // ignore duplicate key errors
   }
 }
@@ -138,11 +141,6 @@ function newClientId() {
   return crypto.randomUUID();
 }
 
-/**
- * Fetch client by pageId.
- * ✅ DOES NOT create placeholder clients.
- * ✅ Ensures clientId exists (backfills) if client is found.
- */
 async function getClientByPageId(pageId) {
   const db = await connectDB();
   const clients = db.collection("Clients");
@@ -164,10 +162,6 @@ async function getClientByPageId(pageId) {
   return client;
 }
 
-/**
- * Increment usage for an existing client.
- * ✅ Does NOT upsert/create new clients.
- */
 async function incrementMessageCountForClient(pageId) {
   const db = await connectDB();
   const clients = db.collection("Clients");
@@ -267,6 +261,43 @@ async function saveConversation(pageId, userId, history, lastInteraction, source
     },
     { upsert: true }
   );
+}
+
+async function resumeConversationByStaff({ pageId, userId, resumedBy = "dashboard" }) {
+  const db = await connectDB();
+  const pageIdStr = normalizePageId(pageId);
+  const userIdStr = normalizePsid(userId);
+
+  if (!pageIdStr || !userIdStr) {
+    throw new Error("Missing pageId or userId");
+  }
+
+  await db.collection("Conversations").updateOne(
+    { pageId: pageIdStr, userId: userIdStr, source: "messenger" },
+    {
+      $set: {
+        pageId: pageIdStr,
+        userId: userIdStr,
+        source: "messenger",
+        humanEscalation: false,
+        botResumeAt: null,
+        resumedBy,
+        resumedAt: new Date(),
+        updatedAt: new Date(),
+      },
+      $setOnInsert: {
+        history: [],
+        lastInteraction: new Date(),
+        humanRequestCount: 0,
+        tourRequestCount: 0,
+        orderRequestCount: 0,
+        createdAt: new Date(),
+      },
+    },
+    { upsert: true }
+  );
+
+  return { ok: true, pageId: pageIdStr, userId: userIdStr };
 }
 
 // ===============================
@@ -374,10 +405,6 @@ function waSafeParam(text) {
     .slice(0, 1024);
 }
 
-function isBotResumeCommand(text) {
-  return String(text || "").trim().toLowerCase() === "!bot";
-}
-
 // ===============================
 // Order flow
 // ===============================
@@ -475,6 +502,34 @@ router.get("/", async (req, res) => {
 });
 
 // ===============================
+// Manual per-conversation resume
+// Call from dashboard / admin tool
+// body: { pageId, userId }
+// ===============================
+router.post("/resume-conversation", express.json(), async (req, res) => {
+  try {
+    const pageId = normalizePageId(req.body?.pageId);
+    const userId = normalizePsid(req.body?.userId);
+
+    if (!pageId || !userId) {
+      return res.status(400).json({ ok: false, error: "Missing pageId or userId" });
+    }
+
+    const result = await resumeConversationByStaff({
+      pageId,
+      userId,
+      resumedBy: "dashboard",
+    });
+
+    log("info", "Conversation resumed manually", result);
+    return res.json(result);
+  } catch (e) {
+    log("error", "resume-conversation failed", { err: e.message });
+    return res.status(500).json({ ok: false, error: e.message });
+  }
+});
+
+// ===============================
 // Messenger webhook receiver
 // ===============================
 router.post("/", async (req, res) => {
@@ -544,75 +599,10 @@ router.post("/", async (req, res) => {
           });
         }
 
-        // ===============================
-        // Staff/Page sent messages (echo)
-        // Only use !bot from staff/page inbox to resume assistant
-        // ===============================
-               if (webhook_event.message?.is_echo === true) {
-          console.log("MESSENGER ECHO DETECTED:", JSON.stringify(webhook_event, null, 2));
-
-          const echoText = webhook_event?.message?.text || "";
-          const senderId = normalizePsid(webhook_event?.sender?.id);
-          const recipientId = normalizePsid(webhook_event?.recipient?.id);
-
-          const targetUserPsid =
-            senderId && senderId !== pageId
-              ? senderId
-              : recipientId && recipientId !== pageId
-              ? recipientId
-              : "";
-
-          if (isBotResumeCommand(echoText)) {
-            const db = await connectDB();
-            const pageIdStr = normalizePageId(pageId);
-
-            if (!targetUserPsid) {
-              log("warn", "Echo !bot received but target user PSID missing", {
-                pageId: pageIdStr,
-                echoText,
-                senderId,
-                recipientId,
-              });
-              await logToDb("warn", "messenger", "Echo !bot received but target user PSID missing", {
-                pageId: pageIdStr,
-                echoText,
-                senderId,
-                recipientId,
-              });
-              continue;
-            }
-
-            await db.collection("Conversations").updateOne(
-              { pageId: pageIdStr, userId: targetUserPsid, source: "messenger" },
-              {
-                $set: {
-                  humanEscalation: false,
-                  botResumeAt: null,
-                  resumedBy: "staff",
-                  resumedAt: new Date(),
-                  updatedAt: new Date(),
-                },
-                $setOnInsert: {
-                  pageId: pageIdStr,
-                  userId: targetUserPsid,
-                  source: "messenger",
-                  history: [],
-                  lastInteraction: new Date(),
-                  humanRequestCount: 0,
-                  tourRequestCount: 0,
-                  orderRequestCount: 0,
-                  createdAt: new Date(),
-                },
-              },
-              { upsert: true }
-            );
-
-            log("info", "Bot resumed by staff", {
-              pageId: pageIdStr,
-              targetUserPsid,
-            });
-          }
-
+        // Skip all echo messages from the page/staff side.
+        // Manual resume is now done by POST /resume-conversation.
+        if (webhook_event.message?.is_echo === true) {
+          log("info", "Skipping messenger echo event", metaBase);
           continue;
         }
 
@@ -659,12 +649,6 @@ router.post("/", async (req, res) => {
 
             log("info", "Bot auto-resumed (timer)", metaBase);
             convoCheck = await getFreshConvo();
-          }
-
-          // Customer cannot resume bot anymore
-          if (isBotResumeCommand(userMessage)) {
-            log("info", "Customer sent !bot but only staff can resume bot", metaBase);
-            continue;
           }
 
           if (convoCheck?.humanEscalation === true) {
@@ -764,38 +748,71 @@ router.post("/", async (req, res) => {
               assistantMessage = assistantMessage.replace("[TOUR_REQUEST]", "").trim();
             }
 
-            if (flags.human) {
-              const botResumeAt = new Date(Date.now() + 2 * 60 * 60 * 1000);
+  if (flags.human) {
+  const botResumeAt = new Date(Date.now() + 2 * 60 * 60 * 1000);
 
-              await db.collection("Conversations").updateOne(
-                { pageId: pageIdStr, userId: sender_psid, source: "messenger" },
-                {
-                  $set: {
-                    humanEscalation: true,
-                    botResumeAt,
-                    humanEscalationStartedAt: new Date(),
-                  },
-                  $inc: { humanRequestCount: 1 },
-                },
-                { upsert: true }
-              );
+  await db.collection("Conversations").updateOne(
+    { pageId: pageIdStr, userId: sender_psid, source: "messenger" },
+    {
+      $set: {
+        humanEscalation: true,
+        botResumeAt,
+        humanEscalationStartedAt: new Date(),
+        updatedAt: new Date(),
+      },
+      $inc: { humanRequestCount: 1 },
+    },
+    { upsert: true }
+  );
 
-              log("warn", "Human escalation triggered", metaBase);
+  log("warn", "Human escalation triggered", metaBase);
 
-              await sendMessengerReply(
-                sender_psid,
-                "👤 A human agent will take over shortly.\nThe assistant will return when staff reactivate it.\n\nسيقوم أحد موظفي الدعم بالرد عليك قريبًا وسيعود المساعد عند إعادة تفعيله من قبل الموظف.",
-                pageId
-              );
+  try {
+    const notifyResult = await notifyClientStaffHumanNeeded({
+      clientId: clientDocFresh.clientId,
+      pageId: pageIdStr,
+      userId: sender_psid,
+    });
 
-              compactHistory.push({ role: "user", content: userMessage, createdAt: new Date() });
-              if (assistantMessage) {
-                compactHistory.push({ role: "assistant", content: assistantMessage, createdAt: new Date() });
-              }
-              await saveConversation(pageId, sender_psid, compactHistory, new Date(), "messenger");
-              return;
-            }
+    log("info", "Human escalation staff notify result", {
+      pageId: pageIdStr,
+      userId: sender_psid,
+      notifyResult,
+    });
 
+    await logToDb("info", "messenger", "Human escalation staff notify result", {
+      pageId: pageIdStr,
+      userId: sender_psid,
+      notifyResult,
+    });
+  } catch (err) {
+    log("warn", "Human escalation notify failed", {
+      pageId: pageIdStr,
+      userId: sender_psid,
+      err: err.message,
+    });
+
+    await logToDb("warn", "messenger", "Human escalation notify failed", {
+      pageId: pageIdStr,
+      userId: sender_psid,
+      err: err.message,
+    });
+  }
+
+  await sendMessengerReply(
+    sender_psid,
+    "👤 A human agent will take over shortly.\nThe assistant will return when staff reactivate it from the dashboard.\n\nسيقوم أحد موظفي الدعم بالرد عليك قريبًا وسيعود المساعد عند إعادة تفعيله من لوحة التحكم.",
+    pageId
+  );
+
+  compactHistory.push({ role: "user", content: userMessage, createdAt: new Date() });
+  if (assistantMessage) {
+    compactHistory.push({ role: "assistant", content: assistantMessage, createdAt: new Date() });
+  }
+
+  await saveConversation(pageId, sender_psid, compactHistory, new Date(), "messenger");
+  return;
+}
             if (flags.order) {
               await db.collection("Conversations").updateOne(
                 { pageId: pageIdStr, userId: sender_psid, source: "messenger" },

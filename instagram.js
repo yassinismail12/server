@@ -17,7 +17,7 @@ import express from "express";
 import fetch from "node-fetch";
 import { MongoClient } from "mongodb";
 import jwt from "jsonwebtoken";
-
+import { notifyClientStaffHumanNeeded } from "./utils/notifyClientStaffHumanNeeded.js";
 import { retrieveChunks } from "./services/retrieval.js";
 import { buildChatMessages } from "./services/promptBuilder.js";
 
@@ -972,7 +972,31 @@ router.post("/", async (req, res) => {
 
             log("info", "IG bot resumed by staff", { igBusinessId, customerId });
 
-           
+            try {
+              const pageId = clientDoc.resolvedPageId;
+              const pageToken = clientDoc.resolvedPageAccessToken;
+
+              await sendInstagramDM({
+                pageId,
+                pageAccessToken: pageToken,
+                recipientId: customerId,
+                text: "✅ The assistant is back. You can continue chatting now.\n\nتمت إعادة تفعيل المساعد.",
+              });
+
+              await appendTurnIG({
+                igBusinessId,
+                userId: customerId,
+                role: "assistant",
+                content: "✅ The assistant is back. You can continue chatting now.\n\nتمت إعادة تفعيل المساعد.",
+                clientId,
+              });
+            } catch (e) {
+              log("warn", "Failed sending IG resume confirmation after staff !bot", {
+                igBusinessId,
+                customerId,
+                err: e.message,
+              });
+            }
 
             continue;
           }
@@ -1179,35 +1203,93 @@ router.post("/", async (req, res) => {
         compactHistory.push({ role: "user", content: userText, createdAt: new Date() });
 
         // Human escalation
-        if (flags.human) {
-          const botResumeAt = new Date(Date.now() + 2 * 60 * 60 * 1000);
+       if (flags.human) {
+  const botResumeAt = new Date(Date.now() + 2 * 60 * 60 * 1000);
 
-          await db.collection("Conversations").updateOne(
-            { igBusinessId: normalizeId(igBusinessId), userId: senderId, source: "instagram" },
-            {
-              $set: { humanEscalation: true, botResumeAt, humanEscalationStartedAt: new Date() },
-              $inc: { humanRequestCount: 1 },
-            },
-            { upsert: true }
-          );
+  await db.collection("Conversations").updateOne(
+    { igBusinessId: normalizeId(igBusinessId), userId: senderId, source: "instagram" },
+    {
+      $set: {
+        humanEscalation: true,
+        botResumeAt,
+        humanEscalationStartedAt: new Date(),
+        updatedAt: new Date(),
+      },
+      $inc: { humanRequestCount: 1 },
+    },
+    { upsert: true }
+  );
 
-          const msg =
-            "👤 A human agent will take over shortly.\nThe assistant will return when staff reactivate it.\n\nسيقوم أحد موظفي الدعم بالرد عليك قريبًا وسيعود المساعد عند إعادة تفعيله من قبل الموظف.";
+  log("warn", "Instagram human escalation triggered", {
+    igBusinessId: normalizeId(igBusinessId),
+    userId: senderId,
+    pageId,
+    clientId,
+  });
 
-          await sendInstagramDM({
-            pageId,
-            pageAccessToken: pageToken,
-            recipientId: senderId,
-            text: msg,
-          });
+  try {
+    const notifyResult = await notifyClientStaffHumanNeeded({
+      clientId,
+      pageId,
+      userId: senderId,
+    });
 
-          compactHistory.push({ role: "assistant", content: assistantMessage, createdAt: new Date() });
-          await saveConversationIG(igBusinessId, senderId, compactHistory, new Date(), clientId, "instagram");
+    log("info", "Instagram human escalation staff notify result", {
+      igBusinessId: normalizeId(igBusinessId),
+      userId: senderId,
+      pageId,
+      clientId,
+      notifyResult,
+    });
 
-          await appendTurnIG({ igBusinessId, userId: senderId, role: "assistant", content: msg, clientId });
+    await logToDb("info", "instagram", "Instagram human escalation staff notify result", {
+      igBusinessId: normalizeId(igBusinessId),
+      userId: senderId,
+      pageId,
+      clientId,
+      notifyResult,
+    });
+  } catch (err) {
+    log("warn", "Instagram human escalation notify failed", {
+      igBusinessId: normalizeId(igBusinessId),
+      userId: senderId,
+      pageId,
+      clientId,
+      err: err.message,
+    });
 
-          continue;
-        }
+    await logToDb("warn", "instagram", "Instagram human escalation notify failed", {
+      igBusinessId: normalizeId(igBusinessId),
+      userId: senderId,
+      pageId,
+      clientId,
+      err: err.message,
+    });
+  }
+
+  const msg =
+    "👤 A human agent will take over shortly.\nThe assistant will return when staff reactivate it from the dashboard.\n\nسيقوم أحد موظفي الدعم بالرد عليك قريبًا وسيعود المساعد عند إعادة تفعيله من لوحة التحكم.";
+
+  await sendInstagramDM({
+    pageId,
+    pageAccessToken: pageToken,
+    recipientId: senderId,
+    text: msg,
+  });
+
+  compactHistory.push({ role: "assistant", content: assistantMessage, createdAt: new Date() });
+  await saveConversationIG(igBusinessId, senderId, compactHistory, new Date(), clientId, "instagram");
+
+  await appendTurnIG({
+    igBusinessId,
+    userId: senderId,
+    role: "assistant",
+    content: msg,
+    clientId,
+  });
+
+  continue;
+}
 
         // Order handling
         if (flags.order) {
