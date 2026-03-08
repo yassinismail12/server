@@ -374,6 +374,10 @@ function waSafeParam(text) {
     .slice(0, 1024);
 }
 
+function isBotResumeCommand(text) {
+  return String(text || "").trim().toLowerCase() === "!bot";
+}
+
 // ===============================
 // Order flow
 // ===============================
@@ -512,6 +516,7 @@ router.post("/", async (req, res) => {
         psid: sender_psid,
         hasMessage: Boolean(webhook_event?.message),
         hasPostback: Boolean(webhook_event?.postback),
+        isEcho: Boolean(webhook_event?.message?.is_echo),
       };
 
       if (recipient_page_id && recipient_page_id !== pageId) {
@@ -537,6 +542,79 @@ router.post("/", async (req, res) => {
             ...metaBase,
             clientPageId: clientDoc.pageId,
           });
+        }
+
+        // ===============================
+        // Staff/Page sent messages (echo)
+        // Only use !bot from staff/page inbox to resume assistant
+        // ===============================
+        if (webhook_event.message?.is_echo === true) {
+          const echoText = webhook_event?.message?.text || "";
+          const targetUserPsid = normalizePsid(webhook_event?.recipient?.id);
+
+          if (isBotResumeCommand(echoText)) {
+            const db = await connectDB();
+            const pageIdStr = normalizePageId(pageId);
+
+            if (!targetUserPsid) {
+              log("warn", "Echo !bot received but target user PSID missing", {
+                pageId: pageIdStr,
+                echoText,
+              });
+              await logToDb("warn", "messenger", "Echo !bot received but target user PSID missing", {
+                pageId: pageIdStr,
+                echoText,
+              });
+              continue;
+            }
+
+            await db.collection("Conversations").updateOne(
+              { pageId: pageIdStr, userId: targetUserPsid, source: "messenger" },
+              {
+                $set: {
+                  humanEscalation: false,
+                  botResumeAt: null,
+                  resumedBy: "staff",
+                  resumedAt: new Date(),
+                  updatedAt: new Date(),
+                },
+                $setOnInsert: {
+                  pageId: pageIdStr,
+                  userId: targetUserPsid,
+                  source: "messenger",
+                  history: [],
+                  lastInteraction: new Date(),
+                  humanRequestCount: 0,
+                  tourRequestCount: 0,
+                  orderRequestCount: 0,
+                  createdAt: new Date(),
+                },
+              },
+              { upsert: true }
+            );
+
+            log("info", "Bot resumed by staff", {
+              pageId: pageIdStr,
+              targetUserPsid,
+            });
+
+            try {
+              await sendMessengerReply(
+                targetUserPsid,
+                "✅ The assistant is back. You can continue chatting now.\n\nتمت إعادة تفعيل المساعد.",
+                pageId
+              );
+            } catch (e) {
+              log("warn", "Failed sending resume confirmation after staff !bot", {
+                pageId: pageIdStr,
+                targetUserPsid,
+                err: e.message,
+              });
+            }
+          }
+
+          // Skip all echo messages so the bot never processes staff/page messages as user input
+          continue;
         }
 
         if (webhook_event.message?.attachments?.length > 0) {
@@ -584,21 +662,9 @@ router.post("/", async (req, res) => {
             convoCheck = await getFreshConvo();
           }
 
-          if (userMessage.trim().toLowerCase() === "!bot") {
-            await db.collection("Conversations").updateOne(
-              { pageId: pageIdStr, userId: sender_psid, source: "messenger" },
-              {
-                $set: {
-                  humanEscalation: false,
-                  botResumeAt: null,
-                  resumedBy: "customer",
-                  resumedAt: new Date(),
-                },
-              },
-              { upsert: true }
-            );
-
-            await sendMessengerReply(sender_psid, "✅ Bot is reactivated!", pageId);
+          // Customer cannot resume bot anymore
+          if (isBotResumeCommand(userMessage)) {
+            log("info", "Customer sent !bot but only staff can resume bot", metaBase);
             continue;
           }
 
@@ -719,7 +785,7 @@ router.post("/", async (req, res) => {
 
               await sendMessengerReply(
                 sender_psid,
-                "👤 A human agent will take over shortly.\nYou can type !bot anytime to return to the assistant.\n\nسيقوم أحد موظفي الدعم بالرد عليك قريبًا.",
+                "👤 A human agent will take over shortly.\nThe assistant will return when staff reactivate it.\n\nسيقوم أحد موظفي الدعم بالرد عليك قريبًا وسيعود المساعد عند إعادة تفعيله من قبل الموظف.",
                 pageId
               );
 
