@@ -1,20 +1,17 @@
 // instagram.js (FULL — Messenger parity + memory + WhatsApp order + human escalation)
 // ✅ No auto-create clients from webhook
 // ✅ Idempotency store (ProcessedEventsIG) unique(igBusinessId + eventKey) + TTL
-// ✅ ECHO EVENTS: DO NOT AI-REPLY (avoid loops) BUT DO RECORD THEM IN CONVERSATION
+// ✅ ECHO EVENTS: DO NOT AI-REPLY (avoid loops)
+// ✅ STAFF !bot FROM PAGE/ECHO: resumes bot for that customer
+// ✅ Other echo events are recorded in conversation
 // ✅ Only AI-process inbound USER TEXT DMs
 // ✅ Retrieval + runtime injection (same style as messenger.js)
 // ✅ Memory: inject last N conversation turns into OpenAI
 // ✅ Flags: [Human_request], [ORDER_REQUEST], [TOUR_REQUEST]
-// ✅ Human escalation: pause bot + allow "!bot" resume
+// ✅ Human escalation: pause bot; customer cannot resume with !bot
 // ✅ Order -> WhatsApp notify (NO ObjectId cast issues) + Order.create
 // ✅ Tour -> email
 // ✅ Reply via correct endpoint: POST /{PAGE_ID}/messages?access_token=...
-//
-// ✅ NEW FOR APP REVIEW:
-// - Secure review endpoints: /review/profile, /review/media, /review/send-dm
-// - Persist last inbound sender so you can "reply from dashboard"
-// - Store IG account identity fields into client doc (best-effort): igUsername/igName/igProfilePicUrl
 
 import express from "express";
 import fetch from "node-fetch";
@@ -106,6 +103,10 @@ function safeJsonParse(text) {
   } catch {
     return null;
   }
+}
+
+function isBotResumeCommand(text) {
+  return String(text || "").trim().toLowerCase() === "!bot";
 }
 
 // ===============================
@@ -922,40 +923,114 @@ router.post("/", async (req, res) => {
         continue;
       }
 
-      // ✅ 1) ECHO: DO NOT AI-REPLY (avoid loops) BUT RECORD IT
-      if (isEcho) {
-        log("info", "Echo event recorded (no AI)", { igBusinessId, eventKey });
-
-        // In echo events, recipientId is usually the CUSTOMER
-        const customerId = normalizeId(recipientId);
-        if (customerId && msgText) {
-          try {
-            await appendTurnIG({
-              igBusinessId,
-              userId: customerId,
-              role: "assistant",
-              content: msgText,
-              clientId,
-            });
-          } catch (e) {
-            log("warn", "Failed to record echo to conversation", { igBusinessId, eventKey, err: e.message });
-          }
-        }
-        continue;
-      }
-
-      // ✅ 2) If not echo and not inbound user text, ignore (no AI + nothing to record)
-      if (!isInboundUserText(igBusinessId, webhook_event)) {
-        log("info", "Non-inbound/non-text IG event ignored", { igBusinessId, eventKey, senderId, recipientId });
-        continue;
-      }
-
-      const userText = msgText;
-
       try {
+        const db = await connectDB();
+
+        // ✅ 1) ECHO: DO NOT AI-REPLY
+        // Staff can type !bot from the inbox/page side to resume the assistant.
+        if (isEcho) {
+          const customerId = normalizeId(recipientId);
+
+          if (isBotResumeCommand(msgText)) {
+            if (!customerId) {
+              log("warn", "IG echo !bot received but target customer missing", {
+                igBusinessId,
+                eventKey,
+              });
+              await logToDb("warn", "instagram", "IG echo !bot received but target customer missing", {
+                igBusinessId,
+                eventKey,
+              });
+              continue;
+            }
+
+            await db.collection("Conversations").updateOne(
+              { igBusinessId: normalizeId(igBusinessId), userId: customerId, source: "instagram" },
+              {
+                $set: {
+                  igBusinessId: normalizeId(igBusinessId),
+                  clientId,
+                  userId: customerId,
+                  source: "instagram",
+                  humanEscalation: false,
+                  botResumeAt: null,
+                  resumedBy: "staff",
+                  resumedAt: new Date(),
+                  updatedAt: new Date(),
+                  lastInteraction: new Date(),
+                },
+                $setOnInsert: {
+                  history: [],
+                  humanRequestCount: 0,
+                  tourRequestCount: 0,
+                  orderRequestCount: 0,
+                  createdAt: new Date(),
+                },
+              },
+              { upsert: true }
+            );
+
+            log("info", "IG bot resumed by staff", { igBusinessId, customerId });
+
+            try {
+              const pageId = clientDoc.resolvedPageId;
+              const pageToken = clientDoc.resolvedPageAccessToken;
+
+              await sendInstagramDM({
+                pageId,
+                pageAccessToken: pageToken,
+                recipientId: customerId,
+                text: "✅ The assistant is back. You can continue chatting now.\n\nتمت إعادة تفعيل المساعد.",
+              });
+
+              await appendTurnIG({
+                igBusinessId,
+                userId: customerId,
+                role: "assistant",
+                content: "✅ The assistant is back. You can continue chatting now.\n\nتمت إعادة تفعيل المساعد.",
+                clientId,
+              });
+            } catch (e) {
+              log("warn", "Failed sending IG resume confirmation after staff !bot", {
+                igBusinessId,
+                customerId,
+                err: e.message,
+              });
+            }
+
+            continue;
+          }
+
+          // Record normal outbound echo text, but never AI process it
+          log("info", "Echo event recorded (no AI)", { igBusinessId, eventKey });
+
+          if (customerId && msgText) {
+            try {
+              await appendTurnIG({
+                igBusinessId,
+                userId: customerId,
+                role: "assistant",
+                content: msgText,
+                clientId,
+              });
+            } catch (e) {
+              log("warn", "Failed to record echo to conversation", { igBusinessId, eventKey, err: e.message });
+            }
+          }
+
+          continue;
+        }
+
+        // ✅ 2) If not echo and not inbound user text, ignore
+        if (!isInboundUserText(igBusinessId, webhook_event)) {
+          log("info", "Non-inbound/non-text IG event ignored", { igBusinessId, eventKey, senderId, recipientId });
+          continue;
+        }
+
+        const userText = msgText;
+
         // Track webhook freshness + store last inbound sender for review DM reply
         try {
-          const db = await connectDB();
           await db.collection("Clients").updateOne(
             { _id: clientDoc._id },
             {
@@ -985,8 +1060,6 @@ router.post("/", async (req, res) => {
           continue;
         }
 
-        const db = await connectDB();
-
         // ===== Conversation checks (human escalation like messenger.js)
         const getFreshConvo = async () =>
           db.collection("Conversations").findOne({
@@ -1011,36 +1084,14 @@ router.post("/", async (req, res) => {
           convoCheck = await getFreshConvo();
         }
 
-        // Resume bot command
-        if (userText.trim().toLowerCase() === "!bot") {
-          await db.collection("Conversations").updateOne(
-            { igBusinessId: normalizeId(igBusinessId), userId: senderId, source: "instagram" },
-            { $set: { humanEscalation: false, botResumeAt: null, resumedBy: "customer", resumedAt: new Date() } },
-            { upsert: true }
-          );
-
-          await sendInstagramDM({
-            pageId,
-            pageAccessToken: pageToken,
-            recipientId: senderId,
-            text: "✅ Bot is reactivated!",
-          });
-
-          // record outbound immediately
-          await appendTurnIG({
-            igBusinessId,
-            userId: senderId,
-            role: "assistant",
-            content: "✅ Bot is reactivated!",
-            clientId,
-          });
-
+        // Customer cannot resume bot anymore
+        if (isBotResumeCommand(userText)) {
+          log("info", "Customer sent !bot on IG but only staff can resume bot", metaBase);
           continue;
         }
 
-        // If human escalation active → ignore bot (but you still may want to record inbound)
+        // If human escalation active → ignore bot, but record inbound
         if (convoCheck?.humanEscalation === true) {
-          // ✅ record inbound user message even when bot is paused
           await appendTurnIG({
             igBusinessId,
             userId: senderId,
@@ -1056,9 +1107,9 @@ router.post("/", async (req, res) => {
         // ===============================
         // Main processing (retrieval + runtime injection + MEMORY)
         // ===============================
-      const rulesPrompt = buildRulesPrompt(clientDoc);
+        const rulesPrompt = buildRulesPrompt(clientDoc);
 
-      const botType = clientDoc?.knowledgeBotType || "default";
+        const botType = clientDoc?.knowledgeBotType || "default";
         const sectionsOrder = clientDoc?.sectionsOrder || ["menu", "offers", "hours"];
 
         // load conversation history from DB
@@ -1108,15 +1159,16 @@ router.post("/", async (req, res) => {
         }
 
         // build base messages
-      const { messages: baseMessages, meta } = buildChatMessages({
-  rulesPrompt,
-  groupedChunks: grouped,
-  userText,
-  sectionsOrder,
-});
-if (meta?.code) {
-  log("warn", "IG prompt builder warning", { ...metaBase, meta });
-}
+        const { messages: baseMessages, meta } = buildChatMessages({
+          rulesPrompt,
+          groupedChunks: grouped,
+          userText,
+          sectionsOrder,
+        });
+
+        if (meta?.code) {
+          log("warn", "IG prompt builder warning", { ...metaBase, meta });
+        }
 
         // inject memory
         const messagesForOpenAI = injectHistory(baseMessages, compactHistory);
@@ -1147,7 +1199,7 @@ if (meta?.code) {
           assistantMessage = assistantMessage.replace("[TOUR_REQUEST]", "").trim();
         }
 
-        // Record inbound user message (always)
+        // Record inbound user message
         compactHistory.push({ role: "user", content: userText, createdAt: new Date() });
 
         // Human escalation
@@ -1164,7 +1216,7 @@ if (meta?.code) {
           );
 
           const msg =
-            "👤 A human agent will take over shortly.\nYou can type !bot anytime to return to the assistant.\n\nسيقوم أحد موظفي الدعم بالرد عليك قريبًا.";
+            "👤 A human agent will take over shortly.\nThe assistant will return when staff reactivate it.\n\nسيقوم أحد موظفي الدعم بالرد عليك قريبًا وسيعود المساعد عند إعادة تفعيله من قبل الموظف.";
 
           await sendInstagramDM({
             pageId,
@@ -1176,7 +1228,6 @@ if (meta?.code) {
           compactHistory.push({ role: "assistant", content: assistantMessage, createdAt: new Date() });
           await saveConversationIG(igBusinessId, senderId, compactHistory, new Date(), clientId, "instagram");
 
-          // also record the actual outbound text we sent
           await appendTurnIG({ igBusinessId, userId: senderId, role: "assistant", content: msg, clientId });
 
           continue;
@@ -1254,18 +1305,18 @@ if (meta?.code) {
           }
         }
 
-        // Save conversation (stores AI output in history)
-   const combinedMessage = greeting ? `${greeting}\n\n${assistantMessage}` : assistantMessage;
+        const combinedMessage = greeting ? `${greeting}\n\n${assistantMessage}` : assistantMessage;
 
-compactHistory.push({ role: "assistant", content: combinedMessage, createdAt: new Date() });
-await saveConversationIG(igBusinessId, senderId, compactHistory, new Date(), clientId, "instagram");
+        compactHistory.push({ role: "assistant", content: combinedMessage, createdAt: new Date() });
+        await saveConversationIG(igBusinessId, senderId, compactHistory, new Date(), clientId, "instagram");
 
-await sendInstagramDM({
-  pageId,
-  pageAccessToken: pageToken,
-  recipientId: senderId,
-  text: combinedMessage,
-});  } catch (error) {
+        await sendInstagramDM({
+          pageId,
+          pageAccessToken: pageToken,
+          recipientId: senderId,
+          text: combinedMessage,
+        });
+      } catch (error) {
         log("error", "IG handler error", { ...metaBase, err: error.message });
         await logToDb("error", "instagram", "IG handler error", { ...metaBase, err: error.message });
 
@@ -1283,7 +1334,13 @@ await sendInstagramDM({
               text: msg,
             });
 
-            await appendTurnIG({ igBusinessId, userId: senderId, role: "assistant", content: msg, clientId: clientDoc?.clientId });
+            await appendTurnIG({
+              igBusinessId,
+              userId: senderId,
+              role: "assistant",
+              content: msg,
+              clientId: clientDoc?.clientId,
+            });
           }
         } catch {}
       }
