@@ -772,6 +772,7 @@ router.post("/", async (req, res) => {
       clientId: clientDocFresh.clientId,
       pageId: pageIdStr,
       userId: sender_psid,
+      source: "messenger"
     });
 
     log("info", "Human escalation staff notify result", {

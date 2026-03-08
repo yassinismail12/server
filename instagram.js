@@ -1232,6 +1232,7 @@ router.post("/", async (req, res) => {
       clientId,
       pageId,
       userId: senderId,
+      source: "instagram",
     });
 
     log("info", "Instagram human escalation staff notify result", {
