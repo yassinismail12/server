@@ -59,10 +59,7 @@ export async function notifyClientStaffHumanNeeded({ clientId, pageId, userId })
   }
 
   const dashboardBase = String(process.env.DASHBOARD_URL || "").replace(/\/+$/, "");
-  const openLink = dashboardBase
-    ? `${dashboardBase}/conversations?pageId=${encodeURIComponent(pageId)}&userId=${encodeURIComponent(userId)}`
-    : "";
-
+ const openLink = dashboardBase || "";
   const text = [
     "Bot help needed.",
     `User ID: ${userId}`,

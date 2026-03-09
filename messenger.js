@@ -774,12 +774,7 @@ router.post("/", async (req, res) => {
       userId: sender_psid,
       source: "messenger"
     });
-
-    log("info", "Human escalation staff notify result", {
-      pageId: pageIdStr,
-      userId: sender_psid,
-      notifyResult,
-    });
+console.log("HUMAN ESC FULL RESULT:", JSON.stringify(notifyResult, null, 2));
 
     await logToDb("info", "messenger", "Human escalation staff notify result", {
       pageId: pageIdStr,
