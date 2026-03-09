@@ -33,7 +33,7 @@ function uniqueValidNumbers(arr = []) {
   return out;
 }
 
-export async function notifyClientStaffHumanNeeded({ clientId, pageId, userId }) {
+export async function notifyClientStaffHumanNeeded({ clientId, pageId, userId, source }) {
   const db = await connectDB();
 
   const client = await db.collection("Clients").findOne({ clientId });
@@ -64,6 +64,7 @@ export async function notifyClientStaffHumanNeeded({ clientId, pageId, userId })
     "Bot help needed.",
     `User ID: ${userId}`,
     openLink ? `Open: ${openLink}` : null,
+    `source: ${source}`
   ]
     .filter(Boolean)
     .join("\n");

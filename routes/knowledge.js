@@ -61,8 +61,28 @@ function normalizeText(s) {
 function canonicalSectionName(s) {
   const t = String(s || "").toLowerCase().trim();
 
-  if (["faq", "faqs", "qna", "questions"].includes(t)) return "faqs";
-  if (["hour", "hours", "workinghours", "working hours", "business hours", "opening hours"].includes(t)) return "hours";
+  // FAQs
+  if (
+    ["faq", "faqs", "qna", "questions", "common questions", "frequently asked questions"].includes(t)
+  ) return "faqs";
+
+  // Hours
+  if (
+    [
+      "hour",
+      "hours",
+      "workinghours",
+      "working hours",
+      "business hours",
+      "opening hours",
+      "open hours",
+      "schedule",
+      "timings",
+      "availability",
+    ].includes(t)
+  ) return "hours";
+
+  // Offers / services / pricing
   if (
     [
       "service",
@@ -73,13 +93,102 @@ function canonicalSectionName(s) {
       "fees",
       "consultation fees",
       "consultationfees",
+      "packages",
+      "plans",
+      "treatments",
     ].includes(t)
-  ) {
-    return "offers";
-  }
-  if (["listing", "listings", "properties", "units", "inventory"].includes(t)) return "listings";
-  if (["payment", "paymentplans", "plans", "installments", "payment plans"].includes(t)) return "paymentPlans";
-  if (["policy", "policies", "rules"].includes(t)) return "policies";
+  ) return "offers";
+
+  // Menu
+  if (
+    [
+      "menu",
+      "food menu",
+      "drink menu",
+      "restaurant menu",
+      "items",
+      "menu items",
+    ].includes(t)
+  ) return "menu";
+
+  // Products
+  if (
+    [
+      "product",
+      "products",
+      "catalog",
+      "catalogue",
+      "shop",
+      "store items",
+      "inventory products",
+      "product list",
+      "collection",
+      "collections",
+      "categories",
+    ].includes(t)
+  ) return "products";
+
+  // Listings / real estate / units
+  if (
+    [
+      "listing",
+      "listings",
+      "properties",
+      "units",
+      "inventory",
+      "apartments",
+      "villas",
+      "properties for sale",
+      "properties for rent",
+    ].includes(t)
+  ) return "listings";
+
+  // Payment plans
+  if (
+    [
+      "payment",
+      "paymentplans",
+      "payment plans",
+      "installments",
+      "installment plans",
+      "finance options",
+      "financing",
+    ].includes(t)
+  ) return "paymentPlans";
+
+  // Booking / appointments
+  if (
+    [
+      "booking",
+      "bookings",
+      "appointment",
+      "appointments",
+      "reservation",
+      "reservations",
+      "table booking",
+      "table reservation",
+    ].includes(t)
+  ) return "booking";
+
+  // Policies
+  if (
+    [
+      "policy",
+      "policies",
+      "rules",
+      "terms",
+      "refund policy",
+      "return policy",
+      "exchange policy",
+      "cancellation policy",
+      "privacy policy",
+      "shipping policy",
+      "warranty",
+      "warranties",
+    ].includes(t)
+  ) return "policies";
+
+  // Contact
   if (
     [
       "contact",
@@ -91,26 +200,98 @@ function canonicalSectionName(s) {
       "office address",
       "email",
       "contact information",
+      "branch contact",
+      "branches",
     ].includes(t)
-  ) {
-    return "contact";
-  }
-  if (["profile", "about", "business name", "business type", "city", "areas served"].includes(t)) return "profile";
+  ) return "contact";
+
+  // Profile
+  if (
+    [
+      "profile",
+      "about",
+      "about us",
+      "business name",
+      "business type",
+      "city",
+      "areas served",
+      "company profile",
+      "who we are",
+    ].includes(t)
+  ) return "profile";
+
+  // Team / doctors / staff
+  if (
+    [
+      "team",
+      "staff",
+      "doctors",
+      "doctor",
+      "specialists",
+      "employees",
+      "trainers",
+      "teachers",
+      "instructors",
+    ].includes(t)
+  ) return "team";
+
+  // Courses / education
+  if (
+    [
+      "courses",
+      "course",
+      "programs",
+      "programmes",
+      "classes",
+      "subjects",
+      "curriculum",
+    ].includes(t)
+  ) return "courses";
+
+  // Rooms / hotel / stay
+  if (
+    [
+      "rooms",
+      "room types",
+      "accommodation",
+      "suites",
+      "stay options",
+    ].includes(t)
+  ) return "rooms";
+
+  // Delivery / shipping
+  if (
+    [
+      "delivery",
+      "shipping",
+      "delivery areas",
+      "shipping details",
+      "delivery policy",
+    ].includes(t)
+  ) return "delivery";
+
   if (["mixed"].includes(t)) return "mixed";
 
-  return t || "mixed";
+  return t || "other";
 }
 
 function prettySectionName(section) {
   const map = {
     faqs: "FAQs",
     hours: "Business Hours",
-    offers: "Services / Offers",
+    offers: "Services / Offers / Pricing",
+    menu: "Menu",
+    products: "Products / Catalog",
     listings: "Listings / Properties",
     paymentPlans: "Payment Plans",
+    booking: "Bookings / Appointments",
     policies: "Policies",
     contact: "Contact Information",
     profile: "Business Profile",
+    team: "Team / Staff",
+    courses: "Courses / Programs",
+    rooms: "Rooms / Accommodation",
+    delivery: "Delivery / Shipping",
     other: "Other Information",
     mixed: "Mixed Content",
   };
@@ -128,13 +309,29 @@ function formToMixedText(data = {}) {
   push("Business Name", data.businessName);
   push("Business Type", data.businessType);
   push("City / Areas Served", data.cityArea);
+  push("About Us", data.about);
   push("Working Hours", data.hours);
+
   push("Phone / WhatsApp", data.phoneWhatsapp);
+  push("Email", data.email);
+  push("Address / Location", data.address);
+
   push("Services", data.services);
-  push("FAQs", data.faqs);
+  push("Pricing / Packages", data.pricing);
+
+  push("Menu", data.menu);
+  push("Products", data.products);
   push("Listings", data.listingsSummary);
   push("Payment Plans", data.paymentPlans);
+
+  push("Bookings / Appointments", data.booking);
+  push("Doctors / Staff / Team", data.team);
+  push("Courses / Programs", data.courses);
+  push("Rooms / Accommodation", data.rooms);
+  push("Delivery / Shipping", data.delivery);
+
   push("Policies", data.policies);
+  push("FAQs", data.faqs);
 
   return normalizeText(lines.join("\n"));
 }
@@ -145,16 +342,127 @@ function splitMixedToSections(mixedText = "") {
   const mapTitleToSection = (title) => {
     const t = String(title || "").toLowerCase().trim();
 
-    if (t.includes("faq")) return "faqs";
-    if (t.includes("working hours") || t === "hours" || t.includes("open")) return "hours";
-    if (t.includes("services") || t.includes("offers") || t.includes("pricing")) return "offers";
+    if (t.includes("faq") || t.includes("question")) return "faqs";
 
-    if (t.includes("listing") || t.includes("properties") || t.includes("inventory") || t.includes("units")) return "listings";
-    if (t.includes("payment") || t.includes("installment") || t.includes("plan")) return "paymentPlans";
-    if (t.includes("policy") || t.includes("policies") || t.includes("rules")) return "policies";
+    if (
+      t.includes("working hours") ||
+      t === "hours" ||
+      t.includes("open") ||
+      t.includes("schedule") ||
+      t.includes("timing") ||
+      t.includes("availability")
+    ) return "hours";
 
-    if (t.includes("phone") || t.includes("whatsapp") || t.includes("contact") || t.includes("address")) return "contact";
-    if (t.includes("business name") || t.includes("business type") || t.includes("city")) return "profile";
+    if (
+      t.includes("service") ||
+      t.includes("offer") ||
+      t.includes("pricing") ||
+      t.includes("price") ||
+      t.includes("fees") ||
+      t.includes("package") ||
+      t.includes("treatment")
+    ) return "offers";
+
+    if (
+      t.includes("menu") ||
+      t.includes("food") ||
+      t.includes("drink") ||
+      t.includes("menu items")
+    ) return "menu";
+
+    if (
+      t.includes("product") ||
+      t.includes("catalog") ||
+      t.includes("shop") ||
+      t.includes("collection") ||
+      t.includes("category")
+    ) return "products";
+
+    if (
+      t.includes("listing") ||
+      t.includes("properties") ||
+      t.includes("inventory") ||
+      t.includes("units") ||
+      t.includes("apartment") ||
+      t.includes("villa")
+    ) return "listings";
+
+    if (
+      t.includes("payment") ||
+      t.includes("installment") ||
+      t.includes("plan") ||
+      t.includes("finance")
+    ) return "paymentPlans";
+
+    if (
+      t.includes("booking") ||
+      t.includes("appointment") ||
+      t.includes("reservation")
+    ) return "booking";
+
+    if (
+      t.includes("policy") ||
+      t.includes("policies") ||
+      t.includes("rules") ||
+      t.includes("refund") ||
+      t.includes("return") ||
+      t.includes("exchange") ||
+      t.includes("cancellation") ||
+      t.includes("privacy") ||
+      t.includes("shipping") ||
+      t.includes("warranty")
+    ) return "policies";
+
+    if (
+      t.includes("phone") ||
+      t.includes("whatsapp") ||
+      t.includes("contact") ||
+      t.includes("address") ||
+      t.includes("location") ||
+      t.includes("email") ||
+      t.includes("branch")
+    ) return "contact";
+
+    if (
+      t.includes("business name") ||
+      t.includes("business type") ||
+      t.includes("city") ||
+      t.includes("about") ||
+      t.includes("profile") ||
+      t.includes("about us") ||
+      t.includes("areas served")
+    ) return "profile";
+
+    if (
+      t.includes("team") ||
+      t.includes("staff") ||
+      t.includes("doctor") ||
+      t.includes("doctors") ||
+      t.includes("specialist") ||
+      t.includes("trainer") ||
+      t.includes("teacher") ||
+      t.includes("instructor")
+    ) return "team";
+
+    if (
+      t.includes("course") ||
+      t.includes("courses") ||
+      t.includes("program") ||
+      t.includes("class") ||
+      t.includes("curriculum")
+    ) return "courses";
+
+    if (
+      t.includes("room") ||
+      t.includes("rooms") ||
+      t.includes("accommodation") ||
+      t.includes("suite")
+    ) return "rooms";
+
+    if (
+      t.includes("delivery") ||
+      t.includes("shipping")
+    ) return "delivery";
 
     return "other";
   };
@@ -170,15 +478,12 @@ function splitMixedToSections(mixedText = "") {
 
     if (m) {
       sawHeading = true;
-
       currentTitle = m[1].trim();
       current = mapTitleToSection(currentTitle);
-
       out[current] ||= [];
 
-      // ✅ Keep heading inside the section content
+      // keep original heading
       out[current].push(`## ${currentTitle}`);
-
       continue;
     }
 
@@ -207,15 +512,41 @@ function chunkFaqs(faqText = "") {
 function chooseSections(botType) {
   const bt = String(botType || "default").toLowerCase().trim();
 
-  if (bt === "restaurant") {
-    return ["menu", "offers", "hours", "faqs", "contact", "profile", "policies", "other"];
-  }
+  const common = ["offers", "hours", "faqs", "policies", "profile", "contact", "other"];
 
-  if (bt === "realestate") {
-    return ["listings", "paymentPlans", "offers", "hours", "faqs", "policies", "profile", "contact", "other"];
-  }
+  const templates = {
+    restaurant: ["menu", "offers", "hours", "faqs", "booking", "contact", "profile", "policies", "delivery", "other"],
+    cafe: ["menu", "offers", "hours", "faqs", "booking", "contact", "profile", "policies", "delivery", "other"],
+    bakery: ["menu", "products", "hours", "faqs", "contact", "profile", "policies", "delivery", "other"],
 
-  return ["offers", "hours", "faqs", "policies", "profile", "contact", "other"];
+    realestate: ["listings", "paymentPlans", "offers", "hours", "faqs", "policies", "profile", "contact", "other"],
+
+    clinic: ["offers", "team", "booking", "hours", "faqs", "policies", "profile", "contact", "other"],
+    dental: ["offers", "team", "booking", "hours", "faqs", "policies", "profile", "contact", "other"],
+    hospital: ["offers", "team", "booking", "hours", "faqs", "policies", "profile", "contact", "other"],
+
+    salon: ["offers", "booking", "hours", "faqs", "team", "policies", "profile", "contact", "other"],
+    spa: ["offers", "booking", "hours", "faqs", "team", "policies", "profile", "contact", "other"],
+    gym: ["offers", "team", "hours", "faqs", "policies", "profile", "contact", "other"],
+
+    ecommerce: ["products", "offers", "delivery", "faqs", "policies", "contact", "profile", "other"],
+    retail: ["products", "offers", "delivery", "faqs", "policies", "contact", "profile", "other"],
+    pharmacy: ["products", "hours", "delivery", "faqs", "policies", "contact", "profile", "other"],
+
+    hotel: ["rooms", "booking", "offers", "hours", "faqs", "policies", "profile", "contact", "other"],
+    hostel: ["rooms", "booking", "offers", "hours", "faqs", "policies", "profile", "contact", "other"],
+
+    education: ["courses", "offers", "hours", "faqs", "team", "policies", "profile", "contact", "other"],
+    academy: ["courses", "offers", "hours", "faqs", "team", "policies", "profile", "contact", "other"],
+    school: ["courses", "hours", "faqs", "team", "policies", "profile", "contact", "other"],
+
+    automotive: ["products", "offers", "hours", "faqs", "policies", "profile", "contact", "other"],
+    showroom: ["products", "offers", "hours", "faqs", "policies", "profile", "contact", "other"],
+
+    default: common,
+  };
+
+  return templates[bt] || common;
 }
 
 function pickTextFromClient(client, key) {
