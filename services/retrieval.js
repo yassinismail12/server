@@ -1,242 +1,181 @@
-import KnowledgeChunk from "../KnowledgeChunk.js";
+import Client from "../Client.js";
 
-const SECTION_CAPS = {
-  profile: 2,
-  contact: 2,
-  hours: 1,
-  offers: 6,
-  faqs: 6,
-  listings: 8,
-  paymentPlans: 4,
-  policies: 4,
-  menu: 15,
-  other: 4,
-};
+function safeText(value = "") {
+  return String(value ?? "").replace(/\r\n/g, "\n").trim();
+}
 
-const CORE_SECTIONS = ["profile", "contact", "hours"];
+function joinBlocks(...parts) {
+  return parts.map(safeText).filter(Boolean).join("\n\n").trim();
+}
 
-function normalizeText(value = "") {
-  return String(value || "")
-    .toLowerCase()
-    .replace(/\r\n/g, "\n")
-    .replace(/[^\p{L}\p{N}\s]/gu, " ")
-    .replace(/\s+/g, " ")
+function buildFallbackPromptFromClient(client = {}) {
+  const promptConfig = client.promptConfig || {};
+  const business = client.businessData || client.business || {};
+
+  const businessName =
+    safeText(business.businessName) ||
+    safeText(client.businessName) ||
+    safeText(promptConfig.businessName);
+
+  const businessType =
+    safeText(business.businessType) ||
+    safeText(client.businessType) ||
+    safeText(promptConfig.businessType);
+
+  const city =
+    safeText(business.city) ||
+    safeText(client.city) ||
+    safeText(promptConfig.city);
+
+  const area =
+    safeText(business.area) ||
+    safeText(client.area) ||
+    safeText(promptConfig.area);
+
+  const address =
+    safeText(business.address) ||
+    safeText(client.address) ||
+    safeText(promptConfig.address);
+
+  const location =
+    safeText(business.location) ||
+    safeText(client.location) ||
+    safeText(promptConfig.location);
+
+  const phone =
+    safeText(business.phone) ||
+    safeText(client.phone) ||
+    safeText(promptConfig.phone);
+
+  const whatsapp =
+    safeText(business.whatsapp) ||
+    safeText(client.whatsapp) ||
+    safeText(promptConfig.whatsapp);
+
+  const email =
+    safeText(business.email) ||
+    safeText(client.email) ||
+    safeText(promptConfig.email);
+
+  const hours =
+    safeText(business.hours) ||
+    safeText(business.workingHours) ||
+    safeText(client.hours) ||
+    safeText(promptConfig.hours);
+
+  const services =
+    safeText(business.services) ||
+    safeText(client.services) ||
+    safeText(promptConfig.services);
+
+  const pricing =
+    safeText(business.pricing) ||
+    safeText(client.pricing) ||
+    safeText(promptConfig.pricing);
+
+  const menu =
+    safeText(business.menu) ||
+    safeText(client.menu) ||
+    safeText(promptConfig.menu);
+
+  const delivery =
+    safeText(business.delivery) ||
+    safeText(client.delivery) ||
+    safeText(promptConfig.delivery);
+
+  const policies =
+    safeText(business.policies) ||
+    safeText(client.policies) ||
+    safeText(promptConfig.policies);
+
+  const faqs =
+    safeText(business.faqs) ||
+    safeText(client.faqs) ||
+    safeText(promptConfig.faqs);
+
+  const customPrompt = safeText(client.systemPrompt);
+
+  const businessLines = [
+    "BUSINESS KNOWLEDGE",
+    businessName ? `Business Name: ${businessName}` : null,
+    businessType ? `Business Type: ${businessType}` : null,
+    city ? `City: ${city}` : null,
+    area ? `Area: ${area}` : null,
+    address ? `Address: ${address}` : null,
+    location ? `Location: ${location}` : null,
+    phone ? `Phone: ${phone}` : null,
+    whatsapp ? `WhatsApp: ${whatsapp}` : null,
+    email ? `Email: ${email}` : null,
+    hours ? `Working Hours: ${hours}` : null,
+    services ? `Services: ${services}` : null,
+    pricing ? `Pricing: ${pricing}` : null,
+    menu ? `Menu: ${menu}` : null,
+    delivery ? `Delivery: ${delivery}` : null,
+    policies ? `Policies: ${policies}` : null,
+    faqs ? `FAQs: ${faqs}` : null,
+  ]
+    .filter(Boolean)
+    .join("\n")
     .trim();
+
+  return joinBlocks(customPrompt, businessLines);
 }
 
-function tokenize(value = "") {
-  return normalizeText(value)
-    .split(" ")
-    .map((t) => t.trim())
-    .filter(Boolean);
-}
+export async function retrieveChunks({ clientId, botType = "default", userText } = {}) {
+  const safeClientId = safeText(clientId);
+  const safeBotType = safeText(botType) || "default";
+  const safeUserText = safeText(userText);
 
-function buildNGrams(tokens = [], min = 2, max = 3) {
-  const out = [];
-  for (let n = min; n <= max; n += 1) {
-    for (let i = 0; i <= tokens.length - n; i += 1) {
-      out.push(tokens.slice(i, i + n).join(" "));
-    }
-  }
-  return out;
-}
-
-function uniqueById(items = []) {
-  const seen = new Set();
-  const out = [];
-
-  for (const item of items) {
-    const id = String(item?._id || "");
-    if (!id || seen.has(id)) continue;
-    seen.add(id);
-    out.push(item);
+  if (!safeClientId) {
+    return {
+      mode: "single_prompt",
+      finalSystemPrompt: "",
+      userText: safeUserText,
+      hasPrompt: false,
+      source: "missing_client_id",
+    };
   }
 
-  return out;
-}
+  const client =
+    (await Client.findOne({ clientId: safeClientId, botType: safeBotType }).lean()) ||
+    (await Client.findOne({ clientId: safeClientId }).lean());
 
-function overlapStats(queryText = "", chunkText = "") {
-  const qTokens = tokenize(queryText);
-  const cTokens = tokenize(chunkText);
-
-  const qSet = new Set(qTokens);
-  const cSet = new Set(cTokens);
-
-  let tokenHits = 0;
-  for (const token of qSet) {
-    if (cSet.has(token)) tokenHits += 1;
+  if (!client) {
+    return {
+      mode: "single_prompt",
+      finalSystemPrompt: "",
+      userText: safeUserText,
+      hasPrompt: false,
+      source: "client_not_found",
+    };
   }
 
-  const qNgrams = buildNGrams(qTokens, 2, 3);
-  let ngramHits = 0;
-  for (const phrase of qNgrams) {
-    if (chunkText.includes(phrase)) ngramHits += 1;
-  }
-
-  const exactContains = queryText && chunkText.includes(queryText) ? 1 : 0;
+  const finalSystemPrompt = joinBlocks(
+    client.finalSystemPrompt,
+    !safeText(client.finalSystemPrompt) ? client.systemPrompt : "",
+    !safeText(client.finalSystemPrompt) && !safeText(client.systemPrompt)
+      ? client.businessKnowledgePrompt
+      : "",
+    !safeText(client.finalSystemPrompt) &&
+      !safeText(client.systemPrompt) &&
+      !safeText(client.businessKnowledgePrompt)
+      ? buildFallbackPromptFromClient(client)
+      : ""
+  );
 
   return {
-    qTokenCount: qSet.size,
-    tokenHits,
-    ngramHits,
-    exactContains,
+    mode: "single_prompt",
+    finalSystemPrompt,
+    userText: safeUserText,
+    hasPrompt: Boolean(finalSystemPrompt),
+    source: safeText(client.finalSystemPrompt)
+      ? "finalSystemPrompt"
+      : safeText(client.systemPrompt)
+      ? "systemPrompt"
+      : safeText(client.businessKnowledgePrompt)
+      ? "businessKnowledgePrompt"
+      : "fallback_from_client_fields",
   };
 }
 
-function scoreChunk(chunk, userText) {
-  const query = normalizeText(userText);
-  const text = normalizeText(chunk?.text || "");
-  const section = String(chunk?.section || "other");
-  const mongoTextScore = Number(chunk?.score || 0);
-
-  const stats = overlapStats(query, text);
-
-  let score = 0;
-
-  // Mongo text index score
-  score += mongoTextScore * 10;
-
-  // Exact full-query containment
-  score += stats.exactContains * 50;
-
-  // Token overlap ratio
-  if (stats.qTokenCount > 0) {
-    const ratio = stats.tokenHits / stats.qTokenCount;
-    score += ratio * 40;
-  }
-
-  // Phrase overlap matters a lot
-  score += stats.ngramHits * 12;
-
-  // Mild quality boosts for structurally important sections
-  if (section === "profile") score += 3;
-  if (section === "contact") score += 3;
-  if (section === "hours") score += 2;
-
-  // Prefer richer chunks slightly
-  const textLength = text.length;
-  if (textLength >= 80 && textLength <= 1200) score += 4;
-
-  return score;
-}
-
-async function fetchCoreSections({ clientId, botType, wantedSections = CORE_SECTIONS }) {
-  const docs = await Promise.all(
-    wantedSections.map(async (section) => {
-      const doc = await KnowledgeChunk.findOne({ clientId, botType, section })
-        .sort({ createdAt: -1 })
-        .lean();
-      return doc || null;
-    })
-  );
-
-  return docs.filter(Boolean);
-}
-
-async function fetchRecentChunks({ clientId, botType, limit = 30 }) {
-  return KnowledgeChunk.find({ clientId, botType })
-    .sort({ createdAt: -1 })
-    .limit(limit)
-    .lean();
-}
-
-function chooseDynamicCoreSections(scored = []) {
-  const strong = scored
-    .filter((item) => (item?._smartScore || 0) > 15)
-    .map((item) => item.section)
-    .filter(Boolean);
-
-  const dynamic = new Set([...CORE_SECTIONS, ...strong]);
-  return Array.from(dynamic);
-}
-
-function groupAndCap(results, caps = SECTION_CAPS) {
-  const grouped = {};
-
-  for (const item of results) {
-    const section = item?.section || "other";
-    grouped[section] ||= [];
-
-    const cap = caps[section] ?? 6;
-    if (grouped[section].length < cap) {
-      grouped[section].push(item);
-    }
-  }
-
-  return grouped;
-}
-
-export async function retrieveChunks({ clientId, botType = "default", userText }) {
-  const safeText = String(userText || "").trim();
-
-  // No question text: return core chunks + a few recent chunks
-  if (!safeText) {
-    const [coreChunks, recentChunks] = await Promise.all([
-      fetchCoreSections({ clientId, botType, wantedSections: CORE_SECTIONS }),
-      fetchRecentChunks({ clientId, botType, limit: 20 }),
-    ]);
-
-    const merged = uniqueById([...coreChunks, ...recentChunks]);
-    return groupAndCap(merged);
-  }
-
-  // 1) Try Mongo text search first
-  let textResults = [];
-  try {
-    textResults = await KnowledgeChunk.find(
-      { clientId, botType, $text: { $search: safeText } },
-      {
-        score: { $meta: "textScore" },
-        section: 1,
-        text: 1,
-        createdAt: 1,
-      }
-    )
-      .limit(50)
-      .lean();
-  } catch {
-    textResults = [];
-  }
-
-  // 2) Also fetch recent chunks so we can score broadly if text search misses something important
-  const recentChunks = await fetchRecentChunks({ clientId, botType, limit: 40 });
-
-  // 3) Merge and score everything by actual semantic-ish overlap, not hardcoded keywords
-  let merged = uniqueById([...textResults, ...recentChunks]).map((chunk) => ({
-    ...chunk,
-    _smartScore: scoreChunk(chunk, safeText),
-  }));
-
-  merged.sort((a, b) => {
-    if ((b._smartScore || 0) !== (a._smartScore || 0)) {
-      return (b._smartScore || 0) - (a._smartScore || 0);
-    }
-    return new Date(b.createdAt || 0).getTime() - new Date(a.createdAt || 0).getTime();
-  });
-
-  // 4) Always bring core sections from chunks, but let strong results expand what matters
-  const dynamicCoreSections = chooseDynamicCoreSections(merged.slice(0, 12));
-  const coreChunks = await fetchCoreSections({
-    clientId,
-    botType,
-    wantedSections: dynamicCoreSections,
-  });
-
-  // 5) Re-merge after injecting core sections, then sort again
-  merged = uniqueById([...coreChunks, ...merged]).map((chunk) => ({
-    ...chunk,
-    _smartScore: scoreChunk(chunk, safeText),
-  }));
-
-  merged.sort((a, b) => {
-    if ((b._smartScore || 0) !== (a._smartScore || 0)) {
-      return (b._smartScore || 0) - (a._smartScore || 0);
-    }
-    return new Date(b.createdAt || 0).getTime() - new Date(a.createdAt || 0).getTime();
-  });
-
-  // 6) Keep best chunk pool, then cap per section
-  const finalPool = merged.slice(0, 30);
-
-  return groupAndCap(finalPool);
-}
+export default retrieveChunks;

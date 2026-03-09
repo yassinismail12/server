@@ -335,6 +335,7 @@ function formToMixedText(data = {}) {
 
   return normalizeText(lines.join("\n"));
 }
+
 function splitMixedToSections(mixedText = "") {
   const text = normalizeText(mixedText);
   if (!text) return {};
@@ -481,8 +482,6 @@ function splitMixedToSections(mixedText = "") {
       currentTitle = m[1].trim();
       current = mapTitleToSection(currentTitle);
       out[current] ||= [];
-
-      // keep original heading
       out[current].push(`## ${currentTitle}`);
       continue;
     }
@@ -579,6 +578,7 @@ function resetClientKnowledgeSources(client) {
   client.paymentPlans = "";
   client.hours = "";
   client.offers = "";
+  client.systemPrompt = "";
 }
 
 function detectSectionsFromClient(client, botType) {
@@ -667,6 +667,62 @@ function mergePromptConfig(oldConfig = {}, newConfig = {}) {
   };
 }
 
+/* ---------------------------
+   NEW: Build one merged systemPrompt
+---------------------------- */
+function buildSystemPromptFromClientFiles(client, botType = "default") {
+  const allFiles = Array.isArray(client.files) ? client.files : [];
+  if (!allFiles.length) return "";
+
+  const nonMixed = allFiles.filter((f) => canonicalSectionName(f?.name) !== "mixed");
+  const filesToUse = nonMixed.length ? nonMixed : allFiles;
+
+  const preferredOrder = [
+    "profile",
+    "contact",
+    "hours",
+    "offers",
+    "menu",
+    "products",
+    "listings",
+    "paymentPlans",
+    "booking",
+    "team",
+    "courses",
+    "rooms",
+    "delivery",
+    "policies",
+    "faqs",
+    "other",
+  ];
+
+  const expected = chooseSections(botType);
+  const order = [...new Set([...preferredOrder, ...expected, ...filesToUse.map((f) => canonicalSectionName(f?.name))])];
+
+  const bySection = new Map();
+  for (const file of filesToUse) {
+    const section = canonicalSectionName(file?.name || "other");
+    const text = normalizeText(file?.content || "");
+    if (!text) continue;
+
+    if (!bySection.has(section)) bySection.set(section, []);
+    bySection.get(section).push(text);
+  }
+
+  const blocks = [];
+  for (const section of order) {
+    const items = bySection.get(section) || [];
+    if (!items.length) continue;
+
+    const merged = normalizeText(items.join("\n\n"));
+    if (!merged) continue;
+
+    blocks.push(`## ${prettySectionName(section)}\n${merged}`);
+  }
+
+  return normalizeText(blocks.join("\n\n"));
+}
+
 async function rebuildKnowledge({ clientId, botType = "default", replace = false }) {
   const client = await Client.findOne({ clientId });
   if (!client) return { ok: false, status: 404, error: "Client not found" };
@@ -686,6 +742,9 @@ async function rebuildKnowledge({ clientId, botType = "default", replace = false
       if (text) await upsertClientFile(client, section, text, "mixed-split");
     }
   }
+
+  // NEW: always refresh full merged prompt from current saved files
+  client.systemPrompt = buildSystemPromptFromClientFiles(client, botType);
 
   await client.save();
 
@@ -747,6 +806,7 @@ async function rebuildKnowledge({ clientId, botType = "default", replace = false
         coverageWarnings,
         completeness,
         nextAction,
+        systemPrompt: client.systemPrompt || "",
       },
       $inc: { knowledgeVersion: 1 },
     }
@@ -843,7 +903,7 @@ router.post("/build", verifyToken, requireClientOwnership, async (req, res) => {
 
     if (doReplace) resetClientKnowledgeSources(client);
 
-    // ✅ Save promptConfig so dynamic prompt actually changes per client
+    // Save promptConfig so dynamic prompt changes per client
     if (promptConfig && typeof promptConfig === "object") {
       client.promptConfig = mergePromptConfig(client.promptConfig || {}, promptConfig);
     }
@@ -864,6 +924,10 @@ router.post("/build", verifyToken, requireClientOwnership, async (req, res) => {
     if (!content) return res.status(400).json({ ok: false, error: "No content to save." });
 
     await upsertClientFile(client, fileName, content, doReplace ? "bot-build-replace" : "bot-build");
+
+    // NEW: save incoming data into systemPrompt immediately too
+    client.systemPrompt = buildSystemPromptFromClientFiles(client, botType || "default");
+
     await client.save();
 
     const built = await rebuildKnowledge({ clientId, botType: botType || "default", replace: doReplace });
@@ -875,6 +939,7 @@ router.post("/build", verifyToken, requireClientOwnership, async (req, res) => {
       message: built.nextAction,
       build: built,
       promptConfigSaved: Boolean(promptConfig && typeof promptConfig === "object"),
+      systemPromptUpdated: true,
     });
   } catch (err) {
     console.error("❌ /api/knowledge/build error:", err);
@@ -910,6 +975,10 @@ router.post("/upload", verifyToken, upload.single("file"), requireClientOwnershi
     if (replace) resetClientKnowledgeSources(client);
 
     await upsertClientFile(client, section, content, replace ? "bot-upload-replace" : "bot-upload");
+
+    // NEW: save incoming upload into systemPrompt immediately too
+    client.systemPrompt = buildSystemPromptFromClientFiles(client, botType);
+
     await client.save();
 
     const built = await rebuildKnowledge({ clientId, botType, replace });
@@ -920,6 +989,7 @@ router.post("/upload", verifyToken, upload.single("file"), requireClientOwnershi
       savedAs: section,
       message: built.nextAction,
       build: built,
+      systemPromptUpdated: true,
     });
   } catch (err) {
     console.error("❌ /api/knowledge/upload error:", err);
@@ -941,6 +1011,7 @@ router.post("/rebuild/:clientId", verifyToken, requireClientOwnership, async (re
     return res.json({
       ...built,
       message: built.nextAction,
+      systemPromptUpdated: true,
     });
   } catch (err) {
     console.error("❌ /api/knowledge/rebuild error:", err);

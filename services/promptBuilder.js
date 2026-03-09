@@ -1,12 +1,20 @@
 function estimateTokens(str = "") {
-  return Math.ceil(String(str).length / 4);
+  return Math.ceil(String(str || "").length / 4);
 }
 
 function hardTrimToTokenBudget(text, budgetTokens) {
-  if (!text) return "";
-  const maxChars = Math.max(0, budgetTokens * 4);
-  if (text.length <= maxChars) return text;
-  return text.slice(0, maxChars) + "\n…[trimmed]";
+  const raw = String(text || "").trim();
+  if (!raw) return "";
+
+  const maxChars = Math.max(0, Math.floor(budgetTokens * 4));
+  if (raw.length <= maxChars) return raw;
+  if (maxChars <= 12) return raw.slice(0, maxChars);
+
+  return raw.slice(0, maxChars).trimEnd() + "\n…[trimmed]";
+}
+
+function normalizeChunkText(text = "") {
+  return String(text || "").replace(/\n{3,}/g, "\n\n").trim();
 }
 
 export function buildDataBlockBudgeted(groupedChunks, sectionsOrder, opts = {}) {
@@ -14,95 +22,127 @@ export function buildDataBlockBudgeted(groupedChunks, sectionsOrder, opts = {}) 
     maxDataTokens = 2500,
     perChunkMaxTokens = 300,
     includeEmptySections = false,
+    sectionTitleMap = null,
   } = opts;
 
   let usedTokens = 0;
-  const outSections = [];
   let includedChunkCount = 0;
+  const outSections = [];
 
   for (const section of sectionsOrder || []) {
-    const items = groupedChunks?.[section] || [];
+    const items = Array.isArray(groupedChunks?.[section]) ? groupedChunks[section] : [];
+    const sectionLabel = safeSectionLabel(section, sectionTitleMap);
+    const header = `${sectionLabel}\n`;
+    const headerCost = estimateTokens(header);
 
     if (!items.length) {
-      if (includeEmptySections) {
-        const header = `${String(section).toUpperCase()}\n\n`;
-        const body = `No relevant data found.\n`;
-        const cost = estimateTokens(header + body);
+      if (!includeEmptySections) continue;
 
-        if (usedTokens + cost <= maxDataTokens) {
-          outSections.push(header + body);
-          usedTokens += cost;
-        }
+      const emptyBlock = `${header}No relevant data found.`;
+      const cost = estimateTokens(emptyBlock);
+
+      if (usedTokens + cost <= maxDataTokens) {
+        outSections.push(emptyBlock);
+        usedTokens += cost;
       }
       continue;
     }
 
-    const header = `${String(section).toUpperCase()}\n\n`;
-    const headerCost = estimateTokens(header);
-
     if (usedTokens + headerCost >= maxDataTokens) break;
 
-    let sectionText = "";
+    const sectionParts = [];
+    let sectionUsedAny = false;
 
     for (const item of items) {
-      let chunkText = String(item?.text || "").trim();
+      let chunkText = normalizeChunkText(item?.text || "");
       if (!chunkText) continue;
 
       if (estimateTokens(chunkText) > perChunkMaxTokens) {
         chunkText = hardTrimToTokenBudget(chunkText, perChunkMaxTokens);
       }
 
-      const addition = (sectionText ? "\n" : "") + chunkText;
-      const projectedCost =
-        usedTokens + headerCost + estimateTokens(sectionText) + estimateTokens(addition);
+      const candidateText = sectionParts.length
+        ? `${sectionParts.join("\n\n")}\n\n${chunkText}`
+        : chunkText;
 
-      if (projectedCost > maxDataTokens) {
-        const remaining =
-          maxDataTokens - (usedTokens + headerCost + estimateTokens(sectionText));
+      const candidateBlock = `${header}${candidateText}`;
+      const candidateCost = estimateTokens(candidateBlock);
+      const projectedTotal = usedTokens + candidateCost;
 
-        if (remaining <= 30) break;
-
-        const trimmed = hardTrimToTokenBudget(chunkText, remaining);
-        const trimmedAddition = (sectionText ? "\n" : "") + trimmed;
-        const finalProjectedCost =
-          usedTokens + headerCost + estimateTokens(sectionText) + estimateTokens(trimmedAddition);
-
-        if (finalProjectedCost <= maxDataTokens) {
-          sectionText += trimmedAddition;
-          includedChunkCount += 1;
-        }
-
-        break;
+      if (projectedTotal <= maxDataTokens) {
+        sectionParts.push(chunkText);
+        includedChunkCount += 1;
+        sectionUsedAny = true;
+        continue;
       }
 
-      sectionText += addition;
-      includedChunkCount += 1;
+      const currentSectionText = sectionParts.join("\n\n");
+      const currentSectionCost = estimateTokens(`${header}${currentSectionText}`);
+      const remainingTokens = maxDataTokens - usedTokens - currentSectionCost;
+
+      if (remainingTokens <= 30) break;
+
+      const trimmedChunk = hardTrimToTokenBudget(chunkText, remainingTokens);
+      if (!trimmedChunk) break;
+
+      const trimmedCandidateText = currentSectionText
+        ? `${currentSectionText}\n\n${trimmedChunk}`
+        : trimmedChunk;
+
+      const trimmedCandidateBlock = `${header}${trimmedCandidateText}`;
+      const trimmedProjectedTotal = usedTokens + estimateTokens(trimmedCandidateBlock);
+
+      if (trimmedProjectedTotal <= maxDataTokens) {
+        sectionParts.push(trimmedChunk);
+        includedChunkCount += 1;
+        sectionUsedAny = true;
+      }
+
+      break;
     }
 
-    if (sectionText.trim()) {
-      const block = header + sectionText;
-      outSections.push(block);
-      usedTokens += estimateTokens(block);
+    if (sectionUsedAny) {
+      const finalBlock = `${header}${sectionParts.join("\n\n")}`.trim();
+      outSections.push(finalBlock);
+      usedTokens += estimateTokens(finalBlock);
     }
   }
 
+  const dataBlock = outSections.length
+    ? `EXTRA BUSINESS DATA\n\n${outSections.join("\n\n")}`
+    : "";
+
   return {
-    dataBlock: outSections.join("\n\n"),
+    dataBlock,
     usedTokens,
     includedChunkCount,
   };
 }
 
+function safeSectionLabel(section, sectionTitleMap = null) {
+  const raw = String(section || "").trim();
+  if (!raw) return "SECTION";
+
+  if (sectionTitleMap && sectionTitleMap[raw]) {
+    return String(sectionTitleMap[raw]).trim();
+  }
+
+  return raw.replace(/[_-]+/g, " ").toUpperCase();
+}
+
 export function buildChatMessages({
   rulesPrompt,
+  businessKnowledgeBlock = "",
   groupedChunks,
   userText,
   sectionsOrder,
   maxTotalTokens = 3500,
   maxDataTokens = 2500,
   perChunkMaxTokens = 300,
+  sectionTitleMap = null,
 } = {}) {
   const safeRulesPrompt = String(rulesPrompt || "").trim();
+  const safeBusinessKnowledgeBlock = String(businessKnowledgeBlock || "").trim();
   const safeUserText = String(userText || "").trim();
 
   const {
@@ -112,14 +152,18 @@ export function buildChatMessages({
   } = buildDataBlockBudgeted(groupedChunks, sectionsOrder, {
     maxDataTokens,
     perChunkMaxTokens,
+    sectionTitleMap,
   });
 
-  const userContent =
-    (dataBlock ? `${dataBlock}\n\n` : "") +
-    `User message:\n${safeUserText}`;
+  const initialUserParts = [
+    safeBusinessKnowledgeBlock,
+    dataBlock,
+    `User message:\n${safeUserText}`,
+  ].filter(Boolean);
 
-  const totalTokens =
-    estimateTokens(safeRulesPrompt) + estimateTokens(userContent);
+  let finalUserContent = initialUserParts.join("\n\n");
+  let totalTokens =
+    estimateTokens(safeRulesPrompt) + estimateTokens(finalUserContent);
 
   const meta = {
     totalTokens,
@@ -132,58 +176,55 @@ export function buildChatMessages({
   if (totalTokens > maxTotalTokens) {
     meta.code = "PROMPT_RISK_LONG_MESSAGE";
     meta.advice =
-      "Outgoing prompt too large. Reduce retrieved chunks, reduce per-chunk size, or reduce memory window.";
+      "Outgoing prompt too large. Reduce extra data, reduce per-chunk size, or reduce message history.";
 
-    const reducedDataBudget = Math.max(600, Math.floor(maxDataTokens * 0.5));
+    const reducedDataBudget = Math.max(500, Math.floor(maxDataTokens * 0.5));
     const reducedPerChunkMax = Math.max(120, Math.floor(perChunkMaxTokens * 0.7));
 
     const rebuilt = buildDataBlockBudgeted(groupedChunks, sectionsOrder, {
       maxDataTokens: reducedDataBudget,
       perChunkMaxTokens: reducedPerChunkMax,
+      sectionTitleMap,
     });
 
-    const rebuiltUserContent =
-      (rebuilt.dataBlock ? `${rebuilt.dataBlock}\n\n` : "") +
-      `User message:\n${safeUserText}`;
+    const rebuiltParts = [
+      safeBusinessKnowledgeBlock,
+      rebuilt.dataBlock,
+      `User message:\n${safeUserText}`,
+    ].filter(Boolean);
 
-    const rebuiltTotalTokens =
-      estimateTokens(safeRulesPrompt) + estimateTokens(rebuiltUserContent);
+    finalUserContent = rebuiltParts.join("\n\n");
+    totalTokens =
+      estimateTokens(safeRulesPrompt) + estimateTokens(finalUserContent);
 
     meta.dataTokens = rebuilt.usedTokens;
     meta.includedChunkCount = rebuilt.includedChunkCount;
-    meta.totalTokens = rebuiltTotalTokens;
+    meta.totalTokens = totalTokens;
 
-    let finalUserContent = rebuiltUserContent;
+    if (totalTokens > maxTotalTokens) {
+      const fixedParts = [safeBusinessKnowledgeBlock, rebuilt.dataBlock].filter(Boolean);
+      const fixedCost =
+        estimateTokens(safeRulesPrompt) +
+        estimateTokens(fixedParts.join("\n\n")) +
+        estimateTokens("User message:\n");
 
-    if (rebuiltTotalTokens > maxTotalTokens) {
-      const allowedForUser = Math.max(
-        200,
-        maxTotalTokens -
-          estimateTokens(safeRulesPrompt) -
-          estimateTokens(rebuilt.dataBlock || "")
-      );
+      const remainingForUser = Math.max(120, maxTotalTokens - fixedCost);
+      const trimmedUserText = hardTrimToTokenBudget(safeUserText, remainingForUser);
 
-      finalUserContent =
-        (rebuilt.dataBlock ? `${rebuilt.dataBlock}\n\n` : "") +
-        `User message:\n${hardTrimToTokenBudget(safeUserText, allowedForUser)}`;
+      finalUserContent = [
+        ...fixedParts,
+        `User message:\n${trimmedUserText}`,
+      ].filter(Boolean).join("\n\n");
 
       meta.totalTokens =
         estimateTokens(safeRulesPrompt) + estimateTokens(finalUserContent);
     }
-
-    return {
-      messages: [
-        { role: "system", content: safeRulesPrompt },
-        { role: "user", content: finalUserContent },
-      ],
-      meta,
-    };
   }
 
   return {
     messages: [
       { role: "system", content: safeRulesPrompt },
-      { role: "user", content: userContent },
+      { role: "user", content: finalUserContent },
     ],
     meta,
   };
