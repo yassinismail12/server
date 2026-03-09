@@ -1,7 +1,14 @@
 // utils/chunking.js
 
-function splitByBlankBlocks(text) {
+function normalizeText(text) {
   return String(text || "")
+    .replace(/\r\n/g, "\n")
+    .replace(/\n{3,}/g, "\n\n")
+    .trim();
+}
+
+function splitByBlankBlocks(text) {
+  return normalizeText(text)
     .split(/\n\s*\n+/)
     .map((s) => s.trim())
     .filter(Boolean);
@@ -19,15 +26,21 @@ function prettySectionTitle(sectionName = "") {
   const key = String(sectionName || "").trim();
 
   const map = {
-    profile: "PROFILE",
-    contact: "CONTACT",
-    hours: "HOURS",
-    offers: "SERVICES / OFFERS",
+    profile: "BUSINESS PROFILE",
+    contact: "CONTACT INFORMATION",
+    hours: "BUSINESS HOURS",
+    offers: "SERVICES / OFFERS / PRICING",
     faqs: "FAQS",
-    listings: "LISTINGS",
+    listings: "LISTINGS / PROPERTIES",
     paymentPlans: "PAYMENT PLANS",
     policies: "POLICIES",
     menu: "MENU",
+    products: "PRODUCTS / CATALOG",
+    booking: "BOOKINGS / APPOINTMENTS",
+    team: "TEAM / STAFF",
+    courses: "COURSES / PROGRAMS",
+    rooms: "ROOMS / ACCOMMODATION",
+    delivery: "DELIVERY / SHIPPING",
     other: "OTHER INFORMATION",
     mixed: "MIXED CONTENT",
   };
@@ -39,90 +52,336 @@ function withSectionTitle(sectionName, chunks) {
   const title = prettySectionTitle(sectionName);
 
   return (chunks || [])
-    .map((chunk) => String(chunk || "").trim())
+    .map((chunk) => normalizeText(chunk))
     .filter(Boolean)
     .map((chunk) => `${title}\n\n${chunk}`);
 }
 
-// ✅ Universal chunker that works for any business type.
-// Priority: delimiter (---) → blank blocks → headings/bullets → size fallback
+function splitByMarkdownHeadings(text) {
+  return normalizeText(text)
+    .split(/\n(?=#{1,3}\s+)/)
+    .map((s) => s.trim())
+    .filter(Boolean);
+}
+
+function splitByBullets(text) {
+  return normalizeText(text)
+    .split(/\n(?=(?:\*\s+|-\s+|•\s+|\d+\.\s+))/)
+    .map((s) => s.trim())
+    .filter(Boolean);
+}
+
+function splitByCommonRecordStarts(text, patterns = []) {
+  if (!patterns.length) return [normalizeText(text)];
+
+  const regex = new RegExp(`(?=${patterns.join("|")})`, "i");
+
+  return normalizeText(text)
+    .split(regex)
+    .map((s) => s.trim())
+    .filter(Boolean);
+}
+
+function sizeChunk(text, size = 1200, overlap = 200) {
+  const t = normalizeText(text);
+  if (!t) return [];
+  if (t.length <= size) return [t];
+
+  const chunks = [];
+  const step = Math.max(1, size - overlap);
+
+  for (let i = 0; i < t.length; i += step) {
+    chunks.push(t.slice(i, i + size).trim());
+  }
+
+  return chunks.filter(Boolean);
+}
+
+// Universal chunker
+// Priority:
+// 1) --- delimiter
+// 2) blank blocks
+// 3) markdown headings
+// 4) bullets / numbered items
+// 5) size fallback
 function genericChunk(text) {
-  const t = String(text || "").trim();
+  const t = normalizeText(text);
   if (!t) return [];
 
-  // 1) Strong delimiter split (recommended UX tip: use --- between items)
   let parts = t
     .split(/\n-{3,}\n/)
     .map((s) => s.trim())
     .filter(Boolean);
   if (parts.length > 1) return parts;
 
-  // 2) Blank blocks
   parts = splitByBlankBlocks(t);
   if (parts.length > 1) return parts;
 
-  // 3) Headings or bullet starts
-  parts = t
-    .split(/\n(?=(?:#{1,3}\s+|\*\s+|-\s+|•\s+))/)
-    .map((s) => s.trim())
-    .filter(Boolean);
+  parts = splitByMarkdownHeadings(t);
   if (parts.length > 1) return parts;
 
-  // 4) Size fallback with overlap
-  const size = 1200;
-  const overlap = 200;
+  parts = splitByBullets(t);
+  if (parts.length > 1) return parts;
 
-  if (t.length <= size) return [t];
+  return sizeChunk(t, 1200, 200);
+}
 
-  const chunks = [];
-  for (let i = 0; i < t.length; i += size - overlap) {
-    chunks.push(t.slice(i, i + size).trim());
-  }
-  return chunks.filter(Boolean);
+function chunkFaqs(text) {
+  const t = normalizeText(text);
+  if (!t) return [];
+
+  const blocks = splitByBlankBlocks(t);
+  if (blocks.length > 1) return bundle(blocks, 8);
+
+  const headingSplit = splitByMarkdownHeadings(t);
+  if (headingSplit.length > 1) return bundle(headingSplit, 8);
+
+  return genericChunk(t);
+}
+
+function chunkListings(text) {
+  const t = normalizeText(text);
+  if (!t) return [];
+
+  let chunks = genericChunk(t);
+  if (chunks.length > 1) return chunks;
+
+  chunks = splitByCommonRecordStarts(t, [
+    "property\\s*\\d*\\s*:",
+    "unit\\s*\\d*\\s*:",
+    "listing\\s*\\d*\\s*:",
+    "project\\s*:",
+    "compound\\s*:",
+    "apartment\\s*\\d*\\s*:",
+    "villa\\s*\\d*\\s*:",
+    "townhouse\\s*\\d*\\s*:",
+    "studio\\s*\\d*\\s*:",
+  ]);
+  if (chunks.length > 1) return chunks;
+
+  return sizeChunk(t, 1400, 220);
+}
+
+function chunkMenu(text) {
+  const t = normalizeText(text);
+  if (!t) return [];
+
+  let chunks = t
+    .split(/(?=\n?(?:category\s*:|section\s*:|breakfast|lunch|dinner|drinks|desserts|appetizers|main courses))/i)
+    .map((s) => s.trim())
+    .filter(Boolean);
+
+  if (chunks.length > 1) return chunks;
+
+  const bulletSplit = splitByBullets(t);
+  if (bulletSplit.length > 1) return bundle(bulletSplit, 12);
+
+  const blankBlocks = splitByBlankBlocks(t);
+  if (blankBlocks.length > 1) return bundle(blankBlocks, 6);
+
+  return genericChunk(t);
+}
+
+function chunkProducts(text) {
+  const t = normalizeText(text);
+  if (!t) return [];
+
+  let chunks = splitByCommonRecordStarts(t, [
+    "product\\s*\\d*\\s*:",
+    "item\\s*\\d*\\s*:",
+    "sku\\s*:",
+    "category\\s*:",
+    "collection\\s*:",
+    "brand\\s*:",
+  ]);
+  if (chunks.length > 1) return chunks;
+
+  const blocks = splitByBlankBlocks(t);
+  if (blocks.length > 1) return bundle(blocks, 6);
+
+  const bulletSplit = splitByBullets(t);
+  if (bulletSplit.length > 1) return bundle(bulletSplit, 12);
+
+  return genericChunk(t);
+}
+
+function chunkPaymentPlans(text) {
+  const t = normalizeText(text);
+  if (!t) return [];
+
+  const blocks = splitByBlankBlocks(t);
+  if (blocks.length > 1) return bundle(blocks, 3);
+
+  const headingSplit = splitByMarkdownHeadings(t);
+  if (headingSplit.length > 1) return bundle(headingSplit, 3);
+
+  return genericChunk(t);
+}
+
+function chunkBooking(text) {
+  const t = normalizeText(text);
+  if (!t) return [];
+
+  const blocks = splitByBlankBlocks(t);
+  if (blocks.length > 1) return bundle(blocks, 4);
+
+  const bulletSplit = splitByBullets(t);
+  if (bulletSplit.length > 1) return bundle(bulletSplit, 10);
+
+  return genericChunk(t);
+}
+
+function chunkTeam(text) {
+  const t = normalizeText(text);
+  if (!t) return [];
+
+  let chunks = splitByCommonRecordStarts(t, [
+    "doctor\\s*\\d*\\s*:",
+    "dr\\.\\s+",
+    "staff\\s*\\d*\\s*:",
+    "team member\\s*\\d*\\s*:",
+    "trainer\\s*\\d*\\s*:",
+    "teacher\\s*\\d*\\s*:",
+    "instructor\\s*\\d*\\s*:",
+    "specialist\\s*\\d*\\s*:",
+  ]);
+  if (chunks.length > 1) return chunks;
+
+  const blocks = splitByBlankBlocks(t);
+  if (blocks.length > 1) return bundle(blocks, 5);
+
+  return genericChunk(t);
+}
+
+function chunkCourses(text) {
+  const t = normalizeText(text);
+  if (!t) return [];
+
+  let chunks = splitByCommonRecordStarts(t, [
+    "course\\s*\\d*\\s*:",
+    "program\\s*\\d*\\s*:",
+    "class\\s*\\d*\\s*:",
+    "module\\s*\\d*\\s*:",
+    "track\\s*\\d*\\s*:",
+  ]);
+  if (chunks.length > 1) return chunks;
+
+  const blocks = splitByBlankBlocks(t);
+  if (blocks.length > 1) return bundle(blocks, 4);
+
+  return genericChunk(t);
+}
+
+function chunkRooms(text) {
+  const t = normalizeText(text);
+  if (!t) return [];
+
+  let chunks = splitByCommonRecordStarts(t, [
+    "room\\s*\\d*\\s*:",
+    "suite\\s*\\d*\\s*:",
+    "accommodation\\s*:",
+    "room type\\s*:",
+  ]);
+  if (chunks.length > 1) return chunks;
+
+  const blocks = splitByBlankBlocks(t);
+  if (blocks.length > 1) return bundle(blocks, 4);
+
+  return genericChunk(t);
+}
+
+function chunkDelivery(text) {
+  const t = normalizeText(text);
+  if (!t) return [];
+
+  const blocks = splitByBlankBlocks(t);
+  if (blocks.length > 1) return bundle(blocks, 4);
+
+  const bulletSplit = splitByBullets(t);
+  if (bulletSplit.length > 1) return bundle(bulletSplit, 10);
+
+  return genericChunk(t);
+}
+
+function chunkPolicies(text) {
+  const t = normalizeText(text);
+  if (!t) return [];
+
+  const blocks = splitByBlankBlocks(t);
+  if (blocks.length > 1) return bundle(blocks, 4);
+
+  const headingSplit = splitByMarkdownHeadings(t);
+  if (headingSplit.length > 1) return bundle(headingSplit, 4);
+
+  return genericChunk(t);
+}
+
+function chunkSimpleInfo(text) {
+  return genericChunk(text);
 }
 
 export function chunkSection(sectionName, text) {
-  const t = String(text || "").trim();
+  const section = String(sectionName || "").trim();
+  const t = normalizeText(text);
   if (!t) return [];
 
   let chunks = [];
 
-  switch (sectionName) {
-    case "listings": {
-      // 1) delimiter/blank/headings/size
-      let listings = genericChunk(t);
-
-      // 2) If still one block, try a light “record heading” split
-      if (listings.length <= 1) {
-        listings = t
-          .split(/(?=property\s*\d*:|unit\s*\d*:|listing\s*\d*:|project:|compound:)/i)
-          .map((s) => s.trim())
-          .filter(Boolean);
-
-        if (listings.length <= 1) listings = genericChunk(t);
-      }
-
-      chunks = listings;
+  switch (section) {
+    case "listings":
+      chunks = chunkListings(t);
       break;
-    }
 
-    case "paymentPlans": {
-      const blocks = splitByBlankBlocks(t);
-      chunks = blocks.length <= 1 ? genericChunk(t) : bundle(blocks, 3);
+    case "paymentPlans":
+      chunks = chunkPaymentPlans(t);
       break;
-    }
 
-    case "faqs": {
-      const faqs = splitByBlankBlocks(t);
-      chunks = faqs.length <= 1 ? genericChunk(t) : bundle(faqs, 8);
+    case "faqs":
+      chunks = chunkFaqs(t);
       break;
-    }
 
-    default: {
-      chunks = genericChunk(t);
+    case "menu":
+      chunks = chunkMenu(t);
       break;
-    }
+
+    case "products":
+      chunks = chunkProducts(t);
+      break;
+
+    case "booking":
+      chunks = chunkBooking(t);
+      break;
+
+    case "team":
+      chunks = chunkTeam(t);
+      break;
+
+    case "courses":
+      chunks = chunkCourses(t);
+      break;
+
+    case "rooms":
+      chunks = chunkRooms(t);
+      break;
+
+    case "delivery":
+      chunks = chunkDelivery(t);
+      break;
+
+    case "policies":
+      chunks = chunkPolicies(t);
+      break;
+
+    case "profile":
+    case "contact":
+    case "hours":
+    case "offers":
+    case "other":
+    case "mixed":
+    default:
+      chunks = chunkSimpleInfo(t);
+      break;
   }
 
-  return withSectionTitle(sectionName, chunks);
+  return withSectionTitle(section, chunks);
 }
