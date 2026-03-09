@@ -80,10 +80,6 @@ function buildOrderFlowBlock(clientData = {}) {
 
   if (!orderFlow.enabled) return "";
 
-  const requiredFields = Array.isArray(orderFlow.requiredFields)
-    ? orderFlow.requiredFields.filter(Boolean).map((f) => safeText(f))
-    : [];
-
   const summaryTitle = safeText(orderFlow.summaryTitle) || "Order Summary";
   const confirmationQuestion =
     safeText(orderFlow.confirmationQuestion) || "Confirm order?";
@@ -94,38 +90,39 @@ function buildOrderFlowBlock(clientData = {}) {
     "Your order request has been received.\nA staff member will contact you shortly to confirm the details.";
   const orderToken = safeText(orderFlow.token) || "[ORDER_REQUEST]";
 
-  const storeLabel = safeText(orderFlow.storeLabel) || "Store";
   const nameLabel = safeText(orderFlow.nameLabel) || "Customer Name";
   const phoneLabel = safeText(orderFlow.phoneLabel) || "Customer Phone";
   const itemsLabel = safeText(orderFlow.itemsLabel) || "Items";
   const deliveryLabel = safeText(orderFlow.deliveryLabel) || "Delivery Info";
   const notesLabel = safeText(orderFlow.notesLabel) || "Notes";
 
-  const requiredFieldsBlock =
-    requiredFields.length > 0
-      ? requiredFields.map((field, index) => `${index + 1}) ${field}`).join("\n")
-      : "- No required fields configured.";
-
   return `
 ORDER FLOW RULES (CRITICAL)
 - When the user wants to place an order, you must follow the order flow exactly.
 - Ask for missing details ONE question at a time.
-- Never ask multiple questions in a single message.
-- If an item has required options and they are missing, ask for the missing option before confirming.
-- Do not show the order summary until ALL required details are collected.
-- In the order summary, every business fact must come from retrieved business data only.
-- For the store/business name specifically, use the real business name only if it exists in retrieved business data.
-- Never use client account name, owner name, promptConfig business name, page name, or any internal metadata as the store/business name.
-- If the business name is not present in retrieved business data, leave the store name generic and do not invent one.
+- Never ask multiple questions in one message.
+- Collect the order details in this exact order:
+  1) ${nameLabel}
+  2) ${phoneLabel}
+  3) ${itemsLabel}
+  4) ${deliveryLabel}
+  5) ${notesLabel}
 
-REQUIRED ORDER FIELDS
-${requiredFieldsBlock}
+FIELD RULES
+- ${nameLabel} is required.
+- ${phoneLabel} is required.
+- ${itemsLabel} is required.
+- ${deliveryLabel} is required.
+- ${notesLabel} is optional and must always be asked LAST.
+- If the user does not want to add ${notesLabel}, store it as "None".
+- Do not skip ahead to later fields if an earlier required field is still missing.
+- If an item has required options and they are missing, ask about those options when collecting ${itemsLabel}.
+- Do not show the order summary until ALL required details are collected.
 
 CONFIRMATION STEP (MANDATORY)
-After ALL required details are collected, output the summary using exactly this format and labels:
+After all required details are collected, output the summary using exactly this format:
 
 ${summaryTitle}
-${storeLabel}: <business name from retrieved data, or leave generic if unavailable>
 ${nameLabel}: <name>
 ${phoneLabel}: <phone>
 ${itemsLabel}: <items + quantities + options>

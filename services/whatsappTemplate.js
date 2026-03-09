@@ -1,33 +1,62 @@
 // services/whatsappTemplate.js
 import fetch from "node-fetch";
 
-const API_VERSION = (process.env.WHATSAPP_API_VERSION || "v20.0").trim();
+const API_VERSION = (process.env.WHATSAPP_API_VERSION || "v22.0").trim();
 
-function normalizeToDigits(to) {
-  return String(to || "").trim().replace(/[^\d]/g, "");
+function normalizeToDigitsE164(to) {
+  return String(to || "")
+    .trim()
+    .replace(/[^\d]/g, "");
 }
 
-async function safeJson(resp) {
-  const text = await resp.text();
-  try { return JSON.parse(text); } catch { return { raw: text }; }
+function safeJsonParse(text) {
+  try {
+    return JSON.parse(text);
+  } catch {
+    return { raw: text };
+  }
 }
 
+/**
+ * Send a WhatsApp template message.
+ *
+ * Priority:
+ *  1) phoneNumberId passed in
+ *  2) process.env.WHATSAPP_PHONE_NUMBER_ID
+ *
+ * Priority:
+ *  1) accessToken passed in
+ *  2) process.env.WHATSAPP_TOKEN
+ */
 export async function sendWhatsAppTemplate({
   phoneNumberId,
   to,
   templateName,
   languageCode = "en_US",
-  bodyParams = [], // array of strings for {{1}}, {{2}}, ...
+  bodyParams = [],
   accessToken,
 }) {
-  const pnid = String(phoneNumberId || "").trim();
-  if (!pnid) throw new Error("Missing phoneNumberId");
+  const pnid = String(phoneNumberId || process.env.WHATSAPP_PHONE_NUMBER_ID || "").trim();
+  if (!pnid) {
+    throw new Error("Missing phoneNumberId (or WHATSAPP_PHONE_NUMBER_ID)");
+  }
 
-  const toDigits = normalizeToDigits(to);
-  if (!toDigits) throw new Error("Missing to");
+  const token = String(accessToken || process.env.WHATSAPP_TOKEN || "").trim();
+  if (!token) {
+    throw new Error("Missing accessToken (or WHATSAPP_TOKEN)");
+  }
 
-  if (!templateName) throw new Error("Missing templateName");
-  if (!accessToken) throw new Error("Missing accessToken");
+  const toDigits = normalizeToDigitsE164(to);
+  if (!toDigits) {
+    throw new Error("Missing recipient number");
+  }
+
+  const name = String(templateName || "").trim();
+  if (!name) {
+    throw new Error("Missing templateName");
+  }
+
+  const lang = String(languageCode || "en_US").trim();
 
   const url = `https://graph.facebook.com/${API_VERSION}/${encodeURIComponent(pnid)}/messages`;
 
@@ -36,14 +65,17 @@ export async function sendWhatsAppTemplate({
     to: toDigits,
     type: "template",
     template: {
-      name: templateName,
-      language: { code: languageCode },
-      ...(bodyParams.length
+      name,
+      language: { code: lang },
+      ...(Array.isArray(bodyParams) && bodyParams.length > 0
         ? {
             components: [
               {
                 type: "body",
-                parameters: bodyParams.map((t) => ({ type: "text", text: String(t) })),
+                parameters: bodyParams.map((value) => ({
+                  type: "text",
+                  text: String(value ?? ""),
+                })),
               },
             ],
           }
@@ -54,17 +86,20 @@ export async function sendWhatsAppTemplate({
   const resp = await fetch(url, {
     method: "POST",
     headers: {
+      Authorization: `Bearer ${token}`,
       "Content-Type": "application/json",
-      Authorization: `Bearer ${accessToken}`,
     },
     body: JSON.stringify(payload),
   });
 
-  const data = await safeJson(resp);
+  const raw = await resp.text();
+  const data = safeJsonParse(raw);
+
   if (!resp.ok) {
-    const err = new Error(`WhatsApp template send failed (${resp.status})`);
-    err.data = data;
-    throw err;
+    throw new Error(
+      `WhatsApp template send failed (HTTP ${resp.status}): ${JSON.stringify(data)}`
+    );
   }
+
   return data;
 }
