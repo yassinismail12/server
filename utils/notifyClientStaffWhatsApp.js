@@ -1,4 +1,4 @@
-async function notifyClientStaffNewOrderByClientId({ clientId, payload }) {
+export async function notifyClientStaffNewOrderByClientId({ clientId, payload }) {
   const db = await connectDB();
   const cid = normalizeId(clientId);
 
