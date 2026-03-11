@@ -77,20 +77,7 @@ async function ensureIndexes(db) {
   }
 }
 
-async function connectDB() {
-  if (!mongoConnected) {
-    log("info", "Connecting to MongoDB...");
-    await mongoClient.connect();
-    mongoConnected = true;
-    log("info", "MongoDB connected");
 
-    try {
-      const db = mongoClient.db(dbName);
-      await ensureIndexes(db);
-    } catch {}
-  }
-  return mongoClient.db(dbName);
-}
 
 // ===============================
 // Idempotency (Meta retries webhooks)
