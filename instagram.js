@@ -20,7 +20,7 @@ import jwt from "jsonwebtoken";
 import { notifyClientStaffHumanNeeded } from "./utils/notifyClientStaffHumanNeeded.js";
 import { retrieveChunks } from "./services/retrieval.js";
 import { buildChatMessages } from "./services/promptBuilder.js";
-import {connectDB} from "./services/db.js";
+import { connectToDB as connectDB } from "./services/db.js";
 import { getChatCompletion } from "./services/openai.js";
 import { buildRulesPrompt } from "./utils/systemPrompt.js";
 import { sendQuotaWarning } from "./sendQuotaWarning.js";
