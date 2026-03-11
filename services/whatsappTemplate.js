@@ -36,15 +36,8 @@ export async function sendWhatsAppTemplate({
   bodyParams = [],
   accessToken,
 }) {
-  const pnid = String(phoneNumberId || process.env.WHATSAPP_PHONE_NUMBER_ID || "").trim();
-  if (!pnid) {
-    throw new Error("Missing phoneNumberId (or WHATSAPP_PHONE_NUMBER_ID)");
-  }
-
-  const token = String(accessToken || process.env.WHATSAPP_TOKEN || "").trim();
-  if (!token) {
-    throw new Error("Missing accessToken (or WHATSAPP_TOKEN)");
-  }
+const pnid = String(phoneNumberId || process.env.WHATSAPP_PHONE_NUMBER_ID || "").trim();
+const token = String(accessToken || process.env.WHATSAPP_TOKEN || "").trim();
 
   const toDigits = normalizeToDigitsE164(to);
   if (!toDigits) {

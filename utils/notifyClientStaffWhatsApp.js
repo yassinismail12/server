@@ -44,12 +44,6 @@ export async function notifyClientStaffNewOrderByClientId({ clientId, payload })
     return { ok: true, sent: 0, reason: "no_staff_numbers", results: [] };
   }
 
-  const phoneNumberId = String(client.whatsappPhoneNumberId || "").trim();
-  if (!phoneNumberId) {
-    throw new Error(`Missing whatsappPhoneNumberId for clientId=${cid}`);
-  }
-
-  const accessToken = String(client.whatsappAccessToken || "").trim() || undefined;
 
   const clientName = waSafeParam(client.name || client.businessName || "Client");
   const customerName = waSafeParam(payload?.customerName || "Unknown");
@@ -67,14 +61,12 @@ export async function notifyClientStaffNewOrderByClientId({ clientId, payload })
     try {
       console.log("📤 Sending WhatsApp order alert to:", to);
 
-      const response = await sendWhatsAppTemplate({
-        phoneNumberId,
-        accessToken,
-        to,
-        templateName: "new_order_alert",
-        languageCode: "en_US",
-        bodyParams: [clientName, customerName, customerPhone, items, notes, orderId],
-      });
+   const response = await sendWhatsAppTemplate({
+  to,
+  templateName: "new_order_alert",
+  languageCode: "en_US",
+  bodyParams: [clientName, customerName, customerPhone, items, notes, orderId],
+});
 
       sent += 1;
       results.push({ to, ok: true, response });
