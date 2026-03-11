@@ -1,6 +1,6 @@
 import express from "express";
 import Order from "../order.js";
-import { notifyClientStaffNewOrder } from "../utils/notifyClientStaffWhatsApp.js";
+import { notifyClientStaffNewOrderByClientId } from "../utils/notifyClientStaffWhatsApp.js";
 
 const router = express.Router();
 
@@ -34,7 +34,7 @@ router.post("/orders", async (req, res) => {
     });
 
     // 2) Notify staff on WhatsApp (template)
-    const notifyResult = await notifyClientStaffNewOrder({
+    const notifyResult = await notifyClientStaffNewOrderByClientId({
       clientId,
       payload: {
         customerName,
