@@ -11,6 +11,15 @@ const promptConfigSchema = new mongoose.Schema(
       enabled: { type: Boolean, default: true },
       token: { type: String, default: "[Human_request]" },
     },
+    tourFlow: {
+  enabled: { type: Boolean, default: false },
+  token: { type: String, default: "[TOUR_REQUEST]" },
+  confirmationMessage: {
+    type: String,
+    default:
+      "Your booking request has been received.\nA staff member will contact you shortly.",
+  },
+},
 
     orderFlow: {
       enabled: { type: Boolean, default: false },
