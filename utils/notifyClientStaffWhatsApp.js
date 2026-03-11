@@ -1,3 +1,18 @@
+import { connectToDB as connectDB } from "../services/db.js";
+import { sendWhatsAppTemplate } from "../services/whatsappTemplate.js";
+
+function normalizeId(id) {
+  return String(id || "").trim();
+}
+
+function waSafeParam(value) {
+  return String(value ?? "")
+    .replace(/[\r\n\t]+/g, " ")
+    .replace(/\s{5,}/g, "    ")
+    .trim()
+    .slice(0, 1024);
+}
+
 export async function notifyClientStaffNewOrderByClientId({ clientId, payload }) {
   const db = await connectDB();
   const cid = normalizeId(clientId);
@@ -34,10 +49,6 @@ export async function notifyClientStaffNewOrderByClientId({ clientId, payload })
     throw new Error(`Missing whatsappPhoneNumberId for clientId=${cid}`);
   }
 
-  // Optional:
-  // If you later store per-client tokens, use:
-  // const accessToken = String(client.whatsappAccessToken || "").trim();
-  // For now this safely falls back to env token if omitted.
   const accessToken = String(client.whatsappAccessToken || "").trim() || undefined;
 
   const clientName = waSafeParam(client.name || client.businessName || "Client");
