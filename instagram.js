@@ -20,7 +20,7 @@ import jwt from "jsonwebtoken";
 import { notifyClientStaffHumanNeeded } from "./utils/notifyClientStaffHumanNeeded.js";
 import { retrieveChunks } from "./services/retrieval.js";
 import { buildChatMessages } from "./services/promptBuilder.js";
-
+import {connectDB} from "./services/db.js";
 import { getChatCompletion } from "./services/openai.js";
 import { buildRulesPrompt } from "./utils/systemPrompt.js";
 import { sendQuotaWarning } from "./sendQuotaWarning.js";
@@ -54,20 +54,7 @@ function log(level, msg, meta = {}) {
   return base;
 }
 
-async function connectDB() {
-  if (!mongoConnected) {
-    log("info", "Connecting to MongoDB...");
-    await mongoClient.connect();
-    mongoConnected = true;
-    log("info", "MongoDB connected");
 
-    try {
-      const db = mongoClient.db(dbName);
-      await ensureIndexes(db);
-    } catch {}
-  }
-  return mongoClient.db(dbName);
-}
 
 
 async function logToDb(level, source, message, meta = {}) {

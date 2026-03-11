@@ -11,6 +11,7 @@ import { getChatCompletion } from "./services/openai.js";
 import { buildRulesPrompt } from "./utils/systemPrompt.js";
 import { sendMessengerReply, sendMarkAsRead } from "./services/messenger.js";
 import { sendQuotaWarning } from "./sendQuotaWarning.js";
+import {connectDB} from "./services/db.js";
 import Order from "./order.js";
 import { notifyClientStaffNewOrderByClientId } from "./utils/notifyClientStaffWhatsApp.js";
 import { notifyClientStaffHumanNeeded } from "./utils/notifyClientStaffHumanNeeded.js";
