@@ -17,6 +17,65 @@ function normalizeChunkText(text = "") {
   return String(text || "").replace(/\n{3,}/g, "\n\n").trim();
 }
 
+function safeSectionLabel(section, sectionTitleMap = null) {
+  const raw = String(section || "").trim();
+  if (!raw) return "SECTION";
+
+  if (sectionTitleMap && sectionTitleMap[raw]) {
+    return String(sectionTitleMap[raw]).trim();
+  }
+
+  return raw.replace(/[_-]+/g, " ").toUpperCase();
+}
+
+function normalizeHistory(history = []) {
+  return (Array.isArray(history) ? history : [])
+    .filter(
+      (m) =>
+        m &&
+        (m.role === "user" || m.role === "assistant") &&
+        typeof m.content === "string" &&
+        m.content.trim()
+    )
+    .map((m) => ({
+      role: m.role,
+      content: String(m.content).trim(),
+      createdAt: m.createdAt ? new Date(m.createdAt) : null,
+    }));
+}
+
+function trimHistoryToBudget(history = [], maxHistoryTokens = 800) {
+  const normalized = normalizeHistory(history);
+  const picked = [];
+  let used = 0;
+
+  for (let i = normalized.length - 1; i >= 0; i--) {
+    const msg = normalized[i];
+    const cost = estimateTokens(msg.content);
+
+    if (used + cost <= maxHistoryTokens) {
+      picked.unshift({ role: msg.role, content: msg.content });
+      used += cost;
+      continue;
+    }
+
+    const remaining = maxHistoryTokens - used;
+    if (remaining > 40) {
+      const trimmed = hardTrimToTokenBudget(msg.content, remaining);
+      if (trimmed) {
+        picked.unshift({ role: msg.role, content: trimmed });
+        used += estimateTokens(trimmed);
+      }
+    }
+    break;
+  }
+
+  return {
+    historyMessages: picked,
+    usedTokens: used,
+  };
+}
+
 export function buildDataBlockBudgeted(groupedChunks, sectionsOrder, opts = {}) {
   const {
     maxDataTokens = 2500,
@@ -119,25 +178,16 @@ export function buildDataBlockBudgeted(groupedChunks, sectionsOrder, opts = {}) 
   };
 }
 
-function safeSectionLabel(section, sectionTitleMap = null) {
-  const raw = String(section || "").trim();
-  if (!raw) return "SECTION";
-
-  if (sectionTitleMap && sectionTitleMap[raw]) {
-    return String(sectionTitleMap[raw]).trim();
-  }
-
-  return raw.replace(/[_-]+/g, " ").toUpperCase();
-}
-
 export function buildChatMessages({
   rulesPrompt,
   businessKnowledgeBlock = "",
   groupedChunks,
+  history = [],
   userText,
   sectionsOrder,
   maxTotalTokens = 3500,
   maxDataTokens = 2500,
+  maxHistoryTokens = 800,
   perChunkMaxTokens = 300,
   sectionTitleMap = null,
 } = {}) {
@@ -145,7 +195,7 @@ export function buildChatMessages({
   const safeBusinessKnowledgeBlock = String(businessKnowledgeBlock || "").trim();
   const safeUserText = String(userText || "").trim();
 
-  const {
+  let {
     dataBlock,
     usedTokens: dataTokens,
     includedChunkCount,
@@ -155,20 +205,28 @@ export function buildChatMessages({
     sectionTitleMap,
   });
 
-  const initialUserParts = [
-    safeBusinessKnowledgeBlock,
-    dataBlock,
-    `User message:\n${safeUserText}`,
-  ].filter(Boolean);
+  let { historyMessages, usedTokens: historyTokens } = trimHistoryToBudget(
+    history,
+    maxHistoryTokens
+  );
 
-  let finalUserContent = initialUserParts.join("\n\n");
-  let totalTokens =
-    estimateTokens(safeRulesPrompt) + estimateTokens(finalUserContent);
+  let knowledgeBlock = [safeBusinessKnowledgeBlock, dataBlock].filter(Boolean).join("\n\n");
+
+  let messages = [
+    { role: "system", content: safeRulesPrompt },
+    ...(knowledgeBlock ? [{ role: "system", content: knowledgeBlock }] : []),
+    ...historyMessages,
+    { role: "user", content: safeUserText },
+  ];
+
+  let totalTokens = messages.reduce((sum, m) => sum + estimateTokens(m.content), 0);
 
   const meta = {
     totalTokens,
     dataTokens,
+    historyTokens,
     includedChunkCount,
+    historyCount: historyMessages.length,
     code: null,
     advice: null,
   };
@@ -176,56 +234,65 @@ export function buildChatMessages({
   if (totalTokens > maxTotalTokens) {
     meta.code = "PROMPT_RISK_LONG_MESSAGE";
     meta.advice =
-      "Outgoing prompt too large. Reduce extra data, reduce per-chunk size, or reduce message history.";
+      "Outgoing prompt too large. Reduce extra data, reduce history, reduce per-chunk size, or trim the current user message.";
 
     const reducedDataBudget = Math.max(500, Math.floor(maxDataTokens * 0.5));
+    const reducedHistoryBudget = Math.max(200, Math.floor(maxHistoryTokens * 0.5));
     const reducedPerChunkMax = Math.max(120, Math.floor(perChunkMaxTokens * 0.7));
 
-    const rebuilt = buildDataBlockBudgeted(groupedChunks, sectionsOrder, {
+    const rebuiltData = buildDataBlockBudgeted(groupedChunks, sectionsOrder, {
       maxDataTokens: reducedDataBudget,
       perChunkMaxTokens: reducedPerChunkMax,
       sectionTitleMap,
     });
 
-    const rebuiltParts = [
-      safeBusinessKnowledgeBlock,
-      rebuilt.dataBlock,
-      `User message:\n${safeUserText}`,
-    ].filter(Boolean);
+    dataBlock = rebuiltData.dataBlock;
+    dataTokens = rebuiltData.usedTokens;
+    includedChunkCount = rebuiltData.includedChunkCount;
 
-    finalUserContent = rebuiltParts.join("\n\n");
-    totalTokens =
-      estimateTokens(safeRulesPrompt) + estimateTokens(finalUserContent);
+    const rebuiltHistory = trimHistoryToBudget(history, reducedHistoryBudget);
+    historyMessages = rebuiltHistory.historyMessages;
+    historyTokens = rebuiltHistory.usedTokens;
 
-    meta.dataTokens = rebuilt.usedTokens;
-    meta.includedChunkCount = rebuilt.includedChunkCount;
+    knowledgeBlock = [safeBusinessKnowledgeBlock, dataBlock].filter(Boolean).join("\n\n");
+
+    messages = [
+      { role: "system", content: safeRulesPrompt },
+      ...(knowledgeBlock ? [{ role: "system", content: knowledgeBlock }] : []),
+      ...historyMessages,
+      { role: "user", content: safeUserText },
+    ];
+
+    totalTokens = messages.reduce((sum, m) => sum + estimateTokens(m.content), 0);
+
     meta.totalTokens = totalTokens;
+    meta.dataTokens = dataTokens;
+    meta.historyTokens = historyTokens;
+    meta.includedChunkCount = includedChunkCount;
+    meta.historyCount = historyMessages.length;
 
     if (totalTokens > maxTotalTokens) {
-      const fixedParts = [safeBusinessKnowledgeBlock, rebuilt.dataBlock].filter(Boolean);
       const fixedCost =
         estimateTokens(safeRulesPrompt) +
-        estimateTokens(fixedParts.join("\n\n")) +
-        estimateTokens("User message:\n");
+        estimateTokens(knowledgeBlock) +
+        historyMessages.reduce((sum, m) => sum + estimateTokens(m.content), 0);
 
       const remainingForUser = Math.max(120, maxTotalTokens - fixedCost);
       const trimmedUserText = hardTrimToTokenBudget(safeUserText, remainingForUser);
 
-      finalUserContent = [
-        ...fixedParts,
-        `User message:\n${trimmedUserText}`,
-      ].filter(Boolean).join("\n\n");
+      messages = [
+        { role: "system", content: safeRulesPrompt },
+        ...(knowledgeBlock ? [{ role: "system", content: knowledgeBlock }] : []),
+        ...historyMessages,
+        { role: "user", content: trimmedUserText },
+      ];
 
-      meta.totalTokens =
-        estimateTokens(safeRulesPrompt) + estimateTokens(finalUserContent);
+      meta.totalTokens = messages.reduce((sum, m) => sum + estimateTokens(m.content), 0);
     }
   }
 
   return {
-    messages: [
-      { role: "system", content: safeRulesPrompt },
-      { role: "user", content: finalUserContent },
-    ],
+    messages,
     meta,
   };
 }

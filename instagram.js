@@ -24,7 +24,7 @@ import { buildChatMessages } from "./services/promptBuilder.js";
 import { getChatCompletion } from "./services/openai.js";
 import { buildRulesPrompt } from "./utils/systemPrompt.js";
 import { sendQuotaWarning } from "./sendQuotaWarning.js";
-
+import {notifyClientStaffNewOrderByClientId} from "./utils/notifyClientStaffWhatsApp.js";
 import Order from "./order.js";
 import { sendTourEmail } from "./sendEmail.js";
 import { extractTourData } from "./extractTourData.js";
@@ -613,71 +613,29 @@ async function fetchIgBusinessMedia({ igId, pageAccessToken, limit = 6 }) {
 // ===============================
 // WhatsApp notify (lookup by clientId STRING, no ObjectId casting)
 // ===============================
-async function notifyClientStaffNewOrderByClientId({ clientId, payload }) {
-  const db = await connectDB();
-  const cid = normalizeId(clientId);
 
-  const client = await db.collection("Clients").findOne({ clientId: cid });
-  if (!client) throw new Error(`Client not found for clientId=${cid}`);
-
-  let staffNumbers = [];
-  if (Array.isArray(client.staffNumbers) && client.staffNumbers.length > 0) {
-    staffNumbers = client.staffNumbers;
-  } else if (client.staffWhatsApp) {
-    staffNumbers = [client.staffWhatsApp];
-  }
-
-  staffNumbers = staffNumbers.map((n) => String(n).trim()).filter(Boolean);
-
-  console.log("📲 WhatsApp staff numbers resolved:", staffNumbers);
-  if (!staffNumbers.length) {
-    console.warn("⚠️ No staff WhatsApp numbers found for client:", cid);
-    return { ok: true, sent: 0, reason: "no staff numbers" };
-  }
-
-  const clientName = waSafeParam(client.name || "Client");
-  const customerName = waSafeParam(payload?.customerName || "Unknown");
-  const customerPhone = waSafeParam(payload?.customerPhone || "N/A");
-  const items = waSafeParam(payload?.itemsText || "N/A");
-  const notes = waSafeParam(payload?.notes || "—");
-  const orderId = waSafeParam(payload?.orderId || "—");
-
-  let sent = 0;
-  const results = [];
-
-  for (const toRaw of staffNumbers) {
-    const to = waSafeParam(toRaw);
-    try {
-      console.log("📤 Sending WhatsApp order alert to:", to);
-
-      const r = await sendWhatsAppTemplate({
-        to,
-        templateName: "new_order_alert",
-        languageCode: "en_US",
-        bodyParams: [clientName, customerName, customerPhone, items, notes, orderId],
-      });
-
-      sent++;
-      results.push({ to, ok: true, response: r });
-    } catch (e) {
-      console.error("❌ WhatsApp send failed for", to, e.message);
-      results.push({ to, ok: false, error: e.message });
-    }
-  }
-
-  return { ok: true, sent, results };
-}
 
 // ===============================
 // Order flow
 // ===============================
-async function createOrderFlow({ clientId, igBusinessId, senderId, orderSummaryText, channel = "instagram" }) {
+async function createOrderFlow({
+  clientId,
+  igBusinessId,
+  senderId,
+  orderSummaryText,
+  channel = "instagram",
+}) {
   const db = await connectDB();
   const cid = normalizeId(clientId);
-  if (!cid) throw new Error("Missing clientId (string) for createOrderFlow");
+
+  if (!cid) {
+    throw new Error("Missing clientId (string) for createOrderFlow");
+  }
 
   const client = await db.collection("Clients").findOne({ clientId: cid });
-  if (!client) throw new Error(`Client not found for clientId=${cid}`);
+  if (!client) {
+    throw new Error(`Client not found for clientId=${cid}`);
+  }
 
   const customer = await db.collection("Customers").findOne({
     igBusinessId: normalizeId(igBusinessId),
@@ -693,7 +651,6 @@ async function createOrderFlow({ clientId, igBusinessId, senderId, orderSummaryT
 
   const customerName = nameFromAi || customer?.name || "Unknown";
   const customerPhone = phoneFromAi || customer?.phone || "N/A";
-
   const itemsText = itemsFromAi || orderSummaryText;
 
   const combinedNotes = [
@@ -708,16 +665,20 @@ async function createOrderFlow({ clientId, igBusinessId, senderId, orderSummaryT
   const notifyResult = await notifyClientStaffNewOrderByClientId({
     clientId: cid,
     payload: {
-      customerName,
-      customerPhone,
-      itemsText,
-      notes: combinedNotes,
-      orderId: fallbackOrderId,
-      channel: "instagram",
+      customerName: waSafeParam(customerName),
+      customerPhone: waSafeParam(customerPhone),
+      itemsText: waSafeParam(itemsText),
+      notes: waSafeParam(combinedNotes),
+      orderId: waSafeParam(fallbackOrderId),
+      channel,
     },
   });
 
-  log("info", "WhatsApp notify result (IG)", { igBusinessId, clientId: cid, notifyResult });
+  log("info", "WhatsApp notify result (IG)", {
+    igBusinessId,
+    clientId: cid,
+    notifyResult,
+  });
 
   try {
     const order = await Order.create({
@@ -733,15 +694,26 @@ async function createOrderFlow({ clientId, igBusinessId, senderId, orderSummaryT
       status: "new",
     });
 
-    log("info", "Order saved (IG)", { igBusinessId, clientId: cid, orderId: String(order._id) });
+    log("info", "Order saved (IG)", {
+      igBusinessId,
+      clientId: cid,
+      orderId: String(order._id),
+    });
+
     return { order, notifyResult };
   } catch (e) {
-    log("warn", "Order save failed (IG) (WhatsApp already sent)", { igBusinessId, clientId: cid, err: e.message });
+    log("warn", "Order save failed (IG) (WhatsApp already sent)", {
+      igBusinessId,
+      clientId: cid,
+      err: e.message,
+    });
+
     await logToDb("warn", "order", "Order save failed (IG) (WhatsApp already sent)", {
       igBusinessId,
       clientId: cid,
       err: e.message,
     });
+
     return { order: null, notifyResult };
   }
 }

@@ -1,7 +1,7 @@
 // services/whatsappTemplate.js
 import fetch from "node-fetch";
 
-const API_VERSION = (process.env.WHATSAPP_API_VERSION || "v22.0").trim();
+const API_VERSION = String(process.env.WHATSAPP_API_VERSION || "v22.0").trim();
 
 function normalizeToDigitsE164(to) {
   return String(to || "")
@@ -36,12 +36,12 @@ export async function sendWhatsAppTemplate({
   bodyParams = [],
   accessToken,
 }) {
-  const pnid = String(whatsappPhoneNumberId || process.env.WHATSAPP_PHONE_NUMBER_ID || "").trim();
+  const pnid = String(phoneNumberId || process.env.WHATSAPP_PHONE_NUMBER_ID || "").trim();
   if (!pnid) {
     throw new Error("Missing phoneNumberId (or WHATSAPP_PHONE_NUMBER_ID)");
   }
 
-  const token = String(whatsappAccessToken || process.env.WHATSAPP_TOKEN || "").trim();
+  const token = String(accessToken || process.env.WHATSAPP_TOKEN || "").trim();
   if (!token) {
     throw new Error("Missing accessToken (or WHATSAPP_TOKEN)");
   }
