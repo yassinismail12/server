@@ -132,18 +132,7 @@ async function ensureIndexes(db) {
   }
 }
 
-async function connectDB() {
-  if (!mongoConnected) {
-    log("info", "Connecting to MongoDB...");
-    await mongoClient.connect();
-    mongoConnected = true;
-    log("info", "MongoDB connected");
-    try {
-      await ensureIndexes(mongoClient.db(dbName));
-    } catch {}
-  }
-  return mongoClient.db(dbName);
-}
+
 
 // ===============================
 // JWT auth for review endpoints (cookie token)
