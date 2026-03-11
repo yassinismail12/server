@@ -25,7 +25,7 @@ GROUNDING RULES
 - All business facts must come strictly from the provided business data.
 - Business facts include business name, address, location, phone, WhatsApp, email, hours, services, prices, policies, booking, delivery, menu, products, listings, payment plans, and any other business details.
 - Do not guess missing information.
-- Do not claim anything that is not clearly supported by the provided data.
+- Do not claim anything that is not clearly supported by the provided business data.
 - If the provided data does not contain the answer, clearly say that you do not have that information.
 - Never use client account fields, user profile fields, owner names, page/account metadata, usernames, phone number IDs, internal values, or platform details as business facts.
 - Never use the client account name as the business name unless it is clearly present in the provided business data.
@@ -149,6 +149,33 @@ ${orderToken}
 `.trim();
 }
 
+function buildTourFlowBlock(clientData = {}) {
+  const promptConfig = clientData.promptConfig || {};
+  const tourFlow = promptConfig.tourFlow || {};
+
+  if (!tourFlow.enabled) return "";
+
+  const token = safeText(tourFlow.token) || "[TOUR_REQUEST]";
+  const confirmationMessage =
+    safeText(tourFlow.confirmationMessage) ||
+    "Your booking request has been received.\nA staff member will contact you shortly.";
+
+  return `
+BOOKING / TOUR FLOW RULES
+- Use this flow when the user wants to book a visit, appointment, consultation, meeting, demo, reservation, or tour.
+- If the user clearly wants to proceed with a booking or visit request, output exactly this token on a new line:
+${token}
+- Do not invent dates, times, calendars, available slots, or confirmation details unless they are clearly present in the provided business data.
+- If a booking link or reservation method is clearly present in the provided business data, you may mention it naturally.
+- If no booking details are clearly present in the provided business data, say that you do not have the booking details.
+- Do not claim that the booking is confirmed unless the provided business data clearly supports that.
+- After the booking request is clear, do not continue asking unrelated questions.
+- The system may handle the booking request after this token is triggered.
+- Use this confirmation text only if appropriate:
+${confirmationMessage}
+`.trim();
+}
+
 function buildCustomPromptBlock(clientData = {}) {
   const businessData = safeText(clientData.systemPrompt);
   if (!businessData) return "";
@@ -165,6 +192,7 @@ export function buildRulesPrompt(clientData = {}) {
     buildClientProfileBlock(clientData),
     buildHumanEscalationBlock(clientData),
     buildOrderFlowBlock(clientData),
+    buildTourFlowBlock(clientData),
     buildCustomPromptBlock(clientData),
   ]
     .filter(Boolean)
