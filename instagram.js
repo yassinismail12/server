@@ -54,6 +54,22 @@ function log(level, msg, meta = {}) {
   return base;
 }
 
+async function connectDB() {
+  if (!mongoConnected) {
+    log("info", "Connecting to MongoDB...");
+    await mongoClient.connect();
+    mongoConnected = true;
+    log("info", "MongoDB connected");
+
+    try {
+      const db = mongoClient.db(dbName);
+      await ensureIndexes(db);
+    } catch {}
+  }
+  return mongoClient.db(dbName);
+}
+
+
 async function logToDb(level, source, message, meta = {}) {
   try {
     const db = await connectDB();
