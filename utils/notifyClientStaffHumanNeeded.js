@@ -1,6 +1,6 @@
 // utils/notifyClientStaffHumanNeeded.js
 import { MongoClient } from "mongodb";
-import { sendWhatsAppText } from "../services/whatsappText.js";
+import { sendWhatsAppTemplate } from "../services/whatsappTemplate.js";
 
 const mongoClient = new MongoClient(process.env.MONGODB_URI);
 const dbName = "Agent";
@@ -36,48 +36,61 @@ function uniqueValidNumbers(arr = []) {
 export async function notifyClientStaffHumanNeeded({ clientId, pageId, userId, source }) {
   const db = await connectDB();
 
-  const client = await db.collection("Clients").findOne({ clientId });
-  if (!client) throw new Error("Client not found");
+  const cid = String(clientId || "").trim();
+  if (!cid) {
+    throw new Error("Missing clientId");
+  }
+
+  const client = await db.collection("Clients").findOne({ clientId: cid });
+  if (!client) {
+    throw new Error("Client not found");
+  }
 
   const staffNumbers = uniqueValidNumbers(client.staffNumbers || []);
   if (!staffNumbers.length) {
-    return { ok: false, reason: "no_staff_numbers" };
+    return { ok: false, reason: "no_staff_numbers", sentCount: 0, total: 0, results: [] };
   }
 
-  const phoneNumberId =
-    String(client.whatsappPhoneNumberId || process.env.WHATSAPP_PHONE_NUMBER_ID || "").trim();
+  // Global sender first, optional per-client override still supported
+  const phoneNumberId = String(
+    process.env.WHATSAPP_PHONE_NUMBER_ID || client.whatsappPhoneNumberId || ""
+  ).trim();
 
-  const accessToken =
-    String(client.whatsappAccessToken || process.env.WHATSAPP_TOKEN || "").trim();
+  const accessToken = String(
+    process.env.WHATSAPP_TOKEN || client.whatsappAccessToken || ""
+  ).trim();
 
   if (!phoneNumberId) {
-    return { ok: false, reason: "missing_phone_number_id" };
+    return { ok: false, reason: "missing_phone_number_id", sentCount: 0, total: staffNumbers.length, results: [] };
   }
 
   if (!accessToken) {
-    return { ok: false, reason: "missing_access_token" };
+    return { ok: false, reason: "missing_access_token", sentCount: 0, total: staffNumbers.length, results: [] };
   }
 
   const dashboardBase = String(process.env.DASHBOARD_URL || "").replace(/\/+$/, "");
- const openLink = dashboardBase || "";
-  const text = [
-    "Bot help needed.",
-    `User ID: ${userId}`,
-    openLink ? `Open: ${openLink}` : null,
-    `source: ${source}`
-  ]
-    .filter(Boolean)
-    .join("\n");
+  const openLink = dashboardBase || "-";
+
+  const clientName = String(client.name || client.businessName || "Client").trim();
+  const templateName = String(process.env.WHATSAPP_HUMAN_TEMPLATE || "human_needed").trim();
+  const languageCode = String(process.env.WHATSAPP_HUMAN_TEMPLATE_LANG || "en_US").trim();
 
   const results = [];
 
   for (const to of staffNumbers) {
     try {
-      const result = await sendWhatsAppText({
+      const result = await sendWhatsAppTemplate({
         phoneNumberId,
         accessToken,
         to,
-        text,
+        templateName,
+        languageCode,
+        bodyParams: [
+          clientName,          // {{1}}
+          String(userId || "-"), // {{2}}
+          String(source || "-"), // {{3}}
+          openLink,            // {{4}}
+        ],
       });
 
       results.push({ to, ok: true, result });
