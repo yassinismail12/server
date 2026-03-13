@@ -55,7 +55,9 @@ function log(level, msg, meta = {}) {
 }
 
 
-
+function detectUserLanguage(text = "") {
+  return /[\u0600-\u06FF]/.test(String(text || "")) ? "ar" : "en";
+}
 
 async function logToDb(level, source, message, meta = {}) {
   try {
@@ -1118,7 +1120,10 @@ router.post("/", async (req, res) => {
         const rulesPrompt = buildRulesPrompt(clientDoc);
 
         const botType = clientDoc?.knowledgeBotType || "default";
-        const sectionsOrder = clientDoc?.sectionsOrder || ["menu", "offers", "hours"];
+       const sectionsOrder =
+  Array.isArray(clientDoc?.sectionsOrder) && clientDoc.sectionsOrder.length
+    ? clientDoc.sectionsOrder
+    : ["menu", "offers", "hours"];
 
         const convo = await getConversationIG(igBusinessId, senderId, "instagram");
         const compactHistory = Array.isArray(convo?.history) ? convo.history : [];
@@ -1128,7 +1133,11 @@ router.post("/", async (req, res) => {
           const userProfile = await getUserProfileIG(senderId, pageToken, metaBase);
           await saveCustomerIG(igBusinessId, senderId, userProfile);
           const username = userProfile.username || "there";
-          greeting = `Hi ${username}, good to see you today 👋`;
+        const userLang = detectUserLanguage(userText);
+greeting =
+  userLang === "ar"
+    ? `أهلًا ${username}، سعيدين بوجودك اليوم 👋`
+    : `Hi ${username}, good to see you today 👋`;
         }
 
         const usage = await incrementMessageCountForIgClient(igBusinessId);
@@ -1157,7 +1166,13 @@ router.post("/", async (req, res) => {
 
         let grouped = {};
         try {
-          grouped = await retrieveChunks({ db, clientId, botType, userText });
+         grouped = await retrieveChunks({
+  clientId,
+  botType,
+  userText,
+  retrievalQuery: userText,
+  maxChunks: 6,
+});
         } catch (e) {
           grouped = {};
           log("warn", "IG retrieveChunks failed", { ...metaBase, err: e.message });

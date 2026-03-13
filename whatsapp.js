@@ -46,7 +46,9 @@ function normalizeIdString(s) {
   // phone_number_id is digits; normalize anyway
   return String(s || "").trim();
 }
-
+function detectUserLanguage(text = "") {
+  return /[\u0600-\u06FF]/.test(String(text || "")) ? "ar" : "en";
+}
 function isNewDay(lastDate) {
   const today = new Date();
   const d = lastDate ? new Date(lastDate) : null;
@@ -145,7 +147,51 @@ function getAccessTokenForClient(client) {
   }
   return process.env.WHATSAPP_TOKEN || "";
 }
+function buildRecentHistoryMessages(history = [], limit = 12) {
+  return history
+    .filter(
+      (m) =>
+        m &&
+        (m.role === "user" || m.role === "assistant") &&
+        typeof m.content === "string" &&
+        m.content.trim()
+    )
+    .slice(-limit)
+    .map((m) => ({
+      role: m.role,
+      content: m.content.trim(),
+    }));
+}
 
+function injectHistoryIntoMessages(baseMessages = [], history = []) {
+  const historyMessages = buildRecentHistoryMessages(history, 12);
+  if (!historyMessages.length) return baseMessages;
+
+  const msgs = Array.isArray(baseMessages) ? [...baseMessages] : [];
+  if (!msgs.length) return historyMessages;
+
+  const systemMessages = [];
+  const nonSystemMessages = [];
+
+  for (const msg of msgs) {
+    if (msg?.role === "system") systemMessages.push(msg);
+    else nonSystemMessages.push(msg);
+  }
+
+  const last = nonSystemMessages[nonSystemMessages.length - 1];
+  const hasCurrentUserAtEnd = last?.role === "user";
+
+  if (hasCurrentUserAtEnd) {
+    return [
+      ...systemMessages,
+      ...nonSystemMessages.slice(0, -1),
+      ...historyMessages,
+      last,
+    ];
+  }
+
+  return [...systemMessages, ...historyMessages, ...nonSystemMessages];
+}
 // ===============================
 // Clients
 // ===============================
@@ -523,7 +569,9 @@ router.post("/", async (req, res) => {
           const convo = await getConversation(client.clientId, fromDigits);
 const botType = client?.knowledgeBotType || "default";
 const sectionsOrder =
-  Array.isArray(client?.sectionsPresent) && client.sectionsPresent.length
+  Array.isArray(client?.sectionsOrder) && client.sectionsOrder.length
+    ? client.sectionsOrder
+    : Array.isArray(client?.sectionsPresent) && client.sectionsPresent.length
     ? client.sectionsPresent
     : ["faqs", "listings", "paymentPlans"];
           if (convo?.humanEscalation === true) {
@@ -548,16 +596,16 @@ let history = Array.isArray(convo?.history) ? convo.history : [];
             if (!picked) {
               const shouldSendMenu = !convo || isNewDay(convo.lastInteraction) || convo?.awaitSource !== true;
 
-       await upsertConversation({
+  await upsertConversation({
   clientId: client.clientId,
   userId: fromDigits,
   history,
-  lastInteraction: outboundAt,
-  lastMessage: combined.slice(0, 500),
-  lastMessageAt: outboundAt,
-  lastDirection: "out",
-  awaitSource: false,
-  sourceChoice: convo?.sourceChoice || "",
+  lastInteraction: inboundAt,
+  lastMessage: inboundPreview,
+  lastMessageAt: inboundAt,
+  lastDirection: "in",
+  awaitSource: true,
+  sourceChoice: "",
   meta: { whatsappPhoneNumberId: String(whatsappPhoneNumberId) },
 });
               if (shouldSendMenu) {
@@ -571,18 +619,18 @@ let history = Array.isArray(convo?.history) ? convo.history : [];
               continue;
             }
 
-            await upsertConversation({
-              clientId: client.clientId,
-              userId: fromDigits,
-              history,
-              lastInteraction: inboundAt,
-              lastMessage: inboundPreview,
-              lastMessageAt: inboundAt,
-              lastDirection: "in",
-              awaitSource: false,
-              sourceChoice: picked,
-              meta: { whatsappPhoneNumberId: String(whatsappPhoneNumberId) },
-            });
+          await upsertConversation({
+  clientId: client.clientId,
+  userId: fromDigits,
+  history,
+  lastInteraction: inboundAt,
+  lastMessage: inboundPreview,
+  lastMessageAt: inboundAt,
+  lastDirection: "in",
+  awaitSource: true,
+  sourceChoice: "",
+  meta: { whatsappPhoneNumberId: String(whatsappPhoneNumberId) },
+});
 
             await sendWhatsAppText({
               phoneNumberId: String(whatsappPhoneNumberId),
@@ -594,17 +642,21 @@ let history = Array.isArray(convo?.history) ? convo.history : [];
             continue;
           }
 
-        let greeting = "";
-if (!convo || isNewDay(convo.lastInteraction)) greeting = "Hi 👋";
+    let greeting = "";
+if (!convo || isNewDay(convo.lastInteraction)) {
+  const userLang = detectUserLanguage(text);
+  greeting = userLang === "ar" ? "أهلًا 👋" : "Hi 👋";
+}
 
 let grouped = {};
 try {
   grouped = await retrieveChunks({
-    db: await connectDB(),
-    clientId: client.clientId,
-    botType,
-    userText: text,
-  });
+  clientId: client.clientId,
+  botType,
+  userText: text,
+  retrievalQuery: text,
+  maxChunks: 6,
+});
 } catch (e) {
   grouped = {};
   log("warn", "WA retrieveChunks failed", {
@@ -614,12 +666,17 @@ try {
   });
 }
 
-const { messages: messagesForOpenAI, meta } = buildChatMessages({
+const { messages: baseMessagesForOpenAI, meta } = buildChatMessages({
   rulesPrompt,
   groupedChunks: grouped,
   userText: text,
   sectionsOrder,
 });
+
+const messagesForOpenAI = injectHistoryIntoMessages(
+  baseMessagesForOpenAI,
+  history
+);
 
 if (meta?.code) {
   log("warn", "WA prompt builder warning", {
@@ -645,19 +702,18 @@ const combined = greeting ? `${greeting}\n\n${assistantMessage}` : assistantMess
 const outboundAt = new Date();
 history.push({ role: "user", content: text, createdAt: inboundAt });
 history.push({ role: "assistant", content: combined, createdAt: outboundAt });
-          await upsertConversation({
-            clientId: client.clientId,
-            userId: fromDigits,
-            history,
-            lastInteraction: outboundAt,
-            lastMessage: inboundPreview,
-            lastMessageAt: inboundAt,
-            lastDirection: "in",
-            awaitSource: false,
-            sourceChoice: convo?.sourceChoice || "",
-            meta: { whatsappPhoneNumberId: String(whatsappPhoneNumberId) },
-          });
-
+       await upsertConversation({
+  clientId: client.clientId,
+  userId: fromDigits,
+  history,
+  lastInteraction: inboundAt,
+  lastMessage: inboundPreview,
+  lastMessageAt: inboundAt,
+  lastDirection: "in",
+  awaitSource: true,
+  sourceChoice: "",
+  meta: { whatsappPhoneNumberId: String(whatsappPhoneNumberId) },
+});
           try {
             await sendWhatsAppText({
               phoneNumberId: String(whatsappPhoneNumberId),

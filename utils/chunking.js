@@ -1,9 +1,9 @@
-// utils/chunking.js
-
 function normalizeText(text) {
   return String(text || "")
     .replace(/\r\n/g, "\n")
+    .replace(/\t/g, " ")
     .replace(/\n{3,}/g, "\n\n")
+    .replace(/[ ]{2,}/g, " ")
     .trim();
 }
 
@@ -59,7 +59,7 @@ function withSectionTitle(sectionName, chunks) {
 
 function splitByMarkdownHeadings(text) {
   return normalizeText(text)
-    .split(/\n(?=#{1,3}\s+)/)
+    .split(/\n(?=#{1,6}\s+)/)
     .map((s) => s.trim())
     .filter(Boolean);
 }
@@ -82,7 +82,7 @@ function splitByCommonRecordStarts(text, patterns = []) {
     .filter(Boolean);
 }
 
-function sizeChunk(text, size = 1200, overlap = 200) {
+function sizeChunk(text, size = 1200, overlap = 150) {
   const t = normalizeText(text);
   if (!t) return [];
   if (t.length <= size) return [t];
@@ -91,13 +91,13 @@ function sizeChunk(text, size = 1200, overlap = 200) {
   const step = Math.max(1, size - overlap);
 
   for (let i = 0; i < t.length; i += step) {
-    chunks.push(t.slice(i, i + size).trim());
+    const piece = t.slice(i, i + size).trim();
+    if (piece) chunks.push(piece);
   }
 
-  return chunks.filter(Boolean);
+  return chunks;
 }
 
-// Universal chunker
 // Priority:
 // 1) --- delimiter
 // 2) blank blocks
@@ -123,7 +123,7 @@ function genericChunk(text) {
   parts = splitByBullets(t);
   if (parts.length > 1) return parts;
 
-  return sizeChunk(t, 1200, 200);
+  return sizeChunk(t, 1200, 150);
 }
 
 function chunkFaqs(text) {
@@ -143,10 +143,7 @@ function chunkListings(text) {
   const t = normalizeText(text);
   if (!t) return [];
 
-  let chunks = genericChunk(t);
-  if (chunks.length > 1) return chunks;
-
-  chunks = splitByCommonRecordStarts(t, [
+  let chunks = splitByCommonRecordStarts(t, [
     "property\\s*\\d*\\s*:",
     "unit\\s*\\d*\\s*:",
     "listing\\s*\\d*\\s*:",
@@ -159,7 +156,10 @@ function chunkListings(text) {
   ]);
   if (chunks.length > 1) return chunks;
 
-  return sizeChunk(t, 1400, 220);
+  chunks = genericChunk(t);
+  if (chunks.length > 1) return chunks;
+
+  return sizeChunk(t, 1400, 180);
 }
 
 function chunkMenu(text) {
@@ -167,7 +167,9 @@ function chunkMenu(text) {
   if (!t) return [];
 
   let chunks = t
-    .split(/(?=\n?(?:category\s*:|section\s*:|breakfast|lunch|dinner|drinks|desserts|appetizers|main courses))/i)
+    .split(
+      /(?=\n?(?:category\s*:|section\s*:|breakfast|lunch|dinner|drinks|desserts|appetizers|main courses))/i
+    )
     .map((s) => s.trim())
     .filter(Boolean);
 
@@ -331,47 +333,36 @@ export function chunkSection(sectionName, text) {
     case "listings":
       chunks = chunkListings(t);
       break;
-
     case "paymentPlans":
       chunks = chunkPaymentPlans(t);
       break;
-
     case "faqs":
       chunks = chunkFaqs(t);
       break;
-
     case "menu":
       chunks = chunkMenu(t);
       break;
-
     case "products":
       chunks = chunkProducts(t);
       break;
-
     case "booking":
       chunks = chunkBooking(t);
       break;
-
     case "team":
       chunks = chunkTeam(t);
       break;
-
     case "courses":
       chunks = chunkCourses(t);
       break;
-
     case "rooms":
       chunks = chunkRooms(t);
       break;
-
     case "delivery":
       chunks = chunkDelivery(t);
       break;
-
     case "policies":
       chunks = chunkPolicies(t);
       break;
-
     case "profile":
     case "contact":
     case "hours":

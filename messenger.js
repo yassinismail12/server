@@ -199,7 +199,9 @@ async function incrementMessageCountForClient(pageId) {
 
   return { allowed: true, messageCount, messageLimit };
 }
-
+function detectUserLanguage(text = "") {
+  return /[\u0600-\u06FF]/.test(String(text || "")) ? "ar" : "en";
+}
 // ===============================
 // Conversation
 // ===============================
@@ -740,17 +742,21 @@ router.post("/", async (req, res) => {
             let firstName = "there";
             let greeting = "";
 
-            if (!convo || isNewDay(convo.lastInteraction)) {
-              const userProfile = await getUserProfile(sender_psid, clientDocFresh?.PAGE_ACCESS_TOKEN, {
-                ...metaBase,
-                clientPageId: clientDocFresh?.pageId,
-              });
+      if (!convo || isNewDay(convo.lastInteraction)) {
+  const userProfile = await getUserProfile(sender_psid, clientDocFresh?.PAGE_ACCESS_TOKEN, {
+    ...metaBase,
+    clientPageId: clientDocFresh?.pageId,
+  });
 
-              firstName = userProfile.first_name || "there";
-              await saveCustomer(pageId, sender_psid, userProfile);
+  firstName = userProfile.first_name || "there";
+  await saveCustomer(pageId, sender_psid, userProfile);
 
-              greeting = `Hi ${firstName}, good to see you today 👋`;
-            }
+  const userLang = detectUserLanguage(userMessage);
+  greeting =
+    userLang === "ar"
+      ? `أهلًا ${firstName}، سعيدين بوجودك اليوم 👋`
+      : `Hi ${firstName}, good to see you today 👋`;
+}
 
             const usage = await incrementMessageCountForClient(pageId);
             if (!usage.allowed) {
@@ -762,11 +768,12 @@ router.post("/", async (req, res) => {
             let grouped = {};
             try {
               grouped = await retrieveChunks({
-                db,
-                clientId,
-                botType,
-                userText: userMessage,
-              });
+  clientId,
+  botType,
+  userText: userMessage,
+  retrievalQuery: userMessage,
+  maxChunks: 6,
+});
             } catch (e) {
               grouped = {};
               log("warn", "retrieveChunks failed", { ...metaBase, err: e.message });

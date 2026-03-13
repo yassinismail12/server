@@ -3,7 +3,9 @@ import mongoose from "mongoose";
 const KnowledgeChunkSchema = new mongoose.Schema({
   clientId: { type: String, required: true, index: true },
   botType: { type: String, default: "default", index: true },
-  section: { type: String, required: true, index: true }, // menu / offers / hours / faqs / listings
+  section: { type: String, required: true, index: true },
+  title: { type: String, default: "" },
+  keywords: { type: [String], default: [] },
   text: { type: String, required: true },
   createdAt: { type: Date, default: Date.now }
 });

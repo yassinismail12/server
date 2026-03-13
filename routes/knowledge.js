@@ -501,12 +501,6 @@ function splitMixedToSections(mixedText = "") {
   return result;
 }
 
-function chunkFaqs(faqText = "") {
-  const t = normalizeText(faqText);
-  if (!t) return [];
-  const blocks = t.split(/\n\s*\n/).map((b) => b.trim()).filter(Boolean);
-  return blocks.map((b) => `FAQ:\n${b}`);
-}
 
 function chooseSections(botType) {
   const bt = String(botType || "default").toLowerCase().trim();
@@ -672,57 +666,36 @@ function mergePromptConfig(oldConfig = {}, newConfig = {}) {
 ---------------------------- */
 function buildSystemPromptFromClientFiles(client, botType = "default") {
   const allFiles = Array.isArray(client.files) ? client.files : [];
-  if (!allFiles.length) return "";
 
-  const nonMixed = allFiles.filter((f) => canonicalSectionName(f?.name) !== "mixed");
-  const filesToUse = nonMixed.length ? nonMixed : allFiles;
+  const sections = Array.from(
+    new Set(
+      allFiles
+        .map((f) => canonicalSectionName(f?.name || ""))
+        .filter(Boolean)
+        .filter((s) => s !== "mixed")
+    )
+  );
 
-  const preferredOrder = [
-    "profile",
-    "contact",
-    "hours",
-    "offers",
-    "menu",
-    "products",
-    "listings",
-    "paymentPlans",
-    "booking",
-    "team",
-    "courses",
-    "rooms",
-    "delivery",
-    "policies",
-    "faqs",
-    "other",
-  ];
+  const businessName =
+    normalizeText(client?.promptConfig?.businessName) ||
+    normalizeText(client?.businessData?.businessName) ||
+    normalizeText(client?.name);
 
-  const expected = chooseSections(botType);
-  const order = [...new Set([...preferredOrder, ...expected, ...filesToUse.map((f) => canonicalSectionName(f?.name))])];
+  const businessType =
+    normalizeText(client?.promptConfig?.businessType) ||
+    normalizeText(botType);
 
-  const bySection = new Map();
-  for (const file of filesToUse) {
-    const section = canonicalSectionName(file?.name || "other");
-    const text = normalizeText(file?.content || "");
-    if (!text) continue;
+  const lines = [
+    "Business assistant context",
+    businessName ? `Business Name: ${businessName}` : "",
+    businessType ? `Business Type: ${businessType}` : "",
+    sections.length ? `Available Sections: ${sections.join(", ")}` : "",
+    "Use retrieved business knowledge as the source of truth for business facts.",
+    "Do not invent business facts that are not clearly present in retrieved knowledge.",
+  ].filter(Boolean);
 
-    if (!bySection.has(section)) bySection.set(section, []);
-    bySection.get(section).push(text);
-  }
-
-  const blocks = [];
-  for (const section of order) {
-    const items = bySection.get(section) || [];
-    if (!items.length) continue;
-
-    const merged = normalizeText(items.join("\n\n"));
-    if (!merged) continue;
-
-    blocks.push(`## ${prettySectionName(section)}\n${merged}`);
-  }
-
-  return normalizeText(blocks.join("\n\n"));
+  return normalizeText(lines.join("\n"));
 }
-
 async function rebuildKnowledge({ clientId, botType = "default", replace = false }) {
   const client = await Client.findOne({ clientId });
   if (!client) return { ok: false, status: 404, error: "Client not found" };
@@ -755,7 +728,7 @@ async function rebuildKnowledge({ clientId, botType = "default", replace = false
     const raw = normalizeText(pickTextFromClient(client, section));
     if (!raw) continue;
 
-    const chunks = section === "faqs" ? chunkFaqs(raw) : chunkSection(section, raw) || [];
+  const chunks = chunkSection(section, raw) || [];
 
     for (const text of chunks) {
       const t = normalizeText(text);

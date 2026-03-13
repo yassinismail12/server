@@ -76,20 +76,66 @@ function trimHistoryToBudget(history = [], maxHistoryTokens = 800) {
   };
 }
 
+function normalizeRetrievedChunksShape(groupedChunks, sectionsOrder = []) {
+  if (!groupedChunks) return {};
+
+  // New retrieval shape: { retrievedChunks: [...] }
+  if (Array.isArray(groupedChunks?.retrievedChunks)) {
+    const grouped = {};
+
+    for (const chunk of groupedChunks.retrievedChunks) {
+      const section = String(chunk?.section || "other").trim() || "other";
+      grouped[section] ||= [];
+      grouped[section].push({
+        text: normalizeChunkText(chunk?.text || ""),
+        score: chunk?.score ?? 0,
+      });
+    }
+
+    return grouped;
+  }
+
+  // Old shape: { menu: [...], offers: [...], ... }
+  if (typeof groupedChunks === "object") {
+    const grouped = {};
+
+    for (const [section, items] of Object.entries(groupedChunks)) {
+      if (!Array.isArray(items)) continue;
+      grouped[section] = items
+        .map((item) => ({
+          text: normalizeChunkText(item?.text || item || ""),
+          score: item?.score ?? 0,
+        }))
+        .filter((item) => item.text);
+    }
+
+    return grouped;
+  }
+
+  return {};
+}
+
 export function buildDataBlockBudgeted(groupedChunks, sectionsOrder, opts = {}) {
   const {
-    maxDataTokens = 2500,
-    perChunkMaxTokens = 300,
+    maxDataTokens = 1800,
+    perChunkMaxTokens = 220,
     includeEmptySections = false,
     sectionTitleMap = null,
   } = opts;
+
+  const normalizedGrouped = normalizeRetrievedChunksShape(groupedChunks, sectionsOrder);
+
+  const availableSections = Object.keys(normalizedGrouped);
+  const orderedSections = Array.from(
+    new Set([...(sectionsOrder || []), ...availableSections])
+  );
 
   let usedTokens = 0;
   let includedChunkCount = 0;
   const outSections = [];
 
-  for (const section of sectionsOrder || []) {
-    const items = Array.isArray(groupedChunks?.[section]) ? groupedChunks[section] : [];
+  for (const section of orderedSections) {
+    const items = Array.isArray(normalizedGrouped?.[section]) ? normalizedGrouped[section] : [];
     const sectionLabel = safeSectionLabel(section, sectionTitleMap);
     const header = `${sectionLabel}\n`;
     const headerCost = estimateTokens(header);
@@ -109,10 +155,12 @@ export function buildDataBlockBudgeted(groupedChunks, sectionsOrder, opts = {}) 
 
     if (usedTokens + headerCost >= maxDataTokens) break;
 
+    const sortedItems = [...items].sort((a, b) => (b.score || 0) - (a.score || 0));
+
     const sectionParts = [];
     let sectionUsedAny = false;
 
-    for (const item of items) {
+    for (const item of sortedItems) {
       let chunkText = normalizeChunkText(item?.text || "");
       if (!chunkText) continue;
 
@@ -168,7 +216,7 @@ export function buildDataBlockBudgeted(groupedChunks, sectionsOrder, opts = {}) 
   }
 
   const dataBlock = outSections.length
-    ? `EXTRA BUSINESS DATA\n\n${outSections.join("\n\n")}`
+    ? `BUSINESS KNOWLEDGE\n\n${outSections.join("\n\n")}`
     : "";
 
   return {
@@ -185,10 +233,10 @@ export function buildChatMessages({
   history = [],
   userText,
   sectionsOrder,
-  maxTotalTokens = 3500,
-  maxDataTokens = 2500,
-  maxHistoryTokens = 800,
-  perChunkMaxTokens = 300,
+  maxTotalTokens = 3200,
+  maxDataTokens = 1800,
+  maxHistoryTokens = 700,
+  perChunkMaxTokens = 220,
   sectionTitleMap = null,
 } = {}) {
   const safeRulesPrompt = String(rulesPrompt || "").trim();
@@ -236,9 +284,9 @@ export function buildChatMessages({
     meta.advice =
       "Outgoing prompt too large. Reduce extra data, reduce history, reduce per-chunk size, or trim the current user message.";
 
-    const reducedDataBudget = Math.max(500, Math.floor(maxDataTokens * 0.5));
-    const reducedHistoryBudget = Math.max(200, Math.floor(maxHistoryTokens * 0.5));
-    const reducedPerChunkMax = Math.max(120, Math.floor(perChunkMaxTokens * 0.7));
+    const reducedDataBudget = Math.max(500, Math.floor(maxDataTokens * 0.55));
+    const reducedHistoryBudget = Math.max(180, Math.floor(maxHistoryTokens * 0.55));
+    const reducedPerChunkMax = Math.max(120, Math.floor(perChunkMaxTokens * 0.75));
 
     const rebuiltData = buildDataBlockBudgeted(groupedChunks, sectionsOrder, {
       maxDataTokens: reducedDataBudget,
