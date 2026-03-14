@@ -35,10 +35,7 @@ import { sendWhatsAppTemplate } from "./services/Whatsapp.js";
 
 const router = express.Router();
 
-const mongoClient = new MongoClient(process.env.MONGODB_URI);
-const dbName = "Agent";
 
-let mongoConnected = false;
 
 // how many past turns to send to OpenAI for memory (user+assistant pairs)
 const MEMORY_TURNS = Number(process.env.IG_MEMORY_TURNS || 6); // 6 pairs => up to 12 messages
