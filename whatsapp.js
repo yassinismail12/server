@@ -1,6 +1,6 @@
 // whatsapp.js
 import express from "express";
-import { MongoClient } from "mongodb";
+import mongoose from "mongoose";
 import jwt from "jsonwebtoken";
 import { retrieveChunks } from "./services/retrieval.js";
 import { buildChatMessages } from "./services/promptBuilder.js";
@@ -11,9 +11,11 @@ import { sendWhatsAppTemplate } from "./services/whatsappTemplate.js";
 
 const router = express.Router();
 
-const mongoClient = new MongoClient(process.env.MONGODB_URI);
-const dbName = "Agent";
-let mongoConnected = false;
+// ✅ Reuse the mongoose connection that server.js already opened.
+// Never open a second MongoClient — that causes connection limit issues at scale.
+function getDB() {
+  return mongoose.connection.db;
+}
 
 // ===============================
 // Logging
@@ -25,16 +27,6 @@ function log(level, msg, meta = {}) {
   else console.log("ℹ️", base);
 }
 
-async function connectDB() {
-  if (!mongoConnected) {
-    log("info", "Connecting to MongoDB...");
-    await mongoClient.connect();
-    mongoConnected = true;
-    log("info", "MongoDB connected");
-  }
-  return mongoClient.db(dbName);
-}
-
 // ===============================
 // Helpers
 // ===============================
@@ -43,12 +35,13 @@ function normalizePhoneDigits(p) {
 }
 
 function normalizeIdString(s) {
-  // phone_number_id is digits; normalize anyway
   return String(s || "").trim();
 }
+
 function detectUserLanguage(text = "") {
   return /[\u0600-\u06FF]/.test(String(text || "")) ? "ar" : "en";
 }
+
 function isNewDay(lastDate) {
   const today = new Date();
   const d = lastDate ? new Date(lastDate) : null;
@@ -59,7 +52,6 @@ function isNewDay(lastDate) {
     d.getFullYear() !== today.getFullYear()
   );
 }
-
 
 function parseSourceChoice(text) {
   const t = String(text || "").trim().toLowerCase();
@@ -81,7 +73,7 @@ function sourceMenuText() {
 }
 
 // ===============================
-// Auth (for dashboard test send)
+// Auth (for dashboard endpoints)
 // ===============================
 function parseCookieHeader(cookieHeader = "") {
   const out = {};
@@ -95,16 +87,6 @@ function parseCookieHeader(cookieHeader = "") {
   return out;
 }
 
-function getJwtSecret() {
-  return (
-    process.env.JWT_SECRET ||
-    process.env.JWT_SECRET_KEY ||
-    process.env.JWT_KEY ||
-    process.env.JWT_TOKEN_SECRET ||
-    ""
-  );
-}
-
 function requireClient(req, res, next) {
   try {
     const tokenFromParser = req.cookies?.token;
@@ -113,14 +95,13 @@ function requireClient(req, res, next) {
 
     if (!token) return res.status(401).json({ ok: false, error: "Unauthorized" });
 
-    const secret = getJwtSecret();
+    const secret = process.env.JWT_SECRET;
     if (!secret) {
-      log("error", "JWT secret missing (set JWT_SECRET or JWT_SECRET_KEY)");
+      log("error", "JWT_SECRET missing");
       return res.status(500).json({ ok: false, error: "Server misconfigured" });
     }
 
     const payload = jwt.verify(token, secret);
-
     if (!payload || payload.role !== "client" || !payload.clientId) {
       return res.status(401).json({ ok: false, error: "Unauthorized" });
     }
@@ -135,8 +116,6 @@ function requireClient(req, res, next) {
 // ===============================
 // Token selection
 // ===============================
-// ✅ Prefer per-client token stored in Mongo (embedded signup).
-// ✅ Fallback to env System User token for legacy/testing.
 function getAccessTokenForClient(client) {
   const dbToken = String(client?.whatsappAccessToken || "").trim();
   if (dbToken) return dbToken;
@@ -147,6 +126,10 @@ function getAccessTokenForClient(client) {
   }
   return process.env.WHATSAPP_TOKEN || "";
 }
+
+// ===============================
+// History helpers
+// ===============================
 function buildRecentHistoryMessages(history = [], limit = 12) {
   return history
     .filter(
@@ -157,10 +140,7 @@ function buildRecentHistoryMessages(history = [], limit = 12) {
         m.content.trim()
     )
     .slice(-limit)
-    .map((m) => ({
-      role: m.role,
-      content: m.content.trim(),
-    }));
+    .map((m) => ({ role: m.role, content: m.content.trim() }));
 }
 
 function injectHistoryIntoMessages(baseMessages = [], history = []) {
@@ -192,20 +172,19 @@ function injectHistoryIntoMessages(baseMessages = [], history = []) {
 
   return [...systemMessages, ...historyMessages, ...nonSystemMessages];
 }
+
 // ===============================
 // Clients
 // ===============================
 async function getClientByPhoneNumberId(whatsappPhoneNumberId) {
-  const db = await connectDB();
+  const db = getDB();
   const pnid = normalizeIdString(whatsappPhoneNumberId);
 
-  // try exact match first
   let client = await db.collection("Clients").findOne({
     whatsappPhoneNumberId: pnid,
     active: { $ne: false },
   });
 
-  // fallback: some people accidentally store numeric / spaced variants
   if (!client) {
     client = await db.collection("Clients").findOne({
       whatsappPhoneNumberId: { $in: [String(pnid), String(pnid).trim()] },
@@ -216,7 +195,7 @@ async function getClientByPhoneNumberId(whatsappPhoneNumberId) {
 }
 
 async function getClientByClientId(clientId) {
-  const db = await connectDB();
+  const db = getDB();
   return db.collection("Clients").findOne({
     clientId: String(clientId || "").trim(),
     active: { $ne: false },
@@ -225,7 +204,7 @@ async function getClientByClientId(clientId) {
 
 async function touchClientWebhook(clientMongoId, payload) {
   try {
-    const db = await connectDB();
+    const db = getDB();
     await db.collection("Clients").updateOne(
       { _id: clientMongoId },
       {
@@ -245,7 +224,7 @@ async function touchClientWebhook(clientMongoId, payload) {
 // Conversations
 // ===============================
 async function getConversation(clientId, userId) {
-  const db = await connectDB();
+  const db = getDB();
   return db.collection("Conversations").findOne({
     clientId: String(clientId),
     userId,
@@ -265,7 +244,7 @@ async function upsertConversation({
   sourceChoice,
   meta = {},
 }) {
-  const db = await connectDB();
+  const db = getDB();
   await db.collection("Conversations").updateOne(
     { clientId: String(clientId), userId, source: "whatsapp" },
     {
@@ -294,9 +273,7 @@ async function upsertConversation({
 }
 
 // ===============================
-// ✅ TEST SEND ENDPOINT (dashboard)
-// POST /whatsapp/send-test
-// body: { clientId, to, text }
+// TEST SEND (dashboard)
 // ===============================
 router.post("/send-test", requireClient, async (req, res) => {
   try {
@@ -321,16 +298,8 @@ router.post("/send-test", requireClient, async (req, res) => {
 
     const accessToken = getAccessTokenForClient(client);
     if (!accessToken) {
-      return res.status(500).json({ ok: false, error: "Missing WhatsApp access token (DB or env)" });
+      return res.status(500).json({ ok: false, error: "Missing WhatsApp access token" });
     }
-
-    log("info", "WA send-test", {
-      clientId,
-      phoneNumberId,
-      to: toDigits,
-      tokenType: client.whatsappTokenType || "unknown",
-      preview: String(text).slice(0, 80),
-    });
 
     await sendWhatsAppText({
       phoneNumberId,
@@ -346,9 +315,6 @@ router.post("/send-test", requireClient, async (req, res) => {
   }
 });
 
-// ===============================
-// Webhook verification (Meta)
-// ===============================
 router.post("/send-template-test", requireClient, async (req, res) => {
   try {
     const { clientId, to, templateName, languageCode, params } = req.body || {};
@@ -372,17 +338,15 @@ router.post("/send-template-test", requireClient, async (req, res) => {
 
     const accessToken = getAccessTokenForClient(client);
     if (!accessToken) {
-      return res.status(500).json({ ok: false, error: "Missing WhatsApp access token (DB or env)" });
+      return res.status(500).json({ ok: false, error: "Missing WhatsApp access token" });
     }
-
-    const bodyParams = Array.isArray(params) ? params.map(String) : [];
 
     await sendWhatsAppTemplate({
       phoneNumberId,
       to: toDigits,
       templateName: String(templateName).trim(),
       languageCode: String(languageCode || "en_US").trim(),
-      bodyParams,
+      bodyParams: Array.isArray(params) ? params.map(String) : [],
       accessToken,
     });
 
@@ -392,10 +356,9 @@ router.post("/send-template-test", requireClient, async (req, res) => {
     return res.status(500).json({ ok: false, error: e.message, details: e?.data || null });
   }
 });
+
 // ===============================
-// ✅ LIST TEMPLATES (for UI "Sync Templates")
-// GET /api/whatsapp/templates?clientId=...
-// returns: { ok: true, templates: [{ name, status, language }] }
+// LIST TEMPLATES
 // ===============================
 router.get("/templates", requireClient, async (req, res) => {
   try {
@@ -413,26 +376,22 @@ router.get("/templates", requireClient, async (req, res) => {
     if (!wabaId) return res.status(400).json({ ok: false, error: "Client missing whatsappWabaId" });
 
     const accessToken = getAccessTokenForClient(client);
-    if (!accessToken) return res.status(500).json({ ok: false, error: "Missing WhatsApp access token (DB or env)" });
+    if (!accessToken) return res.status(500).json({ ok: false, error: "Missing WhatsApp access token" });
 
-    // Graph API
     const API_VERSION = (process.env.WHATSAPP_API_VERSION || "v20.0").trim();
     const url =
       `https://graph.facebook.com/${API_VERSION}/${encodeURIComponent(wabaId)}/message_templates` +
-      `?fields=name,status,language` +
-      `&limit=200`;
+      `?fields=name,status,language&limit=200`;
 
     const resp = await fetch(url, {
       headers: { Authorization: `Bearer ${accessToken}` },
     });
 
-    const text = await resp.text();
+    const rawText = await resp.text();
     let data;
-    try { data = JSON.parse(text); } catch { data = { raw: text }; }
+    try { data = JSON.parse(rawText); } catch { data = { raw: rawText }; }
 
-    if (!resp.ok) {
-      return res.status(resp.status).json({ ok: false, error: data });
-    }
+    if (!resp.ok) return res.status(resp.status).json({ ok: false, error: data });
 
     const templates = (data?.data || []).map((t) => ({
       name: t.name,
@@ -446,6 +405,10 @@ router.get("/templates", requireClient, async (req, res) => {
     return res.status(500).json({ ok: false, error: e.message });
   }
 });
+
+// ===============================
+// Webhook verification
+// ===============================
 router.get("/", (req, res) => {
   const mode = req.query["hub.mode"];
   const token = req.query["hub.verify_token"];
@@ -456,10 +419,7 @@ router.get("/", (req, res) => {
     return res.status(200).send(challenge);
   }
 
-  log("warn", "WhatsApp webhook verification failed", {
-    mode,
-    tokenProvided: Boolean(token),
-  });
+  log("warn", "WhatsApp webhook verification failed", { mode, tokenProvided: Boolean(token) });
   return res.sendStatus(403);
 });
 
@@ -467,20 +427,15 @@ router.get("/", (req, res) => {
 // WhatsApp webhook receiver
 // ===============================
 router.post("/", async (req, res) => {
-  // ✅ if you don't see this log when sending "hi", webhook is NOT hitting this route
   console.log("🔥 WA POST HIT", new Date().toISOString(), "topKeys:", Object.keys(req.body || {}));
 
-  log("info", "🔥 WHATSAPP WEBHOOK HIT", {
-    hasBody: Boolean(req.body),
-    topKeys: Object.keys(req.body || {}),
-  });
-
-  // Reply to Meta fast
+  // Always reply 200 to Meta immediately
   res.sendStatus(200);
 
   try {
     const body = req.body;
     const entries = body?.entry || [];
+
     if (!Array.isArray(entries) || !entries.length) {
       log("warn", "Webhook body has no entry array", {
         bodyPreview: JSON.stringify(body || {}).slice(0, 300),
@@ -490,6 +445,7 @@ router.post("/", async (req, res) => {
 
     for (const entry of entries) {
       const changes = entry?.changes || [];
+
       for (const change of changes) {
         const value = change?.value || {};
         const whatsappPhoneNumberId = value?.metadata?.phone_number_id;
@@ -503,21 +459,16 @@ router.post("/", async (req, res) => {
         if (!client) {
           log("warn", "No client matched whatsappPhoneNumberId", {
             whatsappPhoneNumberId: String(whatsappPhoneNumberId),
-            hint: "Check Clients.whatsappPhoneNumberId matches metadata.phone_number_id",
           });
           continue;
         }
 
         const whatsappAccessToken = getAccessTokenForClient(client);
         if (!whatsappAccessToken) {
-          log("warn", "Missing WhatsApp access token (DB/env) for this client", {
-            clientId: client.clientId,
-            whatsappPhoneNumberId,
-          });
+          log("warn", "Missing WhatsApp access token for client", { clientId: client.clientId });
           continue;
         }
 
-        // ✅ staff numbers: support both staffNumbers[] and staffWhatsApp string
         const staffDigits = [
           ...(Array.isArray(client.staffNumbers) ? client.staffNumbers : []),
           ...(client.staffWhatsApp ? [client.staffWhatsApp] : []),
@@ -536,20 +487,11 @@ router.post("/", async (req, res) => {
         if (!messages.length) {
           log("info", "No inbound messages in webhook (likely statuses)", {
             clientId: client.clientId,
-            whatsappPhoneNumberId,
           });
           continue;
         }
 
         for (const msg of messages) {
-          log("info", "Inbound WA message", {
-            clientId: client.clientId,
-            whatsappPhoneNumberId,
-            from: msg?.from,
-            type: msg?.type,
-            msgId: msg?.id,
-          });
-
           const fromDigits = normalizePhoneDigits(msg?.from);
           const text = msg?.text?.body || "";
 
@@ -558,7 +500,11 @@ router.post("/", async (req, res) => {
             continue;
           }
           if (!text) {
-            log("info", "Ignoring non-text message", { clientId: client.clientId, from: fromDigits, type: msg?.type });
+            log("info", "Ignoring non-text message", {
+              clientId: client.clientId,
+              from: fromDigits,
+              type: msg?.type,
+            });
             continue;
           }
           if (staffDigits.includes(fromDigits)) {
@@ -566,48 +512,58 @@ router.post("/", async (req, res) => {
             continue;
           }
 
+          // Load conversation
           const convo = await getConversation(client.clientId, fromDigits);
-const botType = client?.knowledgeBotType || "default";
-const sectionsOrder =
-  Array.isArray(client?.sectionsOrder) && client.sectionsOrder.length
-    ? client.sectionsOrder
-    : Array.isArray(client?.sectionsPresent) && client.sectionsPresent.length
-    ? client.sectionsPresent
-    : ["faqs", "listings", "paymentPlans"];
+
+          // Skip if human has taken over
           if (convo?.humanEscalation === true) {
-            log("info", "Human escalation active; ignoring", { from: fromDigits, clientId: client.clientId });
+            log("info", "Human escalation active; ignoring", {
+              from: fromDigits,
+              clientId: client.clientId,
+            });
             continue;
           }
 
           const inboundAt = new Date();
           const inboundPreview = text.slice(0, 200);
+          const history = Array.isArray(convo?.history) ? convo.history : [];
 
-     const rulesPrompt = buildRulesPrompt(client);
-let history = Array.isArray(convo?.history) ? convo.history : [];
+          const botType = client?.knowledgeBotType || "default";
+          const sectionsOrder =
+            Array.isArray(client?.sectionsOrder) && client.sectionsOrder.length
+              ? client.sectionsOrder
+              : Array.isArray(client?.sectionsPresent) && client.sectionsPresent.length
+              ? client.sectionsPresent
+              : ["faqs", "listings", "paymentPlans"];
 
+          const convoMeta = { whatsappPhoneNumberId: String(whatsappPhoneNumberId) };
+
+          // ── Source choice flow ──────────────────────────────────────────────
           const sourceChoiceExisting = convo?.sourceChoice || "";
           const needsChoice = clientAwaitSource && !sourceChoiceExisting;
 
           if (needsChoice) {
             const picked = parseSourceChoice(text);
-
-            history.push({ role: "user", content: text, createdAt: inboundAt });
+            const updatedHistory = [...history, { role: "user", content: text, createdAt: inboundAt }];
 
             if (!picked) {
-              const shouldSendMenu = !convo || isNewDay(convo.lastInteraction) || convo?.awaitSource !== true;
+              // User hasn't picked yet — save and send menu if needed
+              const shouldSendMenu =
+                !convo || isNewDay(convo.lastInteraction) || convo?.awaitSource !== true;
 
-  await upsertConversation({
-  clientId: client.clientId,
-  userId: fromDigits,
-  history,
-  lastInteraction: inboundAt,
-  lastMessage: inboundPreview,
-  lastMessageAt: inboundAt,
-  lastDirection: "in",
-  awaitSource: true,
-  sourceChoice: "",
-  meta: { whatsappPhoneNumberId: String(whatsappPhoneNumberId) },
-});
+              await upsertConversation({
+                clientId: client.clientId,
+                userId: fromDigits,
+                history: updatedHistory,
+                lastInteraction: inboundAt,
+                lastMessage: inboundPreview,
+                lastMessageAt: inboundAt,
+                lastDirection: "in",
+                awaitSource: true,         // ✅ still waiting
+                sourceChoice: "",          // ✅ no choice yet
+                meta: convoMeta,
+              });
+
               if (shouldSendMenu) {
                 await sendWhatsAppText({
                   phoneNumberId: String(whatsappPhoneNumberId),
@@ -619,18 +575,19 @@ let history = Array.isArray(convo?.history) ? convo.history : [];
               continue;
             }
 
-          await upsertConversation({
-  clientId: client.clientId,
-  userId: fromDigits,
-  history,
-  lastInteraction: inboundAt,
-  lastMessage: inboundPreview,
-  lastMessageAt: inboundAt,
-  lastDirection: "in",
-  awaitSource: true,
-  sourceChoice: "",
-  meta: { whatsappPhoneNumberId: String(whatsappPhoneNumberId) },
-});
+            // User picked a source — save the choice and acknowledge
+            await upsertConversation({
+              clientId: client.clientId,
+              userId: fromDigits,
+              history: updatedHistory,
+              lastInteraction: inboundAt,
+              lastMessage: inboundPreview,
+              lastMessageAt: inboundAt,
+              lastDirection: "in",
+              awaitSource: false,          // ✅ choice made, no longer waiting
+              sourceChoice: picked,        // ✅ save what they picked
+              meta: convoMeta,
+            });
 
             await sendWhatsAppText({
               phoneNumberId: String(whatsappPhoneNumberId),
@@ -638,82 +595,95 @@ let history = Array.isArray(convo?.history) ? convo.history : [];
               text: `✅ Got it. You selected: ${picked}.\nHow can I help you?`,
               accessToken: whatsappAccessToken,
             });
-
             continue;
           }
 
-    let greeting = "";
-if (!convo || isNewDay(convo.lastInteraction)) {
-  const userLang = detectUserLanguage(text);
-  greeting = userLang === "ar" ? "أهلًا 👋" : "Hi 👋";
-}
+          // ── Normal AI reply flow ────────────────────────────────────────────
 
-let grouped = {};
-try {
-  grouped = await retrieveChunks({
-  clientId: client.clientId,
-  botType,
-  userText: text,
-  retrievalQuery: text,
-  maxChunks: 6,
-});
-} catch (e) {
-  grouped = {};
-  log("warn", "WA retrieveChunks failed", {
-    err: e.message,
-    clientId: client.clientId,
-    from: fromDigits,
-  });
-}
+          // Greeting on first message of the day
+          let greeting = "";
+          if (!convo || isNewDay(convo.lastInteraction)) {
+            const userLang = detectUserLanguage(text);
+            greeting = userLang === "ar" ? "أهلًا 👋" : "Hi 👋";
+          }
 
-const { messages: baseMessagesForOpenAI, meta } = buildChatMessages({
-  rulesPrompt,
-  groupedChunks: grouped,
-  userText: text,
-  sectionsOrder,
-});
+          // Retrieve knowledge chunks
+          let grouped = {};
+          try {
+            grouped = await retrieveChunks({
+              clientId: client.clientId,
+              botType,
+              userText: text,
+              retrievalQuery: text,
+              maxChunks: 8,
+            });
+          } catch (e) {
+            log("warn", "WA retrieveChunks failed", {
+              err: e.message,
+              clientId: client.clientId,
+              from: fromDigits,
+            });
+          }
 
-const messagesForOpenAI = injectHistoryIntoMessages(
-  baseMessagesForOpenAI,
-  history
-);
+          // Build prompt
+          const rulesPrompt = buildRulesPrompt(client);
+          const { messages: baseMessagesForOpenAI, meta: promptMeta } = buildChatMessages({
+            rulesPrompt,
+            groupedChunks: grouped,
+            userText: text,
+            sectionsOrder,
+          });
 
-if (meta?.code) {
-  log("warn", "WA prompt builder warning", {
-    clientId: client.clientId,
-    from: fromDigits,
-    meta,
-  });
-}
+          const messagesForOpenAI = injectHistoryIntoMessages(baseMessagesForOpenAI, history);
 
-let assistantMessage = "";
-try {
-  assistantMessage = await getChatCompletion(messagesForOpenAI);
-} catch (err) {
-  log("error", "OpenAI error", {
-    err: err.message,
-    clientId: client.clientId,
-    from: fromDigits,
-  });
-  assistantMessage = "⚠️ I'm having trouble right now. Please try again shortly.";
-}
-const combined = greeting ? `${greeting}\n\n${assistantMessage}` : assistantMessage;
+          if (promptMeta?.code) {
+            log("warn", "WA prompt builder warning", {
+              clientId: client.clientId,
+              from: fromDigits,
+              meta: promptMeta,
+            });
+          }
 
-const outboundAt = new Date();
-history.push({ role: "user", content: text, createdAt: inboundAt });
-history.push({ role: "assistant", content: combined, createdAt: outboundAt });
-       await upsertConversation({
-  clientId: client.clientId,
-  userId: fromDigits,
-  history,
-  lastInteraction: inboundAt,
-  lastMessage: inboundPreview,
-  lastMessageAt: inboundAt,
-  lastDirection: "in",
-  awaitSource: true,
-  sourceChoice: "",
-  meta: { whatsappPhoneNumberId: String(whatsappPhoneNumberId) },
-});
+          // Call OpenAI
+          let assistantMessage = "";
+          try {
+            assistantMessage = await getChatCompletion(messagesForOpenAI);
+          } catch (err) {
+            log("error", "OpenAI error", {
+              err: err.message,
+              clientId: client.clientId,
+              from: fromDigits,
+            });
+            assistantMessage = "⚠️ I'm having trouble right now. Please try again shortly.";
+          }
+
+          const combined = greeting ? `${greeting}\n\n${assistantMessage}` : assistantMessage;
+          const outboundAt = new Date();
+
+          // ✅ Save conversation correctly:
+          // - awaitSource reflects the actual client setting (not hardcoded true)
+          // - sourceChoice carries over from the existing conversation
+          // - lastDirection "out" because we're about to send a reply
+          const updatedHistory = [
+            ...history,
+            { role: "user", content: text, createdAt: inboundAt },
+            { role: "assistant", content: combined, createdAt: outboundAt },
+          ];
+
+          await upsertConversation({
+            clientId: client.clientId,
+            userId: fromDigits,
+            history: updatedHistory,
+            lastInteraction: outboundAt,
+            lastMessage: combined.slice(0, 200),
+            lastMessageAt: outboundAt,
+            lastDirection: "out",                          // ✅ correct direction
+            awaitSource: clientAwaitSource,                // ✅ from client config, not hardcoded
+            sourceChoice: sourceChoiceExisting,            // ✅ carry over existing choice
+            meta: convoMeta,
+          });
+
+          // Send reply
           try {
             await sendWhatsAppText({
               phoneNumberId: String(whatsappPhoneNumberId),

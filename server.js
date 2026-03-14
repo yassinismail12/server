@@ -27,6 +27,32 @@ import Product from "./Product.js";
 
 dotenv.config();
 
+// ─────────────────────────────────────────────────────────────────────────────
+// ✅ PATCH 1 — Env guards: crash early with a clear message instead of
+// silently misbehaving with undefined secrets
+// ─────────────────────────────────────────────────────────────────────────────
+if (!process.env.JWT_SECRET) {
+  console.error("❌ FATAL: JWT_SECRET not set in environment. Exiting.");
+  process.exit(1);
+}
+
+if (!process.env.MONGODB_URI) {
+  console.error("❌ FATAL: MONGODB_URI not set in environment. Exiting.");
+  process.exit(1);
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// ✅ PATCH 2 — Global error handlers: one bad webhook payload can no longer
+// crash the entire server for all clients
+// ─────────────────────────────────────────────────────────────────────────────
+process.on("unhandledRejection", (err) => {
+  console.error("❌ Unhandled rejection:", err?.message || err);
+});
+
+process.on("uncaughtException", (err) => {
+  console.error("❌ Uncaught exception:", err?.message || err);
+});
+
 const app = express();
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -79,14 +105,13 @@ async function fetchInstagramAccountForPage(pageId, pageAccessToken) {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// CORS — single origin definition (fixed duplicate key bug)
+// CORS
 // ─────────────────────────────────────────────────────────────────────────────
 const ALLOWED_ORIGINS = (process.env.ALLOWED_ORIGINS || "")
   .split(",")
   .map((s) => s.trim())
   .filter(Boolean);
 
-// Always include local dev + known prod origins
 const CORS_WHITELIST = new Set([
   "http://localhost:5173",
   "http://127.0.0.1:5500",
@@ -97,7 +122,6 @@ const CORS_WHITELIST = new Set([
 app.use(
   cors({
     origin: (origin, callback) => {
-      // Allow non-browser requests (Postman, server-to-server) and whitelisted origins
       if (!origin || CORS_WHITELIST.has(origin)) return callback(null, true);
       return callback(new Error(`CORS: origin ${origin} not allowed`));
     },
@@ -109,7 +133,7 @@ app.use(
 // Rate limiters
 // ─────────────────────────────────────────────────────────────────────────────
 const authLimiter = rateLimit({
-  windowMs: 15 * 60 * 1000, // 15 min
+  windowMs: 15 * 60 * 1000,
   max: 20,
   standardHeaders: true,
   legacyHeaders: false,
@@ -117,7 +141,7 @@ const authLimiter = rateLimit({
 });
 
 const apiLimiter = rateLimit({
-  windowMs: 60 * 1000, // 1 min
+  windowMs: 60 * 1000,
   max: 120,
   standardHeaders: true,
   legacyHeaders: false,
@@ -131,7 +155,6 @@ app.use(cookieParser());
 app.use(express.json({ limit: "10mb" }));
 app.use(express.urlencoded({ limit: "10mb", extended: true }));
 
-// Uploads folder
 const uploadDir = path.join(process.cwd(), "uploads");
 if (!fs.existsSync(uploadDir)) fs.mkdirSync(uploadDir);
 
@@ -154,10 +177,17 @@ const fileFilter = (req, file, cb) => {
 
 const upload = multer({ storage, fileFilter, limits: { fileSize: 5 * 1024 * 1024 } });
 
+// ─────────────────────────────────────────────────────────────────────────────
+// ✅ PATCH 3 — cleanFileContent: keep Arabic characters
+// Old line:  .replace(/[^\x20-\x7E\n]/g, "")
+// That regex stripped every Arabic character silently, making Arabic uploads
+// produce empty knowledge bases with no error shown.
+// New regex keeps the full Arabic Unicode range.
+// ─────────────────────────────────────────────────────────────────────────────
 function cleanFileContent(content, mimetype) {
   let cleaned = String(content || "")
     .replace(/\r\n/g, "\n")
-    .replace(/[^\x20-\x7E\n]/g, "")
+    .replace(/[^\x20-\x7E\n\u0600-\u06FF\u0750-\u077F\uFB50-\uFDFF\uFE70-\uFEFF]/g, "")
     .replace(/\n{3,}/g, "\n\n")
     .trim();
 
@@ -180,8 +210,8 @@ function cleanFileContent(content, mimetype) {
 // Auth helpers
 // ─────────────────────────────────────────────────────────────────────────────
 const JWT_SECRET = process.env.JWT_SECRET;
-const JWT_EXPIRY = "7d";        // was 1h — extended so users don't get randomly logged out
-const JWT_REFRESH_BEFORE = 60 * 60; // refresh if < 1h remaining
+const JWT_EXPIRY = "7d";
+const JWT_REFRESH_BEFORE = 60 * 60;
 
 export function verifyToken(req, res, next) {
   const token = req.cookies.token;
@@ -191,7 +221,6 @@ export function verifyToken(req, res, next) {
     const decoded = jwt.verify(token, JWT_SECRET);
     req.user = decoded;
 
-    // Rolling refresh: if token expires in < 1h, issue a new one silently
     const now = Math.floor(Date.now() / 1000);
     if (decoded.exp && decoded.exp - now < JWT_REFRESH_BEFORE) {
       const refreshed = jwt.sign(
@@ -401,7 +430,6 @@ app.get("/api/clients/:id", verifyToken, requireClientOwnership, async (req, res
       clientId: client.clientId || "",
       pageId: client.pageId || "",
       PAGE_NAME: client.PAGE_NAME || "",
-      // ⚠️ Do NOT return PAGE_ACCESS_TOKEN, whatsappAccessToken, igAccessToken to clients
       igId: client.igId || "",
       igUsername: client.igUsername || "",
       igName: client.igName || "",
@@ -535,7 +563,6 @@ app.get("/api/stats", verifyToken, requireAdmin, async (req, res) => {
         orderRequests: clientStats.orderRequests || 0,
         lastActive: c.updatedAt || c.createdAt,
         active: c.active ?? false,
-        // ✅ Only admin gets tokens — never return to non-admin
         PAGE_ACCESS_TOKEN: c.PAGE_ACCESS_TOKEN || "",
         PAGE_NAME: c.PAGE_NAME || "",
         VERIFY_TOKEN: c.VERIFY_TOKEN || "menus",
@@ -659,10 +686,6 @@ app.post("/admin/renew-all", verifyToken, requireAdmin, async (req, res) => {
 // ─────────────────────────────────────────────────────────────────────────────
 // Auth
 // ─────────────────────────────────────────────────────────────────────────────
-
-// ⚠️ These two endpoints are admin-only one-time setup tools.
-// They are NOT rate-limited because they should never be exposed publicly.
-// In production: delete or guard with an ADMIN_SETUP_SECRET env check.
 app.post("/api/create-admin", async (req, res) => {
   try {
     const { email, password } = req.body;
@@ -689,7 +712,6 @@ app.post("/api/create-client", async (req, res) => {
   }
 });
 
-// ✅ Seed admin from env — no hardcoded credentials
 async function createAdmin() {
   try {
     const existing = await User.findOne({ role: "admin" });
@@ -1302,7 +1324,6 @@ async function saveLastWebhook(req, res, next) {
   return next();
 }
 
-// ✅ Review test send — now requires auth
 app.post("/api/review/send-test", verifyToken, requireAdmin, async (req, res) => {
   try {
     const { pageId, psid, text } = req.body;
