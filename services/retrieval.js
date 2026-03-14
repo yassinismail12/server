@@ -1,176 +1,16 @@
+// services/retrieval.js — FINAL VERSION
+// Includes: query rewriting, intent-based section targeting,
+// numerical filter boosting, full-coverage fallback,
+// and dynamic per-client Arabic expansion (zero manual updates per niche).
+
 import Client from "../Client.js";
 import KnowledgeChunk from "../KnowledgeChunk.js";
+import { rewriteQuery, applyFiltersToChunks } from "./queryRewriter.js";
+import { getMergedExpansionMap, expandTokensWithMap } from "../utils/arabicExpander.js";
 
 // ─────────────────────────────────────────────────────────────────────────────
-// ARABIC ↔ ENGLISH KEYWORD MAP
-// Maps Arabic / Egyptian-dialect tokens → English section keywords
-// Used by scoreChunkAgainstQuery so Arabic queries hit English chunks.
-// Add more entries here anytime you need to support new vocabulary.
+// Helpers
 // ─────────────────────────────────────────────────────────────────────────────
-export const ARABIC_TO_ENGLISH_KEYWORDS = {
-  // ── Menu / Food ──────────────────────────────────────────────────────────
-  "المنيو":        ["menu", "food", "meal", "drink"],
-  "منيو":          ["menu", "food", "meal", "drink"],
-  "الاكل":         ["menu", "food", "meal"],
-  "اكل":           ["menu", "food", "meal"],
-  "الأكل":         ["menu", "food", "meal"],
-  "أكل":           ["menu", "food", "meal"],
-  "وجبة":          ["meal", "menu", "food"],
-  "وجبات":         ["meal", "menu", "food"],
-  "الوجبات":       ["meal", "menu", "food"],
-  "مشروبات":       ["drinks", "menu", "beverages"],
-  "المشروبات":     ["drinks", "menu", "beverages"],
-  "مشروب":         ["drink", "menu", "beverage"],
-  "عصير":          ["juice", "drinks", "menu"],
-  "قهوة":          ["coffee", "drinks", "menu"],
-  "شاي":           ["tea", "drinks", "menu"],
-
-  // ── Pricing / Offers ─────────────────────────────────────────────────────
-  "السعر":         ["price", "pricing", "cost", "fee"],
-  "سعر":           ["price", "pricing", "cost", "fee"],
-  "الأسعار":       ["price", "pricing", "cost", "fees"],
-  "أسعار":         ["price", "pricing", "cost", "fees"],
-  "اسعار":         ["price", "pricing", "cost", "fees"],
-  "الاسعار":       ["price", "pricing", "cost", "fees"],
-  "تكلفة":         ["cost", "price", "fee"],
-  "التكلفة":       ["cost", "price", "fee"],
-  "عروض":          ["offers", "deals", "discount", "pricing"],
-  "العروض":        ["offers", "deals", "discount", "pricing"],
-  "خصم":           ["discount", "offers", "deals"],
-  "الخصم":         ["discount", "offers", "deals"],
-  "خصومات":        ["discount", "offers", "deals"],
-  "اوفر":          ["offers", "deals", "discount"],
-  "اوفرات":        ["offers", "deals", "discount"],
-  "بكام":          ["price", "pricing", "cost", "fee"],
-  "بكد":           ["price", "pricing", "cost", "fee"],
-
-  // ── Hours / Timing ────────────────────────────────────────────────────────
-  "المواعيد":      ["hours", "schedule", "opening", "time"],
-  "مواعيد":        ["hours", "schedule", "opening", "time"],
-  "الوقت":         ["time", "hours", "schedule"],
-  "وقت":           ["time", "hours", "schedule"],
-  "ساعات":         ["hours", "schedule", "opening"],
-  "الساعات":       ["hours", "schedule", "opening"],
-  "بتفتح":         ["hours", "opening", "schedule"],
-  "بتقفل":         ["hours", "closing", "schedule"],
-  "فاتح":          ["hours", "opening", "open"],
-  "مفتوح":         ["hours", "opening", "open"],
-  "قافل":          ["hours", "closing", "closed"],
-  "مغلق":          ["hours", "closing", "closed"],
-  "امتى":          ["hours", "time", "schedule", "when"],
-  "امتي":          ["hours", "time", "schedule", "when"],
-
-  // ── Location / Address ────────────────────────────────────────────────────
-  "العنوان":       ["address", "location", "contact"],
-  "عنوان":         ["address", "location", "contact"],
-  "فين":           ["address", "location", "contact", "where"],
-  "فيه":           ["location", "address"],
-  "المكان":        ["location", "address"],
-  "مكان":          ["location", "address"],
-  "الموقع":        ["location", "address", "map"],
-  "موقع":          ["location", "address", "map"],
-  "منين":          ["address", "location", "where"],
-
-  // ── Contact ───────────────────────────────────────────────────────────────
-  "تليفون":        ["phone", "call", "contact"],
-  "التليفون":      ["phone", "call", "contact"],
-  "رقم":           ["phone", "contact", "number"],
-  "الرقم":         ["phone", "contact", "number"],
-  "واتساب":        ["whatsapp", "contact", "phone"],
-  "واتس":          ["whatsapp", "contact", "phone"],
-  "تواصل":         ["contact", "phone", "whatsapp"],
-  "كلمونا":        ["contact", "phone", "call"],
-  "ايميل":         ["email", "contact"],
-  "الايميل":       ["email", "contact"],
-
-  // ── Delivery ──────────────────────────────────────────────────────────────
-  "توصيل":         ["delivery", "shipping"],
-  "التوصيل":       ["delivery", "shipping"],
-  "شحن":           ["shipping", "delivery"],
-  "الشحن":         ["shipping", "delivery"],
-  "بيوصلوا":       ["delivery", "shipping"],
-  "هيوصل":         ["delivery", "shipping"],
-
-  // ── Booking / Reservation ─────────────────────────────────────────────────
-  "حجز":           ["booking", "reservation", "appointment"],
-  "الحجز":         ["booking", "reservation", "appointment"],
-  "احجز":          ["booking", "reservation"],
-  "حجزات":         ["booking", "reservation"],
-  "موعد":          ["appointment", "booking", "schedule"],
-  "المواعيد":      ["appointment", "booking", "schedule"],
-  "ريزيرفيشن":     ["reservation", "booking"],
-
-  // ── Payment / Installments ────────────────────────────────────────────────
-  "دفع":           ["payment", "pay", "installment"],
-  "الدفع":         ["payment", "pay", "installment"],
-  "تقسيط":         ["installment", "payment", "plan"],
-  "التقسيط":       ["installment", "payment", "plan"],
-  "مقدم":          ["downpayment", "installment", "payment"],
-  "كاش":           ["cash", "payment"],
-  "كريدت":         ["credit", "card", "payment"],
-  "فيزا":          ["visa", "card", "payment"],
-
-  // ── Services / Products ────────────────────────────────────────────────────
-  "خدمات":         ["services", "products"],
-  "الخدمات":       ["services", "products"],
-  "خدمة":          ["service"],
-  "منتجات":        ["products", "services"],
-  "المنتجات":      ["products", "services"],
-  "منتج":          ["product"],
-
-  // ── Real estate ───────────────────────────────────────────────────────────
-  "شقة":           ["apartment", "unit", "listing", "property"],
-  "شقق":           ["apartments", "units", "listings", "property"],
-  "فيلا":          ["villa", "property", "listing"],
-  "فيلات":         ["villas", "properties", "listings"],
-  "وحدة":          ["unit", "apartment", "listing"],
-  "وحدات":         ["units", "apartments", "listings"],
-  "عقار":          ["property", "real estate", "listing"],
-  "العقار":        ["property", "real estate", "listing"],
-
-  // ── General intent ────────────────────────────────────────────────────────
-  "عايز":          ["want", "need", "looking"],
-  "عاوز":          ["want", "need", "looking"],
-  "أريد":          ["want", "need"],
-  "اريد":          ["want", "need"],
-  "محتاج":         ["need", "want"],
-  "ممكن":          ["can", "possible", "available"],
-  "فيه":           ["available", "have", "is there"],
-  "في":            ["available", "have", "is there"],
-  "عندكم":         ["have", "available", "do you have"],
-  "عندكوا":        ["have", "available", "do you have"],
-  "بتعملوا":       ["do you", "service", "offer"],
-  "بيعملوا":       ["do they", "service", "offer"],
-  "ايه":           ["what", "which"],
-  "إيه":           ["what", "which"],
-  "معلومات":       ["information", "details", "info"],
-  "تفاصيل":        ["details", "information", "info"],
-};
-
-// ─────────────────────────────────────────────────────────────────────────────
-// ARABIC SECTION KEYWORDS
-// Used at chunk-save time: given a section name, what Arabic keywords
-// should be stored in arabicKeywords[] so retrieval works in Arabic?
-// Import this in your dataset processing route.
-// ─────────────────────────────────────────────────────────────────────────────
-export const ARABIC_SECTION_KEYWORDS = {
-  menu:          ["منيو", "المنيو", "الاكل", "وجبات", "مشروبات"],
-  offers:        ["عروض", "العروض", "خصم", "خصومات", "اسعار"],
-  pricing:       ["سعر", "اسعار", "الاسعار", "تكلفة", "بكام"],
-  hours:         ["مواعيد", "المواعيد", "ساعات", "بتفتح", "بتقفل", "امتى"],
-  contact:       ["رقم", "تليفون", "واتساب", "تواصل", "ايميل"],
-  location:      ["عنوان", "فين", "موقع", "المكان"],
-  delivery:      ["توصيل", "شحن", "بيوصلوا"],
-  booking:       ["حجز", "احجز", "موعد", "ريزيرفيشن"],
-  paymentPlans:  ["تقسيط", "دفع", "مقدم", "كاش"],
-  services:      ["خدمات", "خدمة", "بتعملوا"],
-  products:      ["منتجات", "منتج"],
-  listings:      ["شقة", "شقق", "فيلا", "وحدة", "عقار"],
-  faqs:          ["سؤال", "اسئلة", "استفسار"],
-};
-
-// ─────────────────────────────────────────────────────────────────────────────
-
 function safeText(value = "") {
   return String(value ?? "").replace(/\r\n/g, "\n").trim();
 }
@@ -179,7 +19,7 @@ function joinBlocks(...parts) {
   return parts.map(safeText).filter(Boolean).join("\n\n").trim();
 }
 
-function detectUserLanguage(text = "") {
+export function detectUserLanguage(text = "") {
   return /[\u0600-\u06FF]/.test(String(text || "")) ? "ar" : "en";
 }
 
@@ -205,170 +45,21 @@ function uniqueTokens(tokens = []) {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// expandArabicTokens
-// Takes the raw Arabic tokens from the user message and expands them to include
-// their English equivalents using ARABIC_TO_ENGLISH_KEYWORDS.
-// Example: ["عايز", "المنيو"] → ["عايز", "want", "need", "looking", "المنيو", "menu", "food", "meal", "drink"]
+// Chunk scoring — uses dynamic expansion map (covers all niches)
 // ─────────────────────────────────────────────────────────────────────────────
-function expandArabicTokens(tokens = []) {
-  const expanded = [];
-
-  for (const token of tokens) {
-    expanded.push(token); // always keep original
-
-    // Direct lookup
-    if (ARABIC_TO_ENGLISH_KEYWORDS[token]) {
-      expanded.push(...ARABIC_TO_ENGLISH_KEYWORDS[token]);
-      continue;
-    }
-
-    // Fuzzy: try stripping common Arabic prefixes (ال، و، ب، ف، ل)
-    const stripped = token.replace(/^(ال|وال|بال|فال|لل|ول|بل|فل|و|ب|ف|ل)/, "");
-    if (stripped !== token && ARABIC_TO_ENGLISH_KEYWORDS[stripped]) {
-      expanded.push(...ARABIC_TO_ENGLISH_KEYWORDS[stripped]);
-    }
-
-    // Fuzzy: try with ال prefix added
-    const withAl = "ال" + token;
-    if (ARABIC_TO_ENGLISH_KEYWORDS[withAl]) {
-      expanded.push(...ARABIC_TO_ENGLISH_KEYWORDS[withAl]);
-    }
-  }
-
-  return uniqueTokens(expanded);
-}
-
-function buildFallbackPromptFromClient(client = {}) {
-  const promptConfig = client.promptConfig || {};
-  const business = client.businessData || client.business || {};
-
-  const businessName =
-    safeText(business.businessName) ||
-    safeText(client.businessName) ||
-    safeText(promptConfig.businessName);
-
-  const businessType =
-    safeText(business.businessType) ||
-    safeText(client.businessType) ||
-    safeText(promptConfig.businessType);
-
-  const city =
-    safeText(business.city) ||
-    safeText(client.city) ||
-    safeText(promptConfig.city);
-
-  const area =
-    safeText(business.area) ||
-    safeText(client.area) ||
-    safeText(promptConfig.area);
-
-  const address =
-    safeText(business.address) ||
-    safeText(client.address) ||
-    safeText(promptConfig.address);
-
-  const location =
-    safeText(business.location) ||
-    safeText(client.location) ||
-    safeText(promptConfig.location);
-
-  const phone =
-    safeText(business.phone) ||
-    safeText(client.phone) ||
-    safeText(promptConfig.phone);
-
-  const whatsapp =
-    safeText(business.whatsapp) ||
-    safeText(client.whatsapp) ||
-    safeText(promptConfig.whatsapp);
-
-  const email =
-    safeText(business.email) ||
-    safeText(client.email) ||
-    safeText(promptConfig.email);
-
-  const hours =
-    safeText(business.hours) ||
-    safeText(business.workingHours) ||
-    safeText(client.hours) ||
-    safeText(promptConfig.hours);
-
-  const services =
-    safeText(business.services) ||
-    safeText(client.services) ||
-    safeText(promptConfig.services);
-
-  const pricing =
-    safeText(business.pricing) ||
-    safeText(client.pricing) ||
-    safeText(promptConfig.pricing);
-
-  const menu =
-    safeText(business.menu) ||
-    safeText(client.menu) ||
-    safeText(promptConfig.menu);
-
-  const delivery =
-    safeText(business.delivery) ||
-    safeText(client.delivery) ||
-    safeText(promptConfig.delivery);
-
-  const policies =
-    safeText(business.policies) ||
-    safeText(client.policies) ||
-    safeText(promptConfig.policies);
-
-  const faqs =
-    safeText(business.faqs) ||
-    safeText(client.faqs) ||
-    safeText(promptConfig.faqs);
-
-  const customPrompt = safeText(client.systemPrompt);
-
-  const businessLines = [
-    "BUSINESS KNOWLEDGE",
-    businessName ? `Business Name: ${businessName}` : null,
-    businessType ? `Business Type: ${businessType}` : null,
-    city        ? `City: ${city}` : null,
-    area        ? `Area: ${area}` : null,
-    address     ? `Address: ${address}` : null,
-    location    ? `Location: ${location}` : null,
-    phone       ? `Phone: ${phone}` : null,
-    whatsapp    ? `WhatsApp: ${whatsapp}` : null,
-    email       ? `Email: ${email}` : null,
-    hours       ? `Working Hours: ${hours}` : null,
-    services    ? `Services: ${services}` : null,
-    pricing     ? `Pricing: ${pricing}` : null,
-    menu        ? `Menu: ${menu}` : null,
-    delivery    ? `Delivery: ${delivery}` : null,
-    policies    ? `Policies: ${policies}` : null,
-    faqs        ? `FAQs: ${faqs}` : null,
-  ]
-    .filter(Boolean)
-    .join("\n")
-    .trim();
-
-  return joinBlocks(customPrompt, businessLines);
-}
-
-// ─────────────────────────────────────────────────────────────────────────────
-// scoreChunkAgainstQuery — now fully Arabic/English bilingual
-// ─────────────────────────────────────────────────────────────────────────────
-function scoreChunkAgainstQuery(chunk = {}, query = "") {
+function scoreChunkAgainstQuery(chunk = {}, query = "", expansionMap = {}) {
   const normalizedQuery = normalizeSearchText(query);
   if (!normalizedQuery) return 0;
 
-  const rawTokens     = uniqueTokens(tokenize(normalizedQuery));
+  const rawTokens = uniqueTokens(tokenize(normalizedQuery));
   if (!rawTokens.length) return 0;
 
-  // ✅ Expand Arabic tokens to English equivalents
-  const queryTokens = expandArabicTokens(rawTokens);
+  // Use dynamic map — covers base Arabic + client-specific niche vocabulary
+  const queryTokens = expandTokensWithMap(rawTokens, expansionMap);
 
   const section = normalizeSearchText(chunk.section || "");
-  const text    = normalizeSearchText(chunk.text    || "");
-  const body    = `${section} ${text}`.trim();
-
-  // ✅ Also score against the chunk's arabicKeywords if present
+  const text = normalizeSearchText(chunk.text || "");
+  const body = `${section} ${text}`.trim();
   const arabicKeywordsText = normalizeSearchText(
     (chunk.arabicKeywords || []).join(" ")
   );
@@ -379,58 +70,80 @@ function scoreChunkAgainstQuery(chunk = {}, query = "") {
 
   for (const token of queryTokens) {
     if (!token) continue;
-
-    if (text.includes(token))              score += 2;
-    if (section.includes(token))           score += 3;
-    if (arabicKeywordsText.includes(token)) score += 3; // ✅ Arabic keyword match
+    if (text.includes(token)) score += 2;
+    if (section.includes(token)) score += 3;
+    if (arabicKeywordsText.includes(token)) score += 3;
   }
 
-  if (body.includes(normalizedQuery))       score += 8;
+  if (body.includes(normalizedQuery)) score += 8;
 
-  // ── Section-specific boosts ───────────────────────────────────────────────
-  if (
-    queryTokens.some((t) => ["price", "pricing", "cost", "fee", "fees", "بكام", "اسعار", "سعر"].includes(t)) &&
-    chunk.section === "offers"
-  ) score += 3;
+  // Section-specific boosts
+  const SECTION_BOOSTS = [
+    { tokens: ["price", "pricing", "cost", "fee", "fees", "cheapest", "budget"], section: "offers", boost: 3 },
+    { tokens: ["menu", "food", "drink", "meal", "beverage"], section: "menu", boost: 4 },
+    { tokens: ["property", "unit", "apartment", "villa", "listing", "bedroom"], section: "listings", boost: 4 },
+    { tokens: ["installment", "payment", "plan", "downpayment", "finance"], section: "paymentPlans", boost: 4 },
+    { tokens: ["hour", "hours", "open", "opening", "schedule", "time", "closing"], section: "hours", boost: 4 },
+    { tokens: ["phone", "call", "whatsapp", "address", "location", "email", "contact"], section: "contact", boost: 4 },
+    { tokens: ["delivery", "shipping", "deliver", "area"], section: "delivery", boost: 4 },
+    { tokens: ["booking", "reservation", "appointment", "book", "reserve"], section: "booking", boost: 4 },
+    { tokens: ["product", "catalog", "shop", "item", "sku"], section: "products", boost: 4 },
+    { tokens: ["doctor", "specialist", "team", "staff", "physician"], section: "team", boost: 3 },
+    { tokens: ["course", "class", "program", "certificate", "curriculum"], section: "courses", boost: 3 },
+    { tokens: ["room", "suite", "accommodation", "night", "stay"], section: "rooms", boost: 3 },
+    { tokens: ["policy", "policies", "refund", "return", "cancellation"], section: "policies", boost: 3 },
+    { tokens: ["faq", "question", "frequently", "asked"], section: "faqs", boost: 3 },
+  ];
 
-  if (
-    queryTokens.some((t) => ["menu", "food", "drink", "meal", "منيو", "اكل", "وجبات", "مشروبات"].includes(t)) &&
-    chunk.section === "menu"
-  ) score += 4;
-
-  if (
-    queryTokens.some((t) => ["property", "unit", "apartment", "villa", "listing", "شقة", "فيلا", "وحدة", "عقار"].includes(t)) &&
-    chunk.section === "listings"
-  ) score += 4;
-
-  if (
-    queryTokens.some((t) => ["installment", "payment", "plan", "downpayment", "تقسيط", "مقدم", "دفع"].includes(t)) &&
-    chunk.section === "paymentPlans"
-  ) score += 4;
-
-  if (
-    queryTokens.some((t) => ["hour", "hours", "open", "opening", "schedule", "time", "مواعيد", "بتفتح", "ساعات", "امتى"].includes(t)) &&
-    chunk.section === "hours"
-  ) score += 4;
-
-  if (
-    queryTokens.some((t) => ["phone", "call", "whatsapp", "address", "location", "email", "contact", "رقم", "واتساب", "تليفون", "عنوان", "فين"].includes(t)) &&
-    chunk.section === "contact"
-  ) score += 4;
-
-  if (
-    queryTokens.some((t) => ["delivery", "shipping", "توصيل", "شحن", "بيوصلوا"].includes(t)) &&
-    chunk.section === "delivery"
-  ) score += 4;
-
-  if (
-    queryTokens.some((t) => ["booking", "reservation", "appointment", "حجز", "موعد", "ريزيرفيشن"].includes(t)) &&
-    chunk.section === "booking"
-  ) score += 4;
+  for (const { tokens, section: sec, boost } of SECTION_BOOSTS) {
+    if (queryTokens.some((t) => tokens.includes(t)) && chunk.section === sec) {
+      score += boost;
+    }
+  }
 
   return score;
 }
 
+// ─────────────────────────────────────────────────────────────────────────────
+// Fallback prompt builder
+// ─────────────────────────────────────────────────────────────────────────────
+function buildFallbackPromptFromClient(client = {}) {
+  const promptConfig = client.promptConfig || {};
+  const business = client.businessData || client.business || {};
+  const get = (...keys) => {
+    for (const k of keys) {
+      const v = safeText(business[k] || client[k] || promptConfig[k]);
+      if (v) return v;
+    }
+    return "";
+  };
+
+  const lines = [
+    "BUSINESS KNOWLEDGE",
+    get("businessName") ? `Business Name: ${get("businessName")}` : null,
+    get("businessType") ? `Business Type: ${get("businessType")}` : null,
+    get("city") ? `City: ${get("city")}` : null,
+    get("area") ? `Area: ${get("area")}` : null,
+    get("address") ? `Address: ${get("address")}` : null,
+    get("location") ? `Location: ${get("location")}` : null,
+    get("phone") ? `Phone: ${get("phone")}` : null,
+    get("whatsapp") ? `WhatsApp: ${get("whatsapp")}` : null,
+    get("email") ? `Email: ${get("email")}` : null,
+    get("hours", "workingHours") ? `Working Hours: ${get("hours", "workingHours")}` : null,
+    get("services") ? `Services: ${get("services")}` : null,
+    get("pricing") ? `Pricing: ${get("pricing")}` : null,
+    get("menu") ? `Menu: ${get("menu")}` : null,
+    get("delivery") ? `Delivery: ${get("delivery")}` : null,
+    get("policies") ? `Policies: ${get("policies")}` : null,
+    get("faqs") ? `FAQs: ${get("faqs")}` : null,
+  ].filter(Boolean).join("\n").trim();
+
+  return joinBlocks(safeText(client.systemPrompt), lines);
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Grounding rules
+// ─────────────────────────────────────────────────────────────────────────────
 function buildGroundingRules(userLanguage = "en") {
   return [
     "GENERAL RULES",
@@ -453,103 +166,181 @@ function buildGroundingRules(userLanguage = "en") {
 
 function buildRetrievedKnowledgeBlock(retrievedChunks = []) {
   if (!retrievedChunks.length) return "";
-
   const lines = ["RETRIEVED BUSINESS KNOWLEDGE"];
-
   retrievedChunks.forEach((chunk, index) => {
-    lines.push(`Chunk ${index + 1}:`);
+    lines.push(`\nChunk ${index + 1}:`);
     if (chunk.section) lines.push(`Section: ${chunk.section}`);
     lines.push(chunk.text);
-    lines.push("");
   });
-
   return safeText(lines.join("\n"));
 }
 
-async function fetchCandidateChunks({ clientId, botType, limit = 120 }) {
-  const rows = await KnowledgeChunk.find({ clientId, botType })
-    .sort({ createdAt: -1 })
-    .limit(limit)
-    .lean();
+// ─────────────────────────────────────────────────────────────────────────────
+// DB fetch — section-targeted + $text search + recency fallback
+// ─────────────────────────────────────────────────────────────────────────────
+async function fetchCandidateChunks({ clientId, botType, query, sections = [], limit = 40 }) {
+  const baseFilter = { clientId, botType };
 
-  return rows.map((row, index) => ({
-    id:              String(row._id || `chunk_${index}`),
-    section:         safeText(row.section),
-    text:            safeText(row.text),
-    arabicKeywords:  Array.isArray(row.arabicKeywords) ? row.arabicKeywords : [], // ✅
-  }));
+  // Section-targeted fetch (high precision when rewriter identified sections)
+  let sectionChunks = [];
+  if (sections.length) {
+    sectionChunks = await KnowledgeChunk.find({ ...baseFilter, section: { $in: sections } })
+      .sort({ createdAt: -1 })
+      .limit(limit)
+      .lean();
+  }
+
+  // Full-text search
+  let textChunks = [];
+  try {
+    if (query && query.trim()) {
+      textChunks = await KnowledgeChunk.find(
+        { ...baseFilter, $text: { $search: query } },
+        { score: { $meta: "textScore" } }
+      )
+        .sort({ score: { $meta: "textScore" } })
+        .limit(limit)
+        .lean();
+    }
+  } catch {
+    // text index not ready — silent fallthrough
+  }
+
+  // Recency fallback
+  let fallbackChunks = [];
+  if (!sectionChunks.length && !textChunks.length) {
+    fallbackChunks = await KnowledgeChunk.find(baseFilter)
+      .sort({ createdAt: -1 })
+      .limit(limit)
+      .lean();
+  }
+
+  // Merge + dedup by _id
+  const seen = new Set();
+  const merged = [];
+  for (const row of [...sectionChunks, ...textChunks, ...fallbackChunks]) {
+    const id = String(row._id);
+    if (seen.has(id)) continue;
+    seen.add(id);
+    merged.push({
+      id,
+      section: safeText(row.section),
+      text: safeText(row.text),
+      arabicKeywords: Array.isArray(row.arabicKeywords) ? row.arabicKeywords : [],
+      mongoScore: row.score ?? 0,
+    });
+  }
+
+  return merged;
 }
 
+// ─────────────────────────────────────────────────────────────────────────────
+// Full-coverage ranking
+// ─────────────────────────────────────────────────────────────────────────────
+function rankWithFullCoverage({ candidates, query, filters, expansionMap, maxChunks }) {
+  // Score with dynamic expansion
+  let scored = candidates.map((chunk) => ({
+    ...chunk,
+    score: scoreChunkAgainstQuery(chunk, query, expansionMap) + (chunk.mongoScore ?? 0),
+  }));
+
+  // Boost chunks matching numerical/attribute filters
+  if (filters) scored = applyFiltersToChunks(scored, filters);
+
+  // Top relevant
+  const relevant = scored
+    .filter((c) => c.score > 0)
+    .sort((a, b) => b.score - a.score)
+    .slice(0, maxChunks);
+
+  // Coverage top-up — 1 best chunk per uncovered section
+  const coveredSections = new Set(relevant.map((c) => c.section));
+  const bySectionBest = {};
+  for (const chunk of scored) {
+    const s = chunk.section;
+    if (coveredSections.has(s)) continue;
+    if (!bySectionBest[s] || chunk.score > bySectionBest[s].score) {
+      bySectionBest[s] = chunk;
+    }
+  }
+
+  const seen = new Set(relevant.map((c) => c.id));
+  const merged = [...relevant];
+  for (const chunk of Object.values(bySectionBest)) {
+    if (!seen.has(chunk.id)) {
+      merged.push(chunk);
+      seen.add(chunk.id);
+    }
+  }
+
+  return merged;
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Main export
+// ─────────────────────────────────────────────────────────────────────────────
 export async function retrieveChunks({
   clientId,
-  botType          = "default",
+  botType = "default",
   userText,
-  retrievalQuery   = "",
-  maxChunks        = 6,
+  retrievalQuery = "",
+  maxChunks = 8,
 } = {}) {
-  const safeClientId      = safeText(clientId);
-  const safeBotType       = safeText(botType) || "default";
-  const safeUserText      = safeText(userText);
-  const safeRetrievalQuery = safeText(retrievalQuery) || safeUserText;
-  const userLanguage      = detectUserLanguage(safeUserText);
+  const safeClientId = safeText(clientId);
+  const safeBotType = safeText(botType) || "default";
+  const safeUserText = safeText(userText);
+  const rawQuery = safeText(retrievalQuery) || safeUserText;
 
-  if (!safeClientId) {
-    return {
-      mode: "single_prompt",
-      finalSystemPrompt: "",
-      userText: safeUserText,
-      retrievalQuery: safeRetrievalQuery,
-      userLanguage,
-      hasPrompt: false,
-      source: "missing_client_id",
-      retrievedChunks: [],
-    };
-  }
+  const empty = (source) => ({
+    mode: "single_prompt",
+    finalSystemPrompt: "",
+    userText: safeUserText,
+    retrievalQuery: rawQuery,
+    userLanguage: detectUserLanguage(safeUserText),
+    hasPrompt: false,
+    source,
+    retrievedChunks: [],
+  });
+
+  if (!safeClientId) return empty("missing_client_id");
 
   const client = await Client.findOne({ clientId: safeClientId }).lean();
+  if (!client) return empty("client_not_found");
 
-  if (!client) {
-    return {
-      mode: "single_prompt",
-      finalSystemPrompt: "",
-      userText: safeUserText,
-      retrievalQuery: safeRetrievalQuery,
-      userLanguage,
-      hasPrompt: false,
-      source: "client_not_found",
-      retrievedChunks: [],
-    };
-  }
+  // ── Load merged Arabic expansion map (base + client niche, zero API call) ──
+  const expansionMap = getMergedExpansionMap(client);
 
   const basePrompt = joinBlocks(
     safeText(client.finalSystemPrompt),
-    !safeText(client.finalSystemPrompt)
-      ? safeText(client.systemPrompt)
-      : "",
+    !safeText(client.finalSystemPrompt) ? safeText(client.systemPrompt) : "",
     !safeText(client.finalSystemPrompt) && !safeText(client.systemPrompt)
-      ? safeText(client.businessKnowledgePrompt)
-      : "",
-    !safeText(client.finalSystemPrompt) &&
-      !safeText(client.systemPrompt) &&
-      !safeText(client.businessKnowledgePrompt)
-      ? buildFallbackPromptFromClient(client)
-      : ""
+      ? safeText(client.businessKnowledgePrompt) : "",
+    !safeText(client.finalSystemPrompt) && !safeText(client.systemPrompt) && !safeText(client.businessKnowledgePrompt)
+      ? buildFallbackPromptFromClient(client) : ""
   );
 
-  const candidateChunks = await fetchCandidateChunks({
+  // ── Step 1: Rewrite query — extract intent, sections, filters ───────────────
+  const rewritten = await rewriteQuery(safeUserText);
+  const userLanguage = rewritten.language;
+  const searchQuery = rewritten.rewritten ? rewritten.expandedQuery : rawQuery;
+
+  // ── Step 2: Fetch candidates ────────────────────────────────────────────────
+  const candidates = await fetchCandidateChunks({
     clientId: safeClientId,
-    botType:  safeBotType,
-    limit:    120,
+    botType: safeBotType,
+    query: searchQuery,
+    sections: rewritten.sections,
+    limit: 40,
   });
 
-  const retrievedChunks = candidateChunks
-    .map((chunk) => ({
-      ...chunk,
-      score: scoreChunkAgainstQuery(chunk, safeRetrievalQuery),
-    }))
-    .filter((chunk) => chunk.score > 0)
-    .sort((a, b) => b.score - a.score)
-    .slice(0, Number(maxChunks) > 0 ? Number(maxChunks) : 6);
+  // ── Step 3: Score + filter + rank with full coverage ────────────────────────
+  const retrievedChunks = rankWithFullCoverage({
+    candidates,
+    query: searchQuery,
+    filters: rewritten.filters,
+    expansionMap,
+    maxChunks: Number(maxChunks) > 0 ? Number(maxChunks) : 8,
+  });
 
   if (retrievedChunks.length) {
     const finalSystemPrompt = joinBlocks(
@@ -562,11 +353,14 @@ export async function retrieveChunks({
       mode: "chunk_retrieval",
       finalSystemPrompt,
       userText: safeUserText,
-      retrievalQuery: safeRetrievalQuery,
+      retrievalQuery: searchQuery,
       userLanguage,
       hasPrompt: Boolean(finalSystemPrompt),
       source: "knowledge_chunks",
       retrievedChunks,
+      intent: rewritten.intent,
+      detectedSections: rewritten.sections,
+      appliedFilters: rewritten.filters,
     };
   }
 
@@ -574,7 +368,7 @@ export async function retrieveChunks({
     mode: "single_prompt",
     finalSystemPrompt: joinBlocks(buildGroundingRules(userLanguage), basePrompt),
     userText: safeUserText,
-    retrievalQuery: safeRetrievalQuery,
+    retrievalQuery: searchQuery,
     userLanguage,
     hasPrompt: Boolean(basePrompt),
     source: "knowledge_chunks_no_match_fallback",

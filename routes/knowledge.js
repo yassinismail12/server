@@ -2,7 +2,7 @@
 import express from "express";
 import multer from "multer";
 import jwt from "jsonwebtoken";
-
+import { generateNicheExpansionMap } from "../utils/arabicExpander.js";
 import Client from "../Client.js";
 import KnowledgeChunk from "../KnowledgeChunk.js";
 import { chunkSection } from "../utils/chunking.js";
@@ -738,7 +738,12 @@ async function rebuildKnowledge({ clientId, botType = "default", replace = false
   }
 
   if (docs.length) await KnowledgeChunk.insertMany(docs);
-
+if (docs.length) {
+  const sampleTexts = docs.slice(0, 20).map((d) => d.text);
+  generateNicheExpansionMap(clientId, sampleTexts).catch((e) =>
+    console.warn("⚠️ Arabic expansion failed:", e?.message)
+  );
+}
   const hasChunks = docs.length > 0;
   const presentSections = [...new Set(docs.map((d) => d.section))];
   const expectedSections = sections;

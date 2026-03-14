@@ -1,12 +1,28 @@
+// ─────────────────────────────────────────────────────────────────────────────
+// Token estimation
+// Arabic chars encode to ~2 tokens each on average (vs ~0.25 for English).
+// We detect Arabic presence and apply the right ratio so budget maths are
+// accurate for both languages.
+// ─────────────────────────────────────────────────────────────────────────────
 function estimateTokens(str = "") {
-  return Math.ceil(String(str || "").length / 4);
+  const s = String(str || "");
+  if (!s) return 0;
+
+  // Count Arabic characters
+  const arabicChars = (s.match(/[\u0600-\u06FF]/g) || []).length;
+  const nonArabicChars = s.length - arabicChars;
+
+  // Arabic: ~0.5 chars/token  →  arabicChars * 2
+  // English/Latin: ~4 chars/token  →  nonArabicChars / 4
+  return Math.ceil(arabicChars * 2 + nonArabicChars / 4);
 }
 
 function hardTrimToTokenBudget(text, budgetTokens) {
   const raw = String(text || "").trim();
   if (!raw) return "";
 
-  const maxChars = Math.max(0, Math.floor(budgetTokens * 4));
+  // Rough char budget — conservative (uses smaller ratio for safety)
+  const maxChars = Math.max(0, Math.floor(budgetTokens * 3));
   if (raw.length <= maxChars) return raw;
   if (maxChars <= 12) return raw.slice(0, maxChars);
 
@@ -20,11 +36,9 @@ function normalizeChunkText(text = "") {
 function safeSectionLabel(section, sectionTitleMap = null) {
   const raw = String(section || "").trim();
   if (!raw) return "SECTION";
-
   if (sectionTitleMap && sectionTitleMap[raw]) {
     return String(sectionTitleMap[raw]).trim();
   }
-
   return raw.replace(/[_-]+/g, " ").toUpperCase();
 }
 
@@ -70,19 +84,15 @@ function trimHistoryToBudget(history = [], maxHistoryTokens = 800) {
     break;
   }
 
-  return {
-    historyMessages: picked,
-    usedTokens: used,
-  };
+  return { historyMessages: picked, usedTokens: used };
 }
 
-function normalizeRetrievedChunksShape(groupedChunks, sectionsOrder = []) {
+function normalizeRetrievedChunksShape(groupedChunks) {
   if (!groupedChunks) return {};
 
-  // New retrieval shape: { retrievedChunks: [...] }
+  // New shape: { retrievedChunks: [...] }
   if (Array.isArray(groupedChunks?.retrievedChunks)) {
     const grouped = {};
-
     for (const chunk of groupedChunks.retrievedChunks) {
       const section = String(chunk?.section || "other").trim() || "other";
       grouped[section] ||= [];
@@ -91,14 +101,12 @@ function normalizeRetrievedChunksShape(groupedChunks, sectionsOrder = []) {
         score: chunk?.score ?? 0,
       });
     }
-
     return grouped;
   }
 
   // Old shape: { menu: [...], offers: [...], ... }
   if (typeof groupedChunks === "object") {
     const grouped = {};
-
     for (const [section, items] of Object.entries(groupedChunks)) {
       if (!Array.isArray(items)) continue;
       grouped[section] = items
@@ -108,7 +116,6 @@ function normalizeRetrievedChunksShape(groupedChunks, sectionsOrder = []) {
         }))
         .filter((item) => item.text);
     }
-
     return grouped;
   }
 
@@ -123,7 +130,7 @@ export function buildDataBlockBudgeted(groupedChunks, sectionsOrder, opts = {}) 
     sectionTitleMap = null,
   } = opts;
 
-  const normalizedGrouped = normalizeRetrievedChunksShape(groupedChunks, sectionsOrder);
+  const normalizedGrouped = normalizeRetrievedChunksShape(groupedChunks);
 
   const availableSections = Object.keys(normalizedGrouped);
   const orderedSections = Array.from(
@@ -142,10 +149,8 @@ export function buildDataBlockBudgeted(groupedChunks, sectionsOrder, opts = {}) 
 
     if (!items.length) {
       if (!includeEmptySections) continue;
-
       const emptyBlock = `${header}No relevant data found.`;
       const cost = estimateTokens(emptyBlock);
-
       if (usedTokens + cost <= maxDataTokens) {
         outSections.push(emptyBlock);
         usedTokens += cost;
@@ -219,11 +224,7 @@ export function buildDataBlockBudgeted(groupedChunks, sectionsOrder, opts = {}) 
     ? `BUSINESS KNOWLEDGE\n\n${outSections.join("\n\n")}`
     : "";
 
-  return {
-    dataBlock,
-    usedTokens,
-    includedChunkCount,
-  };
+  return { dataBlock, usedTokens, includedChunkCount };
 }
 
 export function buildChatMessages({
@@ -243,15 +244,12 @@ export function buildChatMessages({
   const safeBusinessKnowledgeBlock = String(businessKnowledgeBlock || "").trim();
   const safeUserText = String(userText || "").trim();
 
-  let {
-    dataBlock,
-    usedTokens: dataTokens,
-    includedChunkCount,
-  } = buildDataBlockBudgeted(groupedChunks, sectionsOrder, {
-    maxDataTokens,
-    perChunkMaxTokens,
-    sectionTitleMap,
-  });
+  let { dataBlock, usedTokens: dataTokens, includedChunkCount } =
+    buildDataBlockBudgeted(groupedChunks, sectionsOrder, {
+      maxDataTokens,
+      perChunkMaxTokens,
+      sectionTitleMap,
+    });
 
   let { historyMessages, usedTokens: historyTokens } = trimHistoryToBudget(
     history,
@@ -282,7 +280,7 @@ export function buildChatMessages({
   if (totalTokens > maxTotalTokens) {
     meta.code = "PROMPT_RISK_LONG_MESSAGE";
     meta.advice =
-      "Outgoing prompt too large. Reduce extra data, reduce history, reduce per-chunk size, or trim the current user message.";
+      "Outgoing prompt too large. Reduce extra data, reduce history, or trim chunk size.";
 
     const reducedDataBudget = Math.max(500, Math.floor(maxDataTokens * 0.55));
     const reducedHistoryBudget = Math.max(180, Math.floor(maxHistoryTokens * 0.55));
@@ -312,7 +310,6 @@ export function buildChatMessages({
     ];
 
     totalTokens = messages.reduce((sum, m) => sum + estimateTokens(m.content), 0);
-
     meta.totalTokens = totalTokens;
     meta.dataTokens = dataTokens;
     meta.historyTokens = historyTokens;
@@ -339,8 +336,5 @@ export function buildChatMessages({
     }
   }
 
-  return {
-    messages,
-    meta,
-  };
+  return { messages, meta };
 }

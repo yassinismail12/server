@@ -90,7 +90,8 @@ const clientSchema = new mongoose.Schema({
   lastWebhookPayload: { type: Object, default: null },
 
   staffNumbers: { type: [String], default: [] },
-
+     arabicExpansionMap: { type: Object, default: {} },
+     arabicExpansionBuiltAt: { type: Date, default: null },
   whatsappPhoneNumberId: { type: String, default: "" },
   whatsappWabaId: { type: String, default: "" },
   whatsappAccessToken: { type: String, default: "" },
