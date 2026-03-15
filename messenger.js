@@ -748,15 +748,18 @@ router.post("/", async (req, res) => {
     clientPageId: clientDocFresh?.pageId,
   });
 
-  firstName = userProfile.first_name || "there";
-  await saveCustomer(pageId, sender_psid, userProfile);
+firstName = userProfile.first_name || "";
+await saveCustomer(pageId, sender_psid, userProfile);
 
+const knownName = firstName && firstName !== "there";
+if (knownName) {
   const userLang = detectUserLanguage(userMessage);
   greeting =
     userLang === "ar"
       ? `أهلًا ${firstName}، سعيدين بوجودك اليوم 👋`
       : `Hi ${firstName}, good to see you today 👋`;
 }
+      }
 
             const usage = await incrementMessageCountForClient(pageId);
             if (!usage.allowed) {
