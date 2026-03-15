@@ -10,6 +10,31 @@ import { chunkSection } from "../utils/chunking.js";
 const router = express.Router();
 
 /* ---------------------------
+   Arabic keywords per section
+   Injected into every chunk at save time so Arabic queries
+   can match English chunks via the +3 arabicKeywords boost in scorer.
+---------------------------- */
+const SECTION_ARABIC_KEYWORDS = {
+  hours:        ["مواعيد", "ساعات", "بتفتح", "بتقفل", "مفتوح", "مغلق", "الدوام", "وقت الفتح", "وقت الاغلاق"],
+  menu:         ["منيو", "اكل", "وجبة", "مشروبات", "قهوة", "شاي", "عصير", "الاكل"],
+  offers:       ["سعر", "اسعار", "عروض", "عرض", "خصم", "تكلفة", "بكام", "ارخص", "السعر", "الاسعار"],
+  contact:      ["تليفون", "تلفون", "رقم", "واتساب", "واتس", "عنوان", "موقع", "ايميل"],
+  delivery:     ["توصيل", "شحن", "بيوصلوا", "هيوصل", "مناطق التوصيل"],
+  booking:      ["حجز", "احجز", "موعد", "حجزت", "احجزلي", "حجز موعد"],
+  listings:     ["شقة", "شقق", "فيلا", "وحدة", "عقار", "غرف", "اوضة", "مساحة", "تشطيب", "دور"],
+  paymentPlans: ["تقسيط", "اقساط", "مقدم", "دفعة", "تسهيلات"],
+  products:     ["منتج", "منتجات", "بضاعة", "سلعة"],
+  team:         ["دكتور", "دكاترة", "مدرس", "دكتورة", "استاذ", "متخصص"],
+  courses:      ["كورس", "كورسات", "شهادة", "مواد", "برنامج"],
+  rooms:        ["غرفة", "فندق", "ليلة", "اقامة", "سويت"],
+  policies:     ["سياسة", "استرجاع", "ارجاع", "استبدال", "ضمان"],
+  faqs:         ["سؤال", "اسئلة", "استفسار"],
+  profile:      ["عننا", "مين احنا", "بتعملوا ايه"],
+  other:        [],
+  mixed:        [],
+};
+
+/* ---------------------------
    Auth (cookie token)
 ---------------------------- */
 function verifyToken(req, res, next) {
@@ -61,215 +86,21 @@ function normalizeText(s) {
 function canonicalSectionName(s) {
   const t = String(s || "").toLowerCase().trim();
 
-  // FAQs
-  if (
-    ["faq", "faqs", "qna", "questions", "common questions", "frequently asked questions"].includes(t)
-  ) return "faqs";
-
-  // Hours
-  if (
-    [
-      "hour",
-      "hours",
-      "workinghours",
-      "working hours",
-      "business hours",
-      "opening hours",
-      "open hours",
-      "schedule",
-      "timings",
-      "availability",
-    ].includes(t)
-  ) return "hours";
-
-  // Offers / services / pricing
-  if (
-    [
-      "service",
-      "services",
-      "offers",
-      "pricing",
-      "prices",
-      "fees",
-      "consultation fees",
-      "consultationfees",
-      "packages",
-      "plans",
-      "treatments",
-    ].includes(t)
-  ) return "offers";
-
-  // Menu
-  if (
-    [
-      "menu",
-      "food menu",
-      "drink menu",
-      "restaurant menu",
-      "items",
-      "menu items",
-    ].includes(t)
-  ) return "menu";
-
-  // Products
-  if (
-    [
-      "product",
-      "products",
-      "catalog",
-      "catalogue",
-      "shop",
-      "store items",
-      "inventory products",
-      "product list",
-      "collection",
-      "collections",
-      "categories",
-    ].includes(t)
-  ) return "products";
-
-  // Listings / real estate / units
-  if (
-    [
-      "listing",
-      "listings",
-      "properties",
-      "units",
-      "inventory",
-      "apartments",
-      "villas",
-      "properties for sale",
-      "properties for rent",
-    ].includes(t)
-  ) return "listings";
-
-  // Payment plans
-  if (
-    [
-      "payment",
-      "paymentplans",
-      "payment plans",
-      "installments",
-      "installment plans",
-      "finance options",
-      "financing",
-    ].includes(t)
-  ) return "paymentPlans";
-
-  // Booking / appointments
-  if (
-    [
-      "booking",
-      "bookings",
-      "appointment",
-      "appointments",
-      "reservation",
-      "reservations",
-      "table booking",
-      "table reservation",
-    ].includes(t)
-  ) return "booking";
-
-  // Policies
-  if (
-    [
-      "policy",
-      "policies",
-      "rules",
-      "terms",
-      "refund policy",
-      "return policy",
-      "exchange policy",
-      "cancellation policy",
-      "privacy policy",
-      "shipping policy",
-      "warranty",
-      "warranties",
-    ].includes(t)
-  ) return "policies";
-
-  // Contact
-  if (
-    [
-      "contact",
-      "phone",
-      "whatsapp",
-      "address",
-      "location",
-      "office location",
-      "office address",
-      "email",
-      "contact information",
-      "branch contact",
-      "branches",
-    ].includes(t)
-  ) return "contact";
-
-  // Profile
-  if (
-    [
-      "profile",
-      "about",
-      "about us",
-      "business name",
-      "business type",
-      "city",
-      "areas served",
-      "company profile",
-      "who we are",
-    ].includes(t)
-  ) return "profile";
-
-  // Team / doctors / staff
-  if (
-    [
-      "team",
-      "staff",
-      "doctors",
-      "doctor",
-      "specialists",
-      "employees",
-      "trainers",
-      "teachers",
-      "instructors",
-    ].includes(t)
-  ) return "team";
-
-  // Courses / education
-  if (
-    [
-      "courses",
-      "course",
-      "programs",
-      "programmes",
-      "classes",
-      "subjects",
-      "curriculum",
-    ].includes(t)
-  ) return "courses";
-
-  // Rooms / hotel / stay
-  if (
-    [
-      "rooms",
-      "room types",
-      "accommodation",
-      "suites",
-      "stay options",
-    ].includes(t)
-  ) return "rooms";
-
-  // Delivery / shipping
-  if (
-    [
-      "delivery",
-      "shipping",
-      "delivery areas",
-      "shipping details",
-      "delivery policy",
-    ].includes(t)
-  ) return "delivery";
-
+  if (["faq", "faqs", "qna", "questions", "common questions", "frequently asked questions"].includes(t)) return "faqs";
+  if (["hour", "hours", "workinghours", "working hours", "business hours", "opening hours", "open hours", "schedule", "timings", "availability"].includes(t)) return "hours";
+  if (["service", "services", "offers", "pricing", "prices", "fees", "consultation fees", "consultationfees", "packages", "plans", "treatments"].includes(t)) return "offers";
+  if (["menu", "food menu", "drink menu", "restaurant menu", "items", "menu items"].includes(t)) return "menu";
+  if (["product", "products", "catalog", "catalogue", "shop", "store items", "inventory products", "product list", "collection", "collections", "categories"].includes(t)) return "products";
+  if (["listing", "listings", "properties", "units", "inventory", "apartments", "villas", "properties for sale", "properties for rent"].includes(t)) return "listings";
+  if (["payment", "paymentplans", "payment plans", "installments", "installment plans", "finance options", "financing"].includes(t)) return "paymentPlans";
+  if (["booking", "bookings", "appointment", "appointments", "reservation", "reservations", "table booking", "table reservation"].includes(t)) return "booking";
+  if (["policy", "policies", "rules", "terms", "refund policy", "return policy", "exchange policy", "cancellation policy", "privacy policy", "shipping policy", "warranty", "warranties"].includes(t)) return "policies";
+  if (["contact", "phone", "whatsapp", "address", "location", "office location", "office address", "email", "contact information", "branch contact", "branches"].includes(t)) return "contact";
+  if (["profile", "about", "about us", "business name", "business type", "city", "areas served", "company profile", "who we are"].includes(t)) return "profile";
+  if (["team", "staff", "doctors", "doctor", "specialists", "employees", "trainers", "teachers", "instructors"].includes(t)) return "team";
+  if (["courses", "course", "programs", "programmes", "classes", "subjects", "curriculum"].includes(t)) return "courses";
+  if (["rooms", "room types", "accommodation", "suites", "stay options"].includes(t)) return "rooms";
+  if (["delivery", "shipping", "delivery areas", "shipping details", "delivery policy"].includes(t)) return "delivery";
   if (["mixed"].includes(t)) return "mixed";
 
   return t || "other";
@@ -311,25 +142,20 @@ function formToMixedText(data = {}) {
   push("City / Areas Served", data.cityArea);
   push("About Us", data.about);
   push("Working Hours", data.hours);
-
   push("Phone / WhatsApp", data.phoneWhatsapp);
   push("Email", data.email);
   push("Address / Location", data.address);
-
   push("Services", data.services);
   push("Pricing / Packages", data.pricing);
-
   push("Menu", data.menu);
   push("Products", data.products);
   push("Listings", data.listingsSummary);
   push("Payment Plans", data.paymentPlans);
-
   push("Bookings / Appointments", data.booking);
   push("Doctors / Staff / Team", data.team);
   push("Courses / Programs", data.courses);
   push("Rooms / Accommodation", data.rooms);
   push("Delivery / Shipping", data.delivery);
-
   push("Policies", data.policies);
   push("FAQs", data.faqs);
 
@@ -344,126 +170,20 @@ function splitMixedToSections(mixedText = "") {
     const t = String(title || "").toLowerCase().trim();
 
     if (t.includes("faq") || t.includes("question")) return "faqs";
-
-    if (
-      t.includes("working hours") ||
-      t === "hours" ||
-      t.includes("open") ||
-      t.includes("schedule") ||
-      t.includes("timing") ||
-      t.includes("availability")
-    ) return "hours";
-
-    if (
-      t.includes("service") ||
-      t.includes("offer") ||
-      t.includes("pricing") ||
-      t.includes("price") ||
-      t.includes("fees") ||
-      t.includes("package") ||
-      t.includes("treatment")
-    ) return "offers";
-
-    if (
-      t.includes("menu") ||
-      t.includes("food") ||
-      t.includes("drink") ||
-      t.includes("menu items")
-    ) return "menu";
-
-    if (
-      t.includes("product") ||
-      t.includes("catalog") ||
-      t.includes("shop") ||
-      t.includes("collection") ||
-      t.includes("category")
-    ) return "products";
-
-    if (
-      t.includes("listing") ||
-      t.includes("properties") ||
-      t.includes("inventory") ||
-      t.includes("units") ||
-      t.includes("apartment") ||
-      t.includes("villa")
-    ) return "listings";
-
-    if (
-      t.includes("payment") ||
-      t.includes("installment") ||
-      t.includes("plan") ||
-      t.includes("finance")
-    ) return "paymentPlans";
-
-    if (
-      t.includes("booking") ||
-      t.includes("appointment") ||
-      t.includes("reservation")
-    ) return "booking";
-
-    if (
-      t.includes("policy") ||
-      t.includes("policies") ||
-      t.includes("rules") ||
-      t.includes("refund") ||
-      t.includes("return") ||
-      t.includes("exchange") ||
-      t.includes("cancellation") ||
-      t.includes("privacy") ||
-      t.includes("shipping") ||
-      t.includes("warranty")
-    ) return "policies";
-
-    if (
-      t.includes("phone") ||
-      t.includes("whatsapp") ||
-      t.includes("contact") ||
-      t.includes("address") ||
-      t.includes("location") ||
-      t.includes("email") ||
-      t.includes("branch")
-    ) return "contact";
-
-    if (
-      t.includes("business name") ||
-      t.includes("business type") ||
-      t.includes("city") ||
-      t.includes("about") ||
-      t.includes("profile") ||
-      t.includes("about us") ||
-      t.includes("areas served")
-    ) return "profile";
-
-    if (
-      t.includes("team") ||
-      t.includes("staff") ||
-      t.includes("doctor") ||
-      t.includes("doctors") ||
-      t.includes("specialist") ||
-      t.includes("trainer") ||
-      t.includes("teacher") ||
-      t.includes("instructor")
-    ) return "team";
-
-    if (
-      t.includes("course") ||
-      t.includes("courses") ||
-      t.includes("program") ||
-      t.includes("class") ||
-      t.includes("curriculum")
-    ) return "courses";
-
-    if (
-      t.includes("room") ||
-      t.includes("rooms") ||
-      t.includes("accommodation") ||
-      t.includes("suite")
-    ) return "rooms";
-
-    if (
-      t.includes("delivery") ||
-      t.includes("shipping")
-    ) return "delivery";
+    if (t.includes("working hours") || t === "hours" || t.includes("open") || t.includes("schedule") || t.includes("timing") || t.includes("availability")) return "hours";
+    if (t.includes("service") || t.includes("offer") || t.includes("pricing") || t.includes("price") || t.includes("fees") || t.includes("package") || t.includes("treatment")) return "offers";
+    if (t.includes("menu") || t.includes("food") || t.includes("drink") || t.includes("menu items")) return "menu";
+    if (t.includes("product") || t.includes("catalog") || t.includes("shop") || t.includes("collection") || t.includes("category")) return "products";
+    if (t.includes("listing") || t.includes("properties") || t.includes("inventory") || t.includes("units") || t.includes("apartment") || t.includes("villa")) return "listings";
+    if (t.includes("payment") || t.includes("installment") || t.includes("plan") || t.includes("finance")) return "paymentPlans";
+    if (t.includes("booking") || t.includes("appointment") || t.includes("reservation")) return "booking";
+    if (t.includes("policy") || t.includes("policies") || t.includes("rules") || t.includes("refund") || t.includes("return") || t.includes("exchange") || t.includes("cancellation") || t.includes("privacy") || t.includes("shipping") || t.includes("warranty")) return "policies";
+    if (t.includes("phone") || t.includes("whatsapp") || t.includes("contact") || t.includes("address") || t.includes("location") || t.includes("email") || t.includes("branch")) return "contact";
+    if (t.includes("business name") || t.includes("business type") || t.includes("city") || t.includes("about") || t.includes("profile") || t.includes("about us") || t.includes("areas served")) return "profile";
+    if (t.includes("team") || t.includes("staff") || t.includes("doctor") || t.includes("doctors") || t.includes("specialist") || t.includes("trainer") || t.includes("teacher") || t.includes("instructor")) return "team";
+    if (t.includes("course") || t.includes("courses") || t.includes("program") || t.includes("class") || t.includes("curriculum")) return "courses";
+    if (t.includes("room") || t.includes("rooms") || t.includes("accommodation") || t.includes("suite")) return "rooms";
+    if (t.includes("delivery") || t.includes("shipping")) return "delivery";
 
     return "other";
   };
@@ -471,24 +191,18 @@ function splitMixedToSections(mixedText = "") {
   const lines = text.split("\n");
   const out = {};
   let current = null;
-  let currentTitle = null;
   let sawHeading = false;
 
   for (const line of lines) {
     const m = line.match(/^##\s+(.*)$/);
-
     if (m) {
       sawHeading = true;
-      currentTitle = m[1].trim();
-      current = mapTitleToSection(currentTitle);
+      current = mapTitleToSection(m[1].trim());
       out[current] ||= [];
-      out[current].push(`## ${currentTitle}`);
+      out[current].push(`## ${m[1].trim()}`);
       continue;
     }
-
-    if (current) {
-      out[current].push(line);
-    }
+    if (current) out[current].push(line);
   }
 
   if (!sawHeading) return { other: text };
@@ -497,46 +211,35 @@ function splitMixedToSections(mixedText = "") {
   for (const k of Object.keys(out)) {
     result[k] = normalizeText(out[k].join("\n"));
   }
-
   return result;
 }
 
-
 function chooseSections(botType) {
   const bt = String(botType || "default").toLowerCase().trim();
-
   const common = ["offers", "hours", "faqs", "policies", "profile", "contact", "other"];
 
   const templates = {
     restaurant: ["menu", "offers", "hours", "faqs", "booking", "contact", "profile", "policies", "delivery", "other"],
-    cafe: ["menu", "offers", "hours", "faqs", "booking", "contact", "profile", "policies", "delivery", "other"],
-    bakery: ["menu", "products", "hours", "faqs", "contact", "profile", "policies", "delivery", "other"],
-
+    cafe:       ["menu", "offers", "hours", "faqs", "booking", "contact", "profile", "policies", "delivery", "other"],
+    bakery:     ["menu", "products", "hours", "faqs", "contact", "profile", "policies", "delivery", "other"],
     realestate: ["listings", "paymentPlans", "offers", "hours", "faqs", "policies", "profile", "contact", "other"],
-
-    clinic: ["offers", "team", "booking", "hours", "faqs", "policies", "profile", "contact", "other"],
-    dental: ["offers", "team", "booking", "hours", "faqs", "policies", "profile", "contact", "other"],
-    hospital: ["offers", "team", "booking", "hours", "faqs", "policies", "profile", "contact", "other"],
-
-    salon: ["offers", "booking", "hours", "faqs", "team", "policies", "profile", "contact", "other"],
-    spa: ["offers", "booking", "hours", "faqs", "team", "policies", "profile", "contact", "other"],
-    gym: ["offers", "team", "hours", "faqs", "policies", "profile", "contact", "other"],
-
-    ecommerce: ["products", "offers", "delivery", "faqs", "policies", "contact", "profile", "other"],
-    retail: ["products", "offers", "delivery", "faqs", "policies", "contact", "profile", "other"],
-    pharmacy: ["products", "hours", "delivery", "faqs", "policies", "contact", "profile", "other"],
-
-    hotel: ["rooms", "booking", "offers", "hours", "faqs", "policies", "profile", "contact", "other"],
-    hostel: ["rooms", "booking", "offers", "hours", "faqs", "policies", "profile", "contact", "other"],
-
-    education: ["courses", "offers", "hours", "faqs", "team", "policies", "profile", "contact", "other"],
-    academy: ["courses", "offers", "hours", "faqs", "team", "policies", "profile", "contact", "other"],
-    school: ["courses", "hours", "faqs", "team", "policies", "profile", "contact", "other"],
-
+    clinic:     ["offers", "team", "booking", "hours", "faqs", "policies", "profile", "contact", "other"],
+    dental:     ["offers", "team", "booking", "hours", "faqs", "policies", "profile", "contact", "other"],
+    hospital:   ["offers", "team", "booking", "hours", "faqs", "policies", "profile", "contact", "other"],
+    salon:      ["offers", "booking", "hours", "faqs", "team", "policies", "profile", "contact", "other"],
+    spa:        ["offers", "booking", "hours", "faqs", "team", "policies", "profile", "contact", "other"],
+    gym:        ["offers", "team", "hours", "faqs", "policies", "profile", "contact", "other"],
+    ecommerce:  ["products", "offers", "delivery", "faqs", "policies", "contact", "profile", "other"],
+    retail:     ["products", "offers", "delivery", "faqs", "policies", "contact", "profile", "other"],
+    pharmacy:   ["products", "hours", "delivery", "faqs", "policies", "contact", "profile", "other"],
+    hotel:      ["rooms", "booking", "offers", "hours", "faqs", "policies", "profile", "contact", "other"],
+    hostel:     ["rooms", "booking", "offers", "hours", "faqs", "policies", "profile", "contact", "other"],
+    education:  ["courses", "offers", "hours", "faqs", "team", "policies", "profile", "contact", "other"],
+    academy:    ["courses", "offers", "hours", "faqs", "team", "policies", "profile", "contact", "other"],
+    school:     ["courses", "hours", "faqs", "team", "policies", "profile", "contact", "other"],
     automotive: ["products", "offers", "hours", "faqs", "policies", "profile", "contact", "other"],
-    showroom: ["products", "offers", "hours", "faqs", "policies", "profile", "contact", "other"],
-
-    default: common,
+    showroom:   ["products", "offers", "hours", "faqs", "policies", "profile", "contact", "other"],
+    default:    common,
   };
 
   return templates[bt] || common;
@@ -577,14 +280,11 @@ function resetClientKnowledgeSources(client) {
 
 function detectSectionsFromClient(client, botType) {
   const base = new Set(chooseSections(botType));
-
   for (const f of client.files || []) {
     const name = canonicalSectionName(f.name);
     if (name && name !== "mixed") base.add(name);
   }
-
   base.add("other");
-
   return Array.from(base);
 }
 
@@ -593,11 +293,8 @@ function buildCoverageWarnings({ expectedSections, presentSections }) {
   const coverageWarnings = [];
 
   if (missingSections.length > 0) {
-    coverageWarnings.push(
-      `Missing sections: ${missingSections.map(prettySectionName).join(", ")}`
-    );
+    coverageWarnings.push(`Missing sections: ${missingSections.map(prettySectionName).join(", ")}`);
   }
-
   if (expectedSections.includes("listings") && !presentSections.includes("listings")) {
     coverageWarnings.push("No listings detected.");
   }
@@ -621,23 +318,12 @@ function buildNextAction({ hasChunks, missingSections }) {
   return "Bot is ready to answer customer messages.";
 }
 
-function buildUiSummary({
-  knowledgeStatus,
-  inserted,
-  presentSections,
-  missingSections,
-  completeness,
-  nextAction,
-}) {
+function buildUiSummary({ knowledgeStatus, inserted, presentSections, missingSections, completeness, nextAction }) {
   return {
     statusLabel:
-      knowledgeStatus === "ready"
-        ? "Ready"
-        : knowledgeStatus === "needs_review"
-        ? "Needs Review"
-        : knowledgeStatus === "empty"
-        ? "Empty"
-        : "Building",
+      knowledgeStatus === "ready" ? "Ready" :
+      knowledgeStatus === "needs_review" ? "Needs Review" :
+      knowledgeStatus === "empty" ? "Empty" : "Building",
     insertedChunks: inserted,
     detectedSections: presentSections.map(prettySectionName),
     missingSections: missingSections.map(prettySectionName),
@@ -662,7 +348,7 @@ function mergePromptConfig(oldConfig = {}, newConfig = {}) {
 }
 
 /* ---------------------------
-   NEW: Build one merged systemPrompt
+   Build one merged systemPrompt
 ---------------------------- */
 function buildSystemPromptFromClientFiles(client, botType = "default") {
   const allFiles = Array.isArray(client.files) ? client.files : [];
@@ -696,6 +382,7 @@ function buildSystemPromptFromClientFiles(client, botType = "default") {
 
   return normalizeText(lines.join("\n"));
 }
+
 async function rebuildKnowledge({ clientId, botType = "default", replace = false }) {
   const client = await Client.findOne({ clientId });
   if (!client) return { ok: false, status: 404, error: "Client not found" };
@@ -716,9 +403,8 @@ async function rebuildKnowledge({ clientId, botType = "default", replace = false
     }
   }
 
-  // NEW: always refresh full merged prompt from current saved files
+  // always refresh full merged prompt from current saved files
   client.systemPrompt = buildSystemPromptFromClientFiles(client, botType);
-
   await client.save();
 
   const sections = detectSectionsFromClient(client, botType);
@@ -728,22 +414,29 @@ async function rebuildKnowledge({ clientId, botType = "default", replace = false
     const raw = normalizeText(pickTextFromClient(client, section));
     if (!raw) continue;
 
-  const chunks = chunkSection(section, raw) || [];
+    const chunks = chunkSection(section, raw) || [];
+
+    // ✅ FIX: tag every chunk with Arabic keywords for its section
+    // This is what makes Arabic queries match English chunks via the +3 boost in scorer
+    const arabicKeywords = SECTION_ARABIC_KEYWORDS[section] || [];
 
     for (const text of chunks) {
       const t = normalizeText(text);
       if (!t) continue;
-      docs.push({ clientId, botType, section, text: t, createdAt: new Date() });
+      docs.push({ clientId, botType, section, text: t, arabicKeywords, createdAt: new Date() });
     }
   }
 
-  if (docs.length) await KnowledgeChunk.insertMany(docs);
-if (docs.length) {
-  const sampleTexts = docs.slice(0, 20).map((d) => d.text);
-  generateNicheExpansionMap(clientId, sampleTexts).catch((e) =>
-    console.warn("⚠️ Arabic expansion failed:", e?.message)
-  );
-}
+  if (docs.length) {
+    await KnowledgeChunk.insertMany(docs);
+
+    // Generate niche-specific expansion map — runs async, doesn't block response
+    const sampleTexts = docs.slice(0, 20).map((d) => d.text);
+    generateNicheExpansionMap(clientId, sampleTexts).catch((e) =>
+      console.warn("⚠️ Arabic expansion failed:", e?.message)
+    );
+  }
+
   const hasChunks = docs.length > 0;
   const presentSections = [...new Set(docs.map((d) => d.section))];
   const expectedSections = sections;
@@ -752,10 +445,7 @@ if (docs.length) {
     ? Math.round((presentSections.length / expectedSections.length) * 100)
     : 0;
 
-  const { missingSections, coverageWarnings } = buildCoverageWarnings({
-    expectedSections,
-    presentSections,
-  });
+  const { missingSections, coverageWarnings } = buildCoverageWarnings({ expectedSections, presentSections });
 
   let finalStatus = "empty";
   if (hasChunks && coverageWarnings.length === 0) finalStatus = "ready";
@@ -821,7 +511,6 @@ router.get("/status", verifyToken, requireClientOwnership, async (req, res) => {
     if (!client) return res.status(404).json({ ok: false, error: "Client not found" });
 
     const count = await KnowledgeChunk.countDocuments({ clientId, botType });
-
     const status = String(client.knowledgeStatus || "").trim() || (count > 0 ? "ready" : "empty");
     const ready = status === "ready" || status === "needs_review" || count > 0;
 
@@ -849,13 +538,9 @@ router.get("/status", verifyToken, requireClientOwnership, async (req, res) => {
       nextAction,
       uiSummary: {
         statusLabel:
-          status === "ready"
-            ? "Ready"
-            : status === "needs_review"
-            ? "Needs Review"
-            : status === "empty"
-            ? "Empty"
-            : "Building",
+          status === "ready" ? "Ready" :
+          status === "needs_review" ? "Needs Review" :
+          status === "empty" ? "Empty" : "Building",
         insertedChunks: count,
         detectedSections: sectionsPresent.map(prettySectionName),
         missingSections: [],
@@ -878,10 +563,8 @@ router.post("/build", verifyToken, requireClientOwnership, async (req, res) => {
     if (!client) return res.status(404).json({ ok: false, error: "Client not found" });
 
     const doReplace = Boolean(replace);
-
     if (doReplace) resetClientKnowledgeSources(client);
 
-    // Save promptConfig so dynamic prompt changes per client
     if (promptConfig && typeof promptConfig === "object") {
       client.promptConfig = mergePromptConfig(client.promptConfig || {}, promptConfig);
     }
@@ -902,10 +585,7 @@ router.post("/build", verifyToken, requireClientOwnership, async (req, res) => {
     if (!content) return res.status(400).json({ ok: false, error: "No content to save." });
 
     await upsertClientFile(client, fileName, content, doReplace ? "bot-build-replace" : "bot-build");
-
-    // NEW: save incoming data into systemPrompt immediately too
     client.systemPrompt = buildSystemPromptFromClientFiles(client, botType || "default");
-
     await client.save();
 
     const built = await rebuildKnowledge({ clientId, botType: botType || "default", replace: doReplace });
@@ -953,10 +633,7 @@ router.post("/upload", verifyToken, upload.single("file"), requireClientOwnershi
     if (replace) resetClientKnowledgeSources(client);
 
     await upsertClientFile(client, section, content, replace ? "bot-upload-replace" : "bot-upload");
-
-    // NEW: save incoming upload into systemPrompt immediately too
     client.systemPrompt = buildSystemPromptFromClientFiles(client, botType);
-
     await client.save();
 
     const built = await rebuildKnowledge({ clientId, botType, replace });
@@ -986,11 +663,7 @@ router.post("/rebuild/:clientId", verifyToken, requireClientOwnership, async (re
     const built = await rebuildKnowledge({ clientId, botType, replace });
     if (!built.ok) return res.status(built.status || 500).json(built);
 
-    return res.json({
-      ...built,
-      message: built.nextAction,
-      systemPromptUpdated: true,
-    });
+    return res.json({ ...built, message: built.nextAction, systemPromptUpdated: true });
   } catch (err) {
     console.error("❌ /api/knowledge/rebuild error:", err);
     return res.status(500).json({ ok: false, error: "Rebuild failed" });
