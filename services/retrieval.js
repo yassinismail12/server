@@ -1,12 +1,18 @@
-// services/retrieval.js — FINAL VERSION
+// services/retrieval.js
 // Includes: query rewriting, intent-based section targeting,
 // numerical filter boosting, full-coverage fallback,
-// and dynamic per-client Arabic expansion (zero manual updates per niche).
+// diacritic-insensitive scoring, multi-word phrase expansion,
+// Arabic section boost bridge, and dynamic per-client Arabic expansion.
 
 import Client from "../Client.js";
 import KnowledgeChunk from "../KnowledgeChunk.js";
 import { rewriteQuery, applyFiltersToChunks } from "./queryRewriter.js";
-import { getMergedExpansionMap, expandTokensWithMap } from "../utils/arabicExpander.js";
+import {
+  getMergedExpansionMap,
+  expandTokensWithMap,
+  expandPhrasesFromQuery,
+  stripArabicDiacritics,
+} from "../utils/arabicExpander.js";
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Helpers
@@ -24,7 +30,8 @@ export function detectUserLanguage(text = "") {
 }
 
 function normalizeSearchText(text = "") {
-  return String(text || "")
+  // Strip diacritics first, then lowercase and remove punctuation
+  return stripArabicDiacritics(String(text || ""))
     .toLowerCase()
     .replace(/\r\n/g, "\n")
     .replace(/[^\p{L}\p{N}\s]/gu, " ")
@@ -45,7 +52,9 @@ function uniqueTokens(tokens = []) {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// Chunk scoring — uses dynamic expansion map (covers all niches)
+// Chunk scoring
+// Now uses diacritic-stripped normalization on both sides so
+// "مَواعِيد" in a chunk matches "مواعيد" in a query and vice versa.
 // ─────────────────────────────────────────────────────────────────────────────
 function scoreChunkAgainstQuery(chunk = {}, query = "", expansionMap = {}) {
   const normalizedQuery = normalizeSearchText(query);
@@ -54,7 +63,7 @@ function scoreChunkAgainstQuery(chunk = {}, query = "", expansionMap = {}) {
   const rawTokens = uniqueTokens(tokenize(normalizedQuery));
   if (!rawTokens.length) return 0;
 
-  // Use dynamic map — covers base Arabic + client-specific niche vocabulary
+  // Expand tokens (Arabic → English bridges + phrase expansions already injected)
   const queryTokens = expandTokensWithMap(rawTokens, expansionMap);
 
   const section = normalizeSearchText(chunk.section || "");
@@ -77,26 +86,103 @@ function scoreChunkAgainstQuery(chunk = {}, query = "", expansionMap = {}) {
 
   if (body.includes(normalizedQuery)) score += 8;
 
-  // Section-specific boosts
+  // ─── Section boosts ───────────────────────────────────────────────────────
+  // Each entry now has BOTH English tokens AND Arabic tokens so queries in
+  // either language fire the boost.
   const SECTION_BOOSTS = [
-    { tokens: ["price", "pricing", "cost", "fee", "fees", "cheapest", "budget"], section: "offers", boost: 3 },
-    { tokens: ["menu", "food", "drink", "meal", "beverage"], section: "menu", boost: 4 },
-    { tokens: ["property", "unit", "apartment", "villa", "listing", "bedroom"], section: "listings", boost: 4 },
-    { tokens: ["installment", "payment", "plan", "downpayment", "finance"], section: "paymentPlans", boost: 4 },
-    { tokens: ["hour", "hours", "open", "opening", "schedule", "time", "closing"], section: "hours", boost: 4 },
-    { tokens: ["phone", "call", "whatsapp", "address", "location", "email", "contact"], section: "contact", boost: 4 },
-    { tokens: ["delivery", "shipping", "deliver", "area"], section: "delivery", boost: 4 },
-    { tokens: ["booking", "reservation", "appointment", "book", "reserve"], section: "booking", boost: 4 },
-    { tokens: ["product", "catalog", "shop", "item", "sku"], section: "products", boost: 4 },
-    { tokens: ["doctor", "specialist", "team", "staff", "physician"], section: "team", boost: 3 },
-    { tokens: ["course", "class", "program", "certificate", "curriculum"], section: "courses", boost: 3 },
-    { tokens: ["room", "suite", "accommodation", "night", "stay"], section: "rooms", boost: 3 },
-    { tokens: ["policy", "policies", "refund", "return", "cancellation"], section: "policies", boost: 3 },
-    { tokens: ["faq", "question", "frequently", "asked"], section: "faqs", boost: 3 },
+    {
+      tokens: ["price", "pricing", "cost", "fee", "fees", "cheapest", "budget",
+               "سعر", "اسعار", "تكلفة", "بكام", "ارخص"],
+      section: "offers",
+      boost: 3,
+    },
+    {
+      tokens: ["menu", "food", "drink", "meal", "beverage",
+               "منيو", "اكل", "وجبة", "مشروبات"],
+      section: "menu",
+      boost: 4,
+    },
+    {
+      tokens: ["property", "unit", "apartment", "villa", "listing", "bedroom",
+               "شقة", "شقق", "فيلا", "وحدة", "عقار"],
+      section: "listings",
+      boost: 4,
+    },
+    {
+      tokens: ["installment", "payment", "plan", "downpayment", "finance",
+               "تقسيط", "اقساط", "مقدم", "دفعة"],
+      section: "paymentPlans",
+      boost: 4,
+    },
+    {
+      tokens: ["hour", "hours", "open", "opening", "schedule", "time", "closing",
+               "مواعيد", "ساعات", "بتفتح", "بتقفل", "مفتوح", "الدوام"],
+      section: "hours",
+      boost: 4,
+    },
+    {
+      tokens: ["phone", "call", "whatsapp", "address", "location", "email", "contact",
+               "تليفون", "رقم", "واتساب", "عنوان", "موقع"],
+      section: "contact",
+      boost: 4,
+    },
+    {
+      tokens: ["delivery", "shipping", "deliver", "area",
+               "توصيل", "شحن", "بيوصلوا"],
+      section: "delivery",
+      boost: 4,
+    },
+    {
+      tokens: ["booking", "reservation", "appointment", "book", "reserve",
+               "حجز", "احجز", "موعد"],
+      section: "booking",
+      boost: 4,
+    },
+    {
+      tokens: ["product", "catalog", "shop", "item", "sku",
+               "منتج", "منتجات", "بضاعة"],
+      section: "products",
+      boost: 4,
+    },
+    {
+      tokens: ["doctor", "specialist", "team", "staff", "physician",
+               "دكتور", "دكاترة", "مدرس"],
+      section: "team",
+      boost: 3,
+    },
+    {
+      tokens: ["course", "class", "program", "certificate", "curriculum",
+               "كورس", "كورسات", "شهادة", "مواد"],
+      section: "courses",
+      boost: 3,
+    },
+    {
+      tokens: ["room", "suite", "accommodation", "night", "stay",
+               "غرفة", "فندق", "ليلة", "اقامة"],
+      section: "rooms",
+      boost: 3,
+    },
+    {
+      tokens: ["policy", "policies", "refund", "return", "cancellation",
+               "سياسة", "استرجاع", "ارجاع", "ضمان"],
+      section: "policies",
+      boost: 3,
+    },
+    {
+      tokens: ["faq", "question", "frequently", "asked",
+               "سؤال", "اسئلة", "استفسار"],
+      section: "faqs",
+      boost: 3,
+    },
   ];
 
+  // Normalize section boost tokens for diacritic-insensitive matching
   for (const { tokens, section: sec, boost } of SECTION_BOOSTS) {
-    if (queryTokens.some((t) => tokens.includes(t)) && chunk.section === sec) {
+    const normalizedBoostTokens = tokens.map((t) => normalizeSearchText(t));
+    if (
+      queryTokens.some((qt) => normalizedBoostTokens.includes(normalizeSearchText(qt))) &&
+      chunk.section === sec
+    ) {
       score += boost;
     }
   }
@@ -176,10 +262,14 @@ function buildRetrievedKnowledgeBlock(retrievedChunks = []) {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// DB fetch — section-targeted + $text search + recency fallback
+// DB fetch — section-targeted + conditional $text + recency fallback
+//
+// FIX: MongoDB $text has no Arabic stemmer. We skip $text search for Arabic
+// queries and rely entirely on our custom scorer which handles Arabic correctly.
 // ─────────────────────────────────────────────────────────────────────────────
 async function fetchCandidateChunks({ clientId, botType, query, sections = [], limit = 40 }) {
   const baseFilter = { clientId, botType };
+  const isArabicQuery = /[\u0600-\u06FF]/.test(String(query || ""));
 
   // Section-targeted fetch (high precision when rewriter identified sections)
   let sectionChunks = [];
@@ -190,25 +280,28 @@ async function fetchCandidateChunks({ clientId, botType, query, sections = [], l
       .lean();
   }
 
-  // Full-text search
+  // Full-text search — SKIP for Arabic queries (no Arabic stemmer in MongoDB $text)
   let textChunks = [];
-  try {
-    if (query && query.trim()) {
-      textChunks = await KnowledgeChunk.find(
-        { ...baseFilter, $text: { $search: query } },
-        { score: { $meta: "textScore" } }
-      )
-        .sort({ score: { $meta: "textScore" } })
-        .limit(limit)
-        .lean();
+  if (!isArabicQuery) {
+    try {
+      if (query && query.trim()) {
+        textChunks = await KnowledgeChunk.find(
+          { ...baseFilter, $text: { $search: query } },
+          { score: { $meta: "textScore" } }
+        )
+          .sort({ score: { $meta: "textScore" } })
+          .limit(limit)
+          .lean();
+      }
+    } catch {
+      // text index not ready — silent fallthrough
     }
-  } catch {
-    // text index not ready — silent fallthrough
   }
 
-  // Recency fallback
+  // Recency fallback — always fetch for Arabic (since $text is skipped)
+  // Also fetch when section + text both came back empty
   let fallbackChunks = [];
-  if (!sectionChunks.length && !textChunks.length) {
+  if (isArabicQuery || (!sectionChunks.length && !textChunks.length)) {
     fallbackChunks = await KnowledgeChunk.find(baseFilter)
       .sort({ createdAt: -1 })
       .limit(limit)
@@ -238,16 +331,13 @@ async function fetchCandidateChunks({ clientId, botType, query, sections = [], l
 // Full-coverage ranking
 // ─────────────────────────────────────────────────────────────────────────────
 function rankWithFullCoverage({ candidates, query, filters, expansionMap, maxChunks }) {
-  // Score with dynamic expansion
   let scored = candidates.map((chunk) => ({
     ...chunk,
     score: scoreChunkAgainstQuery(chunk, query, expansionMap) + (chunk.mongoScore ?? 0),
   }));
 
-  // Boost chunks matching numerical/attribute filters
   if (filters) scored = applyFiltersToChunks(scored, filters);
 
-  // Top relevant
   const relevant = scored
     .filter((c) => c.score > 0)
     .sort((a, b) => b.score - a.score)
@@ -307,7 +397,7 @@ export async function retrieveChunks({
   const client = await Client.findOne({ clientId: safeClientId }).lean();
   if (!client) return empty("client_not_found");
 
-  // ── Load merged Arabic expansion map (base + client niche, zero API call) ──
+  // Load merged Arabic expansion map (base + client niche, zero API call)
   const expansionMap = getMergedExpansionMap(client);
 
   const basePrompt = joinBlocks(
@@ -319,12 +409,23 @@ export async function retrieveChunks({
       ? buildFallbackPromptFromClient(client) : ""
   );
 
-  // ── Step 1: Rewrite query — extract intent, sections, filters ───────────────
+  // Step 1: Extract phrase-level expansions BEFORE rewriting
+  // e.g. "ايه المواعيد" → ["hours", "schedule", "opening"] injected into query
+  const phraseExpansions = expandPhrasesFromQuery(safeUserText);
+
+  // Step 2: Rewrite query — extract intent, sections, filters
   const rewritten = await rewriteQuery(safeUserText);
   const userLanguage = rewritten.language;
-  const searchQuery = rewritten.rewritten ? rewritten.expandedQuery : rawQuery;
 
-  // ── Step 2: Fetch candidates ────────────────────────────────────────────────
+  // Step 3: Build final search query
+  // If rewriter returned something useful, use it; otherwise use raw.
+  // Either way, append phrase expansion tokens so scoring picks them up.
+  const baseSearchQuery = rewritten.rewritten ? rewritten.expandedQuery : rawQuery;
+  const searchQuery = phraseExpansions.length
+    ? `${baseSearchQuery} ${phraseExpansions.join(" ")}`.trim()
+    : baseSearchQuery;
+
+  // Step 4: Fetch candidates
   const candidates = await fetchCandidateChunks({
     clientId: safeClientId,
     botType: safeBotType,
@@ -333,7 +434,7 @@ export async function retrieveChunks({
     limit: 40,
   });
 
-  // ── Step 3: Score + filter + rank with full coverage ────────────────────────
+  // Step 5: Score + filter + rank with full coverage
   const retrievedChunks = rankWithFullCoverage({
     candidates,
     query: searchQuery,

@@ -20,6 +20,15 @@ import Client from "../Client.js";
 const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
 
 // ─────────────────────────────────────────────────────────────────────────────
+// DIACRITIC STRIPPING
+// Strips Arabic tashkeel (diacritics) so "مَواعِيد" matches "مواعيد"
+// Always run on both query tokens and chunk text before any comparison.
+// ─────────────────────────────────────────────────────────────────────────────
+export function stripArabicDiacritics(text = "") {
+  return String(text || "").replace(/[\u0610-\u061A\u064B-\u065F\u0670]/g, "");
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
 // BASE MAP — Egyptian Arabic common vocabulary
 // This never changes. New niches are handled by the dynamic layer below.
 // ─────────────────────────────────────────────────────────────────────────────
@@ -51,6 +60,7 @@ export const BASE_ARABIC_MAP = {
   "معلومات": ["information", "details"],
   "مثلا": ["for example", "such as"],
   "زي": ["like", "similar to"],
+
   // Pricing
   "سعر": ["price", "cost", "fee"],
   "السعر": ["price", "cost", "fee"],
@@ -59,66 +69,154 @@ export const BASE_ARABIC_MAP = {
   "تكلفة": ["cost", "fee"],
   "خصم": ["discount", "offer"],
   "عروض": ["offers", "deals", "discounts"],
+  "عرض": ["offer", "deal", "discount"],
   "تقسيط": ["installment", "payment plan"],
   "مقدم": ["down payment", "deposit"],
   "كاش": ["cash"],
   "فيزا": ["card", "visa"],
+
   // Contact
   "تليفون": ["phone", "contact"],
+  "تلفون": ["phone", "contact"],
   "رقم": ["phone number", "contact"],
   "واتساب": ["whatsapp", "contact"],
   "واتس": ["whatsapp"],
   "ايميل": ["email"],
   "عنوان": ["address", "location"],
   "موقع": ["location", "address"],
-  // Hours
-  "مواعيد": ["hours", "schedule", "availability"],
-  "ساعات": ["hours", "opening times"],
-  "بتفتح": ["opening time", "open"],
-  "بتقفل": ["closing time", "closed"],
-  "مفتوح": ["open"],
-  "مغلق": ["closed"],
-  // Booking
+
+  // Hours — section boost bridge: these map to "hours" section boost tokens
+  "مواعيد": ["hours", "schedule", "availability", "open", "opening"],
+  "ساعات": ["hours", "opening times", "open"],
+  "بتفتح": ["opening time", "open", "hours"],
+  "بتقفل": ["closing time", "closed", "hours"],
+  "مفتوح": ["open", "hours"],
+  "مغلق": ["closed", "hours"],
+  "الدوام": ["hours", "working hours", "schedule"],
+  "وقت الفتح": ["opening time", "open", "hours"],
+  "وقت الاغلاق": ["closing time", "closed", "hours"],
+
+  // Booking — section boost bridge
   "حجز": ["booking", "reservation", "appointment"],
-  "احجز": ["book", "reserve"],
-  "موعد": ["appointment", "schedule"],
-  // Delivery
-  "توصيل": ["delivery", "shipping"],
-  "شحن": ["shipping"],
-  "بيوصلوا": ["deliver to", "delivery available"],
-  // Food/Menu
+  "احجز": ["book", "reserve", "booking"],
+  "موعد": ["appointment", "schedule", "booking"],
+  "حجزت": ["booking", "reservation"],
+  "احجزلي": ["book", "reserve"],
+
+  // Delivery — section boost bridge
+  "توصيل": ["delivery", "shipping", "deliver"],
+  "شحن": ["shipping", "delivery"],
+  "بيوصلوا": ["deliver to", "delivery available", "delivery"],
+  "هيوصل": ["delivery", "deliver"],
+  "ايه المناطق": ["delivery area", "area", "delivery"],
+
+  // Menu / Food — section boost bridge
   "منيو": ["menu", "food", "drinks"],
-  "الاكل": ["food", "menu"],
-  "وجبة": ["meal"],
-  "مشروبات": ["drinks", "beverages"],
-  "قهوة": ["coffee"],
-  "شاي": ["tea"],
-  "عصير": ["juice"],
-  // Real estate
-  "شقة": ["apartment", "unit"],
-  "شقق": ["apartments", "units"],
-  "فيلا": ["villa"],
-  "وحدة": ["unit", "property"],
-  "عقار": ["property", "real estate"],
+  "الاكل": ["food", "menu", "meal"],
+  "وجبة": ["meal", "menu", "food"],
+  "مشروبات": ["drinks", "beverages", "menu"],
+  "قهوة": ["coffee", "menu"],
+  "شاي": ["tea", "menu"],
+  "عصير": ["juice", "drinks", "menu"],
+  "اكل": ["food", "meal", "menu"],
+
+  // Offers — section boost bridge
+  "عروض النهارده": ["offers", "deals", "discounts"],
+  "اخر عروض": ["offers", "latest deals", "discounts"],
+  "فيه خصم": ["discount", "offer", "deals"],
+
+  // Real estate — section boost bridge
+  "شقة": ["apartment", "unit", "property"],
+  "شقق": ["apartments", "units", "listings"],
+  "فيلا": ["villa", "property", "listings"],
+  "وحدة": ["unit", "property", "listings"],
+  "عقار": ["property", "real estate", "listings"],
   "غرف": ["bedrooms", "rooms"],
   "اوضة": ["bedroom", "room"],
-  // Medical
-  "دكتور": ["doctor", "specialist"],
+  "دور": ["floor", "level"],
+  "مساحة": ["area", "size", "sqm"],
+  "تشطيب": ["finishing", "fit out"],
+
+  // Payment plans — section boost bridge
+  "تقسيط": ["installment", "payment", "plan", "payment plan"],
+  "مقدم": ["down payment", "deposit", "downpayment"],
+  "اقساط": ["installments", "payment plan"],
+  "دفعة": ["payment", "installment"],
+
+  // Medical — section boost bridge
+  "دكتور": ["doctor", "specialist", "team"],
+  "دكاترة": ["doctors", "specialists", "team"],
   "عيادة": ["clinic"],
-  "كشف": ["consultation", "checkup"],
-  "علاج": ["treatment"],
-  // Education
-  "كورس": ["course", "class", "program"],
-  "شهادة": ["certificate", "diploma"],
-  "مدرس": ["teacher", "instructor"],
-  // Automotive
-  "سيارة": ["car", "vehicle"],
+  "كشف": ["consultation", "checkup", "appointment", "booking"],
+  "علاج": ["treatment", "therapy"],
+  "حجز دكتور": ["doctor appointment", "booking", "appointment"],
+
+  // Education — section boost bridge
+  "كورس": ["course", "class", "program", "courses"],
+  "كورسات": ["courses", "classes", "programs"],
+  "شهادة": ["certificate", "diploma", "courses"],
+  "مدرس": ["teacher", "instructor", "team"],
+  "مواد": ["subjects", "curriculum", "courses"],
+
+  // Automotive — section boost bridge
+  "سيارة": ["car", "vehicle", "listings"],
+  "سيارات": ["cars", "vehicles", "listings"],
   "موديل": ["model"],
   "اوتوماتيك": ["automatic"],
   "مانيوال": ["manual"],
-  // Hotel
-  "فندق": ["hotel", "accommodation"],
-  "ليلة": ["night", "overnight stay"],
+  "ماكينة": ["engine"],
+  "كيلو": ["mileage", "km"],
+
+  // Hotel — section boost bridge
+  "فندق": ["hotel", "accommodation", "rooms"],
+  "غرفة": ["room", "suite", "rooms"],
+  "ليلة": ["night", "overnight stay", "rooms"],
+  "اقامة": ["stay", "accommodation", "rooms"],
+
+  // Products/Shop — section boost bridge
+  "منتج": ["product", "item", "products"],
+  "منتجات": ["products", "items", "catalog"],
+  "بضاعة": ["products", "goods", "catalog"],
+  "سلعة": ["product", "item"],
+
+  // Policies — section boost bridge
+  "سياسة": ["policy", "policies"],
+  "استرجاع": ["return", "refund", "policies"],
+  "ارجاع": ["return", "refund", "policies"],
+  "استبدال": ["exchange", "policies"],
+  "ضمان": ["warranty", "guarantee", "policies"],
+
+  // FAQs — section boost bridge
+  "سؤال": ["question", "faq"],
+  "اسئلة": ["questions", "faq", "frequently asked"],
+  "استفسار": ["inquiry", "question", "faq"],
+};
+
+// ─────────────────────────────────────────────────────────────────────────────
+// MULTI-WORD PHRASE MAP
+// Arabic phrases that should be matched as a whole before tokenizing.
+// Add common patterns your customers use here.
+// ─────────────────────────────────────────────────────────────────────────────
+export const ARABIC_PHRASE_MAP = {
+  "بكام ده": ["price", "cost", "how much"],
+  "ايه السعر": ["price", "cost", "how much"],
+  "إيه السعر": ["price", "cost", "how much"],
+  "كام سعره": ["price", "cost"],
+  "فيه توصيل": ["delivery", "deliver", "shipping"],
+  "بيوصلوا عندي": ["delivery", "deliver to", "delivery area"],
+  "امتى بتفتح": ["opening time", "open", "hours"],
+  "امتى بتقفل": ["closing time", "closed", "hours"],
+  "مواعيد العمل": ["working hours", "hours", "schedule"],
+  "ايه المواعيد": ["hours", "schedule", "opening"],
+  "إيه المواعيد": ["hours", "schedule", "opening"],
+  "عايز احجز": ["book", "booking", "reservation", "appointment"],
+  "عاوز احجز": ["book", "booking", "reservation"],
+  "ممكن احجز": ["book", "booking", "reservation"],
+  "عندكم عروض": ["offers", "deals", "discounts"],
+  "فيه عروض": ["offers", "deals", "discounts"],
+  "ايه العروض": ["offers", "deals"],
+  "احسن سعر": ["best price", "cheapest", "price"],
+  "ارخص سعر": ["cheapest", "lowest price", "budget"],
 };
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -234,30 +332,78 @@ export function getMergedExpansionMap(client = {}) {
 
 /**
  * Expands Arabic query tokens using the merged map.
- * Drop-in replacement for the static expandArabicTokens in retrieval.js
+ * Now includes:
+ *   - diacritic stripping on both query and map keys
+ *   - multi-word phrase matching before tokenizing
+ *   - prefix stripping (ال، و، ب etc.)
+ *   - ال prefix addition fallback
  *
- * @param {string[]} tokens
+ * @param {string[]} tokens - already tokenized query tokens
  * @param {object} expansionMap - from getMergedExpansionMap()
  * @returns {string[]} expanded unique tokens
  */
 export function expandTokensWithMap(tokens = [], expansionMap = {}) {
   const expanded = [];
+
+  // Pre-normalize map keys once for diacritic-insensitive matching
+  const normalizedMapEntries = Object.entries(expansionMap).map(([k, v]) => [
+    stripArabicDiacritics(k),
+    v,
+  ]);
+
+  function lookupToken(token) {
+    const stripped = stripArabicDiacritics(token);
+
+    // Direct match (diacritic-stripped)
+    for (const [key, vals] of normalizedMapEntries) {
+      if (key === stripped) return vals;
+    }
+
+    // Strip Arabic prefixes and try again
+    const noPrefix = stripped.replace(/^(ال|وال|بال|فال|لل|ول|بل|فل|و|ب|ف|ل)/, "");
+    if (noPrefix !== stripped) {
+      for (const [key, vals] of normalizedMapEntries) {
+        if (key === noPrefix) return vals;
+      }
+    }
+
+    // Try adding ال prefix
+    const withAl = "ال" + stripped;
+    for (const [key, vals] of normalizedMapEntries) {
+      if (key === withAl) return vals;
+    }
+
+    return null;
+  }
+
   for (const token of tokens) {
     expanded.push(token);
-    if (expansionMap[token]) {
-      expanded.push(...expansionMap[token]);
-      continue;
-    }
-    // Fuzzy: strip Arabic prefixes
-    const stripped = token.replace(/^(ال|وال|بال|فال|لل|ول|بل|فل|و|ب|ف|ل)/, "");
-    if (stripped !== token && expansionMap[stripped]) {
-      expanded.push(...expansionMap[stripped]);
-    }
-    // Fuzzy: add ال prefix
-    const withAl = "ال" + token;
-    if (expansionMap[withAl]) {
-      expanded.push(...expansionMap[withAl]);
+    const result = lookupToken(token);
+    if (result) expanded.push(...result);
+  }
+
+  return [...new Set(expanded)];
+}
+
+/**
+ * Extracts multi-word phrase expansions from raw query text.
+ * Call this BEFORE tokenizing — returns extra English tokens
+ * to inject into the query.
+ *
+ * @param {string} rawQuery
+ * @param {object} phraseMap - defaults to ARABIC_PHRASE_MAP
+ * @returns {string[]} additional English tokens from phrase matches
+ */
+export function expandPhrasesFromQuery(rawQuery = "", phraseMap = ARABIC_PHRASE_MAP) {
+  const normalized = stripArabicDiacritics(String(rawQuery || "").trim());
+  const extra = [];
+
+  for (const [phrase, expansions] of Object.entries(phraseMap)) {
+    const normalizedPhrase = stripArabicDiacritics(phrase);
+    if (normalized.includes(normalizedPhrase)) {
+      extra.push(...expansions);
     }
   }
-  return [...new Set(expanded)];
+
+  return [...new Set(extra)];
 }
