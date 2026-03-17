@@ -1,5 +1,6 @@
+// web.js
 import express from "express";
-import { MongoClient } from "mongodb";
+import mongoose from "mongoose";
 import crypto from "crypto";
 
 import { getChatCompletion } from "./services/openai.js";
@@ -12,27 +13,113 @@ import { extractTourData } from "./extractTourData.js";
 
 const router = express.Router();
 
-const mongoClient = new MongoClient(process.env.MONGODB_URI);
-const dbName = "Agent";
-
-// ===== DB Connection =====
-async function connectDB() {
-  if (!mongoClient.topology?.isConnected()) {
-    await mongoClient.connect();
-  }
-  return mongoClient.db(dbName);
+// ✅ Reuse mongoose connection — never open a second MongoClient
+function getDB() {
+  return mongoose.connection.db;
 }
 
-// ===== Customers =====
-async function findOrCreateCustomer(customerId, clientId) {
-  const db = await connectDB();
+// ===============================
+// Logging
+// ===============================
+function log(level, msg, meta = {}) {
+  const base = { t: new Date().toISOString(), msg, ...meta };
+  if (level === "error") console.error("❌", base);
+  else if (level === "warn") console.warn("⚠️", base);
+  else console.log("ℹ️", base);
+}
+
+async function logToDb(level, source, message, meta = {}) {
+  try {
+    const db = getDB();
+    await db.collection("Logs").insertOne({
+      level, source, message, meta,
+      timestamp: new Date(),
+    });
+  } catch (e) {
+    console.warn("⚠️ Failed to write log to DB:", e.message);
+  }
+}
+
+// ===============================
+// Helpers
+// ===============================
+function detectUserLanguage(text = "") {
+  return /[\u0600-\u06FF]/.test(String(text || "")) ? "ar" : "en";
+}
+
+function isNewDay(lastDate) {
+  const today = new Date();
+  const d = lastDate ? new Date(lastDate) : null;
+  return (
+    !d ||
+    d.getDate() !== today.getDate() ||
+    d.getMonth() !== today.getMonth() ||
+    d.getFullYear() !== today.getFullYear()
+  );
+}
+
+// ===============================
+// History injection — same pattern as messenger.js
+// ===============================
+function buildRecentHistoryMessages(history = [], limit = 12) {
+  return history
+    .filter(
+      (m) =>
+        m &&
+        (m.role === "user" || m.role === "assistant") &&
+        typeof m.content === "string" &&
+        m.content.trim()
+    )
+    .slice(-limit)
+    .map((m) => ({ role: m.role, content: m.content.trim() }));
+}
+
+function injectHistoryIntoMessages(baseMessages = [], history = []) {
+  const historyMessages = buildRecentHistoryMessages(history, 12);
+  if (!historyMessages.length) return baseMessages;
+
+  const msgs = Array.isArray(baseMessages) ? [...baseMessages] : [];
+  if (!msgs.length) return historyMessages;
+
+  const systemMessages = [];
+  const nonSystemMessages = [];
+
+  for (const msg of msgs) {
+    if (msg?.role === "system") systemMessages.push(msg);
+    else nonSystemMessages.push(msg);
+  }
+
+  const last = nonSystemMessages[nonSystemMessages.length - 1];
+  const hasCurrentUserAtEnd = last?.role === "user";
+
+  if (hasCurrentUserAtEnd) {
+    return [
+      ...systemMessages,
+      ...nonSystemMessages.slice(0, -1),
+      ...historyMessages,
+      last,
+    ];
+  }
+
+  return [...systemMessages, ...historyMessages, ...nonSystemMessages];
+}
+
+// ===============================
+// Customers
+// ===============================
+async function findOrCreateCustomer(userId, clientId) {
+  const db = getDB();
   const customers = db.collection("Customers");
 
-  let customer = await customers.findOne({ customerId, clientId });
+  const customer = await customers.findOne({
+    customerId: userId,
+    clientId: String(clientId),
+  });
+
   if (!customer) {
     await customers.insertOne({
-      customerId,
-      clientId,
+      customerId: userId,
+      clientId: String(clientId),
       name: null,
       lastInteraction: new Date(),
       createdAt: new Date(),
@@ -42,35 +129,36 @@ async function findOrCreateCustomer(customerId, clientId) {
   }
 
   await customers.updateOne(
-    { customerId, clientId },
+    { customerId: userId, clientId: String(clientId) },
     { $set: { lastInteraction: new Date(), updatedAt: new Date() } }
   );
 
-  return customer.name;
+  return customer.name || null;
 }
 
-async function updateCustomerName(customerId, clientId, name) {
-  const db = await connectDB();
-  const customers = db.collection("Customers");
-
-  await customers.updateOne(
-    { customerId, clientId },
+async function updateCustomerName(userId, clientId, name) {
+  const db = getDB();
+  await db.collection("Customers").updateOne(
+    { customerId: userId, clientId: String(clientId) },
     { $set: { name, lastInteraction: new Date(), updatedAt: new Date() } }
   );
 }
 
-// ===== Conversations =====
+// ===============================
+// Conversations
+// ===============================
 async function getConversation(clientId, userId) {
-  const db = await connectDB();
-  const conversations = db.collection("Conversations");
-  return await conversations.findOne({ clientId: String(clientId), userId, source: "web" });
+  const db = getDB();
+  return db.collection("Conversations").findOne({
+    clientId: String(clientId),
+    userId,
+    source: "web",
+  });
 }
 
 async function saveConversation(clientId, userId, history) {
-  const db = await connectDB();
-  const conversations = db.collection("Conversations");
-
-  await conversations.updateOne(
+  const db = getDB();
+  await db.collection("Conversations").updateOne(
     { clientId: String(clientId), userId, source: "web" },
     {
       $set: {
@@ -93,96 +181,64 @@ async function saveConversation(clientId, userId, history) {
   );
 }
 
-// ===== Clients (Message Count & Limit) =====
+// ===============================
+// Message quota
+// ===============================
 async function incrementMessageCount(clientId) {
-  const db = await connectDB();
+  const db = getDB();
   const clients = db.collection("Clients");
+  const cid = String(clientId);
 
-  const updated = await clients.findOneAndUpdate(
-    { clientId: String(clientId) },
+  const updateRes = await clients.updateOne(
+    { clientId: cid },
     {
       $inc: { messageCount: 1 },
-      $setOnInsert: { messageLimit: 1000, active: true, quotaWarningSent: false },
       $set: { updatedAt: new Date() },
-    },
-    {
-      returnDocument: "after",
-      upsert: true,
     }
   );
 
-  let client = updated.value;
-
-  if (!client) {
-    client = await clients.findOne({ clientId: String(clientId) });
+  if (!updateRes.matchedCount) {
+    log("warn", "incrementMessageCount: client not found", { clientId: cid });
+    return { allowed: false, reason: "client_not_found" };
   }
 
-  if (!client) {
-    throw new Error(`Failed to create/find client ${clientId}`);
+  const doc = await clients.findOne({ clientId: cid });
+  if (!doc) return { allowed: false, reason: "client_not_found" };
+
+  const messageLimit = doc.messageLimit ?? 1000;
+  const messageCount = doc.messageCount ?? 0;
+
+  if (messageCount > messageLimit) {
+    log("warn", "Message limit reached", { clientId: cid, messageCount, messageLimit });
+    return { allowed: false, messageCount, messageLimit, reason: "quota_exceeded" };
   }
 
-  if (client.messageCount > client.messageLimit) {
-    return {
-      allowed: false,
-      messageCount: client.messageCount,
-      messageLimit: client.messageLimit,
-    };
-  }
-
-  const remaining = client.messageLimit - client.messageCount;
-  if (remaining === 100 && !client.quotaWarningSent) {
-    await sendQuotaWarning(clientId);
+  const remaining = messageLimit - messageCount;
+  if (remaining === 100 && !doc.quotaWarningSent) {
+    await sendQuotaWarning(cid);
     await clients.updateOne(
-      { clientId: String(clientId) },
+      { clientId: cid },
       { $set: { quotaWarningSent: true, updatedAt: new Date() } }
     );
   }
 
-  return {
-    allowed: true,
-    messageCount: client.messageCount,
-    messageLimit: client.messageLimit,
-  };
+  return { allowed: true, messageCount, messageLimit };
 }
 
-// ===== Helpers =====
-function isNewDay(lastDate) {
-  const today = new Date();
-  const d = lastDate ? new Date(lastDate) : null;
-  return (
-    !d ||
-    d.getDate() !== today.getDate() ||
-    d.getMonth() !== today.getMonth() ||
-    d.getFullYear() !== today.getFullYear()
-  );
-}
-
-async function logError({ clientId, userId, source, message, meta = {} }) {
-  try {
-    const db = await connectDB();
-    await db.collection("Logs").insertOne({
-      clientId,
-      userId,
-      level: "error",
-      source,
-      message,
-      meta,
-      timestamp: new Date(),
-    });
-  } catch (dbErr) {
-    console.error("❌ Failed to log error in DB:", dbErr.message);
-  }
-}
-
-// ===== Route =====
+// ===============================
+// Route
+// ===============================
 router.post("/", async (req, res) => {
   let { message: userMessage, clientId, userId, isFirstMessage } = req.body;
 
-  if (!userId) {
-    userId = crypto.randomUUID();
-  }
+  if (!userId) userId = crypto.randomUUID();
 
-  console.log("Incoming chat request:", { clientId, userId, userMessage, isFirstMessage });
+  log("info", "Incoming web chat request", {
+    clientId,
+    userId,
+    preview: String(userMessage || "").slice(0, 80),
+    isFirstMessage,
+  });
 
   if (!userMessage || !clientId) {
     return res.status(400).json({ reply: "⚠️ Missing message or client ID." });
@@ -191,22 +247,23 @@ router.post("/", async (req, res) => {
   userMessage = String(userMessage).trim();
 
   try {
-    const db = await connectDB();
-    const clientsCollection = db.collection("Clients");
-    const clientDoc = await clientsCollection.findOne({ clientId: String(clientId) });
+    const db = getDB();
+    const clientDoc = await db.collection("Clients").findOne({ clientId: String(clientId) });
 
     if (!clientDoc) {
-      console.log(`❌ Unknown clientId: ${clientId}`);
+      log("warn", "Unknown clientId", { clientId });
       return res.status(204).end();
     }
 
     if (clientDoc.active === false) {
-      console.log(`🚫 Inactive client: ${clientId}`);
+      log("info", "Inactive client", { clientId });
       return res.status(204).end();
     }
 
+    // ── Quota check ──────────────────────────────────────────────────────────
     const usage = await incrementMessageCount(clientId);
     if (!usage.allowed) {
+      if (usage.reason === "client_not_found") return res.status(204).end();
       return res.json({
         reply: "",
         userId,
@@ -214,41 +271,40 @@ router.post("/", async (req, res) => {
       });
     }
 
-    await findOrCreateCustomer(userId, clientId);
+    // ── Customer ─────────────────────────────────────────────────────────────
+    const savedName = await findOrCreateCustomer(userId, clientId);
 
+    // Detect name from message
     let nameMatch = null;
-
     const myNameMatch = userMessage.match(/my name is\s+(.+)/i);
-    if (myNameMatch) {
-      nameMatch = myNameMatch[1].trim();
-    }
-
+    if (myNameMatch) nameMatch = myNameMatch[1].trim();
     const bracketNameMatch = userMessage.match(/\[name\]\s*:\s*(.+)/i);
-    if (bracketNameMatch) {
-      nameMatch = bracketNameMatch[1].trim();
-    }
-
+    if (bracketNameMatch) nameMatch = bracketNameMatch[1].trim();
     if (nameMatch) {
       await updateCustomerName(userId, clientId, nameMatch);
-      console.log(`📝 Name detected and saved: ${nameMatch}`);
+      log("info", "Name detected and saved", { name: nameMatch });
     }
 
+    // ── Conversation history ─────────────────────────────────────────────────
     const convo = await getConversation(clientId, userId);
     const compactHistory = Array.isArray(convo?.history) ? convo.history : [];
 
+    // ── Greeting ─────────────────────────────────────────────────────────────
     let greeting = "";
-    if (isFirstMessage || !convo || isNewDay(convo.lastInteraction)) {
-      const db2 = await connectDB();
-      const customers = db2.collection("Customers");
-      const customer = await customers.findOne({ customerId: userId, clientId: String(clientId) });
+    if (isFirstMessage || !convo || isNewDay(convo?.lastInteraction)) {
+      const customerName = nameMatch || savedName || null;
+      const userLang = detectUserLanguage(userMessage);
 
-      if (customer?.name) {
-        greeting = `Hi ${customer.name}, welcome back! 👋`;
-      } else if (isFirstMessage) {
-        greeting = "Hi 👋";
+      if (customerName) {
+        greeting = userLang === "ar"
+          ? `أهلًا ${customerName}، سعيدين بوجودك 👋`
+          : `Hi ${customerName}, welcome back! 👋`;
+      } else {
+        greeting = userLang === "ar" ? "أهلًا 👋" : "Hi 👋";
       }
     }
 
+    // ── Build prompt config ──────────────────────────────────────────────────
     const rulesPrompt = buildRulesPrompt(clientDoc);
     const botType = clientDoc?.knowledgeBotType || "default";
     const sectionsOrder =
@@ -258,79 +314,53 @@ router.post("/", async (req, res) => {
         ? clientDoc.sectionsPresent
         : ["offers", "hours", "faqs", "policies", "profile", "contact", "other"];
 
+    // ── Retrieve chunks ──────────────────────────────────────────────────────
     let grouped = {};
     try {
       grouped = await retrieveChunks({
-        db,
         clientId: String(clientId),
         botType,
         userText: userMessage,
+        retrievalQuery: userMessage,
+        maxChunks: 8,
       });
     } catch (err) {
-      console.error("❌ retrieveChunks error:", err.message);
-      grouped = {};
-      await logError({
-        clientId,
-        userId,
-        source: "retrieval",
-        message: err.message,
-      });
+      log("warn", "retrieveChunks error", { clientId, err: err.message });
+      await logToDb("warn", "retrieval", err.message, { clientId, userId });
     }
 
-    const { messages: baseMessages, meta } = buildChatMessages({
+    // ── Build messages ───────────────────────────────────────────────────────
+    const { messages: baseMessages, meta: promptMeta } = buildChatMessages({
       rulesPrompt,
       groupedChunks: grouped,
       userText: userMessage,
       sectionsOrder,
     });
 
-    if (meta?.code) {
-      console.warn("⚠️ Prompt builder warning:", meta);
+    if (promptMeta?.code) {
+      log("warn", "Prompt builder warning", { clientId, userId, meta: promptMeta });
     }
 
-    const memoryTurns = compactHistory
-      .filter((m) => m && (m.role === "user" || m.role === "assistant") && typeof m.content === "string")
-      .slice(-12)
-      .map((m) => ({ role: m.role, content: m.content }));
+    // ✅ Inject conversation history same way as messenger.js
+    const messagesForOpenAI = injectHistoryIntoMessages(baseMessages, compactHistory);
 
-    let messagesForOpenAI = baseMessages;
-    if (memoryTurns.length) {
-      messagesForOpenAI = [...baseMessages];
-      const last = messagesForOpenAI[messagesForOpenAI.length - 1];
-      if (last?.role === "user") {
-        messagesForOpenAI.pop();
-        messagesForOpenAI.push(...memoryTurns);
-        messagesForOpenAI.push(last);
-      } else {
-        messagesForOpenAI.push(...memoryTurns);
-      }
-    }
-
+    // ── OpenAI call ──────────────────────────────────────────────────────────
     let assistantMessage = "";
-
     try {
       if (process.env.TEST_MODE === "true") {
-        const delay = Math.floor(Math.random() * 300) + 100;
-        await new Promise((r) => setTimeout(r, delay));
-
-        assistantMessage = `🧪 Mock reply for ${clientId} — message: "${userMessage.slice(0, 20)}..."`;
-        console.log("✅ Test mode active — skipping OpenAI call");
+        await new Promise((r) => setTimeout(r, 150));
+        assistantMessage = `🧪 Mock reply for ${clientId} — "${userMessage.slice(0, 30)}..."`;
+        log("info", "Test mode — skipping OpenAI");
       } else {
         assistantMessage = await getChatCompletion(messagesForOpenAI);
       }
     } catch (err) {
-      console.error("❌ OpenAI error:", err.message);
-
-      await logError({
-        clientId,
-        userId,
-        source: "openai",
-        message: err.message,
-      });
-
-      assistantMessage = "⚠️ I'm having trouble right now. Please try again later.";
+      log("error", "OpenAI error", { clientId, userId, err: err.message });
+      await logToDb("error", "openai", err.message, { clientId, userId });
+      assistantMessage = "⚠️ I'm having trouble right now. Please try again shortly.";
     }
 
+    // ── Flag detection ───────────────────────────────────────────────────────
     const flags = { human: false, tour: false, order: false };
 
     if (assistantMessage.includes("[Human_request]")) {
@@ -346,9 +376,9 @@ router.post("/", async (req, res) => {
       assistantMessage = assistantMessage.replace(/\[TOUR_REQUEST\]/g, "").trim();
     }
 
+    // ── Human escalation ─────────────────────────────────────────────────────
     if (flags.human) {
-      const db3 = await connectDB();
-      await db3.collection("Conversations").updateOne(
+      await db.collection("Conversations").updateOne(
         { clientId: String(clientId), userId, source: "web" },
         {
           $set: {
@@ -360,11 +390,13 @@ router.post("/", async (req, res) => {
         },
         { upsert: true }
       );
+
+      log("warn", "Web human escalation triggered", { clientId, userId });
     }
 
+    // ── Tour flow ─────────────────────────────────────────────────────────────
     if (flags.tour) {
-      const db3 = await connectDB();
-      await db3.collection("Conversations").updateOne(
+      await db.collection("Conversations").updateOne(
         { clientId: String(clientId), userId, source: "web" },
         {
           $inc: { tourRequestCount: 1 },
@@ -373,26 +405,20 @@ router.post("/", async (req, res) => {
         { upsert: true }
       );
 
-      const data = extractTourData(assistantMessage);
-      data.clientId = clientId;
-
-      console.log("Sending tour email with data:", data);
       try {
-        await sendTourEmail(data);
+        const tourData = extractTourData(assistantMessage);
+        tourData.clientId = clientId;
+        await sendTourEmail(tourData);
+        log("info", "Tour email sent", { clientId, userId });
       } catch (err) {
-        console.error("❌ Failed to send tour email:", err.message);
-        await logError({
-          clientId,
-          userId,
-          source: "email",
-          message: err.message,
-        });
+        log("warn", "Tour email failed", { clientId, userId, err: err.message });
+        await logToDb("warn", "email", err.message, { clientId, userId });
       }
     }
 
+    // ── Order flow ─────────────────────────────────────────────────────────────
     if (flags.order) {
-      const db3 = await connectDB();
-      await db3.collection("Conversations").updateOne(
+      await db.collection("Conversations").updateOne(
         { clientId: String(clientId), userId, source: "web" },
         {
           $inc: { orderRequestCount: 1 },
@@ -400,13 +426,16 @@ router.post("/", async (req, res) => {
         },
         { upsert: true }
       );
+
+      log("info", "Web order flag triggered", { clientId, userId });
     }
 
+    // ── Build final reply ────────────────────────────────────────────────────
     const combinedReply = greeting ? `${greeting}\n\n${assistantMessage}` : assistantMessage;
 
+    // ── Save conversation ────────────────────────────────────────────────────
     compactHistory.push({ role: "user", content: userMessage, createdAt: new Date() });
     compactHistory.push({ role: "assistant", content: combinedReply, createdAt: new Date() });
-
     await saveConversation(clientId, userId, compactHistory);
 
     return res.json({
@@ -414,16 +443,10 @@ router.post("/", async (req, res) => {
       userId,
       usage: { count: usage.messageCount, limit: usage.messageLimit },
     });
+
   } catch (error) {
-    console.error("❌ Error:", error.message);
-
-    await logError({
-      clientId,
-      userId,
-      source: "web",
-      message: error.message,
-    });
-
+    log("error", "Web chat handler error", { clientId, userId, err: error.message });
+    await logToDb("error", "web", error.message, { clientId, userId });
     return res.status(500).json({ reply: "⚠️ Sorry, something went wrong." });
   }
 });
