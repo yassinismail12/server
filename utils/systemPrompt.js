@@ -53,6 +53,7 @@ ANSWER STYLE RULES
 - Do not add apologies repeatedly.
 - Do not add unnecessary introductions or signatures.
 - Do not be robotic.
+- When sharing a link or URL, always write it as plain text only. Never wrap it in markdown format like [text](url). Just write the full URL directly: https://wa.me/...
 `.trim();
 }
 
