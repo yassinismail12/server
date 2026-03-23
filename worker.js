@@ -218,20 +218,22 @@ async function processMessengerJob({ pageId, sender_psid, userMessage, eventKey 
   }
 
   await sendMarkAsRead(sender_psid, pageId);
-  // removed 1200ms delay — no longer needed
 
   const rulesPrompt = buildRulesPrompt(clientDoc);
   const botType = clientDoc?.knowledgeBotType || "default";
   const sectionsOrder = Array.isArray(clientDoc?.sectionsOrder) && clientDoc.sectionsOrder.length
     ? clientDoc.sectionsOrder : ["menu", "offers", "hours"];
-  const maxChunks = clientDoc?.maxChunks || 4; // ✅ correct variable
+  const maxChunks = clientDoc?.maxChunks || 4;
 
   const convo = await db.collection("Conversations").findOne({ pageId: pageIdStr, userId: sender_psid, source: "messenger" });
   const history = trimHistory(Array.isArray(convo?.history) ? convo.history : []);
 
+  // ✅ Detect language from user message directly — don't rely on retrieval
+  const userLang = detectLang(userMessage);
+
   let greeting = "";
   if (!convo || isNewDay(convo.lastInteraction)) {
-    greeting = detectLang(userMessage) === "ar" ? "أهلًا، سعيدين بوجودك اليوم 👋" : "Hi, good to see you today 👋";
+    greeting = userLang === "ar" ? "أهلًا، سعيدين بوجودك اليوم 👋" : "Hi, good to see you today 👋";
   }
 
   const quota = await checkAndIncrementQuota(db, { pageId: pageIdStr }, pageIdStr);
@@ -245,18 +247,34 @@ async function processMessengerJob({ pageId, sender_psid, userMessage, eventKey 
     grouped = await retrieveChunks({
       clientId,
       botType,
-      userText: userMessage,       // ✅ correct variable
-      retrievalQuery: userMessage, // ✅ correct variable
+      userText: userMessage,
+      retrievalQuery: userMessage,
       maxChunks,
     });
-  } catch (e) { console.warn("⚠️ [worker/messenger] retrieveChunks failed:", e.message); }
+  } catch (e) {
+    console.warn("⚠️ [worker/messenger] retrieveChunks failed:", e.message);
+    grouped = {}; // safe fallback — AI will still reply using rules prompt
+  }
 
-  const { messages: base } = buildChatMessages({ rulesPrompt, groupedChunks: grouped, userText: userMessage, sectionsOrder });
+  // ✅ Inject language instruction so retrieval's grounding rules don't override it
+  const langInstruction = userLang === "ar"
+    ? "IMPORTANT: The user is writing in Arabic. You MUST reply in Arabic."
+    : "IMPORTANT: The user is writing in English. You MUST reply in English.";
+
+  const rulesPromptWithLang = `${rulesPrompt}\n\n${langInstruction}`;
+
+  const { messages: base } = buildChatMessages({
+    rulesPrompt: rulesPromptWithLang,
+    groupedChunks: grouped,
+    userText: userMessage,
+    sectionsOrder,
+  });
   const messagesForAI = injectHistory(base, history);
 
   let raw;
-  try { raw = await getChatCompletion(messagesForAI); }
-  catch (err) {
+  try {
+    raw = await getChatCompletion(messagesForAI);
+  } catch (err) {
     console.error("❌ [worker/messenger] AI error:", err.message);
     await sendMessengerReply(sender_psid, "⚠️ I'm having trouble right now. Please try again shortly.", pageId);
     return;
@@ -326,14 +344,17 @@ async function processInstagramJob({ igBusinessId, senderId, userText, clientId,
   const botType = clientDoc?.knowledgeBotType || "default";
   const sectionsOrder = Array.isArray(clientDoc?.sectionsOrder) && clientDoc.sectionsOrder.length
     ? clientDoc.sectionsOrder : ["menu", "offers", "hours"];
-  const maxChunks = clientDoc?.maxChunks || 4; // ✅ correct variable
+  const maxChunks = clientDoc?.maxChunks || 4;
 
   const convo = await db.collection("Conversations").findOne({ igBusinessId: igStr, userId: senderId, source: "instagram" });
   const history = trimHistory(Array.isArray(convo?.history) ? convo.history : []);
 
+  // ✅ Detect language from user text directly
+  const userLang = detectLang(userText);
+
   let greeting = "";
   if (!convo || isNewDay(convo.lastInteraction)) {
-    greeting = detectLang(userText) === "ar" ? "أهلًا، سعيدين بوجودك اليوم 👋" : "Hi, good to see you today 👋";
+    greeting = userLang === "ar" ? "أهلًا، سعيدين بوجودك اليوم 👋" : "Hi, good to see you today 👋";
   }
 
   const filter = { $or: [{ igBusinessId: igStr }, { igId: igStr }] };
@@ -346,22 +367,41 @@ async function processInstagramJob({ igBusinessId, senderId, userText, clientId,
   let grouped = {};
   try {
     grouped = await retrieveChunks({
-      clientId: resolvedClientId, // ✅ correct variable
+      clientId: resolvedClientId,
       botType,
-      userText,                   // ✅ correct variable
-      retrievalQuery: userText,   // ✅ correct variable
+      userText,
+      retrievalQuery: userText,
       maxChunks,
     });
-  } catch (e) { console.warn("⚠️ [worker/instagram] retrieveChunks failed:", e.message); }
+  } catch (e) {
+    console.warn("⚠️ [worker/instagram] retrieveChunks failed:", e.message);
+    grouped = {}; // ✅ safe fallback — log and continue instead of dying silently
+  }
 
-  const { messages: base } = buildChatMessages({ rulesPrompt, groupedChunks: grouped, userText, sectionsOrder });
+  // ✅ Force correct language — overrides retrieval's grounding rules
+  const langInstruction = userLang === "ar"
+    ? "IMPORTANT: The user is writing in Arabic. You MUST reply in Arabic."
+    : "IMPORTANT: The user is writing in English. You MUST reply in English.";
+
+  const rulesPromptWithLang = `${rulesPrompt}\n\n${langInstruction}`;
+
+  const { messages: base } = buildChatMessages({
+    rulesPrompt: rulesPromptWithLang,
+    groupedChunks: grouped,
+    userText,
+    sectionsOrder,
+  });
   const messagesForAI = injectHistory(base, history);
 
   let raw;
-  try { raw = await getChatCompletion(messagesForAI); }
-  catch (err) {
+  try {
+    raw = await getChatCompletion(messagesForAI);
+  } catch (err) {
     console.error("❌ [worker/instagram] AI error:", err.message);
-    await sendIgDM(resolvedPageId, resolvedPageToken, senderId, "⚠️ I'm having trouble right now. Please try again shortly.");
+    // ✅ Always send error reply — never silently drop the message
+    try {
+      await sendIgDM(resolvedPageId, resolvedPageToken, senderId, "⚠️ I'm having trouble right now. Please try again shortly.");
+    } catch {}
     return;
   }
 
@@ -448,7 +488,7 @@ async function processWhatsAppJob({ clientId, fromDigits, text, whatsappPhoneNum
   const clientAwaitSource = Boolean(client.awaitSource);
   const sourceChoiceExisting = convo?.sourceChoice || "";
   const convoMeta = { whatsappPhoneNumberId: phoneIdStr };
-  const maxChunks = client?.maxChunks || 4; // ✅ correct variable (client not clientDoc)
+  const maxChunks = client?.maxChunks || 4;
 
   const botType = client?.knowledgeBotType || "default";
   const sectionsOrder = Array.isArray(client?.sectionsOrder) && client.sectionsOrder.length
@@ -457,7 +497,6 @@ async function processWhatsAppJob({ clientId, fromDigits, text, whatsappPhoneNum
     ? client.sectionsPresent
     : ["faqs", "listings", "paymentPlans"];
 
-  // Source choice flow
   const needsChoice = clientAwaitSource && !sourceChoiceExisting;
   if (needsChoice) {
     const picked = parseSourceChoice(text);
@@ -487,30 +526,48 @@ async function processWhatsAppJob({ clientId, fromDigits, text, whatsappPhoneNum
     return;
   }
 
-  // Normal AI flow
+  // ✅ Detect language from user text directly
+  const userLang = detectLang(text);
+
   let greeting = "";
   if (!convo || isNewDay(convo.lastInteraction)) {
-    greeting = detectLang(text) === "ar" ? "أهلًا 👋" : "Hi 👋";
+    greeting = userLang === "ar" ? "أهلًا 👋" : "Hi 👋";
   }
 
   let grouped = {};
   try {
     grouped = await retrieveChunks({
-      clientId: String(clientId), // ✅ correct variable
+      clientId: String(clientId),
       botType,
-      userText: text,             // ✅ correct variable
-      retrievalQuery: text,       // ✅ correct variable
+      userText: text,
+      retrievalQuery: text,
       maxChunks,
     });
-  } catch (e) { console.warn("⚠️ [worker/whatsapp] retrieveChunks failed:", e.message); }
+  } catch (e) {
+    console.warn("⚠️ [worker/whatsapp] retrieveChunks failed:", e.message);
+    grouped = {};
+  }
+
+  // ✅ Force correct language
+  const langInstruction = userLang === "ar"
+    ? "IMPORTANT: The user is writing in Arabic. You MUST reply in Arabic."
+    : "IMPORTANT: The user is writing in English. You MUST reply in English.";
 
   const rulesPrompt = buildRulesPrompt(client);
-  const { messages: base } = buildChatMessages({ rulesPrompt, groupedChunks: grouped, userText: text, sectionsOrder });
+  const rulesPromptWithLang = `${rulesPrompt}\n\n${langInstruction}`;
+
+  const { messages: base } = buildChatMessages({
+    rulesPrompt: rulesPromptWithLang,
+    groupedChunks: grouped,
+    userText: text,
+    sectionsOrder,
+  });
   const messagesForAI = injectHistory(base, history);
 
   let assistantMessage = "";
-  try { assistantMessage = await getChatCompletion(messagesForAI); }
-  catch (err) {
+  try {
+    assistantMessage = await getChatCompletion(messagesForAI);
+  } catch (err) {
     console.error("❌ [worker/whatsapp] AI error:", err.message);
     assistantMessage = "⚠️ I'm having trouble right now. Please try again shortly.";
   }

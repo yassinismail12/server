@@ -1,12 +1,4 @@
 // services/queryRewriter.js
-//
-// Runs a single cheap GPT call BEFORE retrieval to extract structured intent
-// from the user's message. The result drives smarter chunk selection so
-// numerical / comparative / multi-section queries never miss.
-//
-// Cost: ~50-100 tokens per call. Fast (gpt-4o-mini).
-// Falls back silently to the raw query if anything fails.
-//
 // ✅ OPTIMIZATIONS:
 // 1. Skip rewrite for short messages (<15 chars) — saves a full API call
 // 2. In-memory cache for repeated queries — near-instant for common questions
@@ -16,12 +8,10 @@ import OpenAI from "openai";
 const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
 
 // ─── In-memory cache ──────────────────────────────────────────────────────────
-// Resets on server restart — that's fine, common questions warm up fast.
-// Saves a full OpenAI call for any repeated query.
 const rewriteCache = new Map();
-const CACHE_MAX = 500; // max entries before oldest gets evicted
+const CACHE_MAX = 500;
 
-// ─── Canonical section list (must match your KnowledgeChunk sections) ────────
+// ─── Canonical section list ───────────────────────────────────────────────────
 const ALL_SECTIONS = [
   "menu", "offers", "products", "listings", "paymentPlans",
   "hours", "contact", "delivery", "booking", "faqs",
@@ -63,20 +53,6 @@ Input: "do you deliver to Maadi and how much does it cost?"
 Output: {"intent":"delivery to area and cost","sections":["delivery","offers"],"filters":{"location":"Maadi"},"expandedQuery":"delivery area Maadi cost fee","language":"en"}
 `.trim();
 
-/**
- * Rewrites a user query into structured intent.
- * Always returns a safe object — never throws.
- *
- * @param {string} userText
- * @returns {Promise<{
- *   intent: string,
- *   sections: string[],
- *   filters: object|null,
- *   expandedQuery: string,
- *   language: "ar"|"en",
- *   rewritten: boolean
- * }>}
- */
 export async function rewriteQuery(userText) {
   const fallback = {
     intent: userText,
@@ -89,15 +65,13 @@ export async function rewriteQuery(userText) {
 
   if (!userText || !userText.trim()) return fallback;
 
-  // ✅ Skip rewrite for short/simple messages — not worth a second API call.
-  // "hello", "thanks", "ok", "yes", "لأ", "اوكي" etc. don't need intent extraction.
-  if (userText.trim().length < 15) return fallback;
+  // ✅ Skip rewrite for short messages — not worth a second API call
+  // "hello", "thanks", "ok", "yes", "لأ", "اوكي", "is there delivery?" etc.
+  if (userText.trim().length < 20) return fallback;
 
-  // ✅ Return cached result for repeated queries — zero API cost.
+  // ✅ Return cached result for repeated queries
   const cacheKey = userText.trim().toLowerCase().slice(0, 200);
-  if (rewriteCache.has(cacheKey)) {
-    return rewriteCache.get(cacheKey);
-  }
+  if (rewriteCache.has(cacheKey)) return rewriteCache.get(cacheKey);
 
   try {
     const completion = await openai.chat.completions.create({
@@ -107,7 +81,7 @@ export async function rewriteQuery(userText) {
         { role: "user", content: String(userText).slice(0, 500) },
       ],
       max_tokens: 200,
-      temperature: 0, // deterministic — same input always gets same output
+      temperature: 0,
     });
 
     const raw = completion.choices[0].message.content.trim();
@@ -127,10 +101,9 @@ export async function rewriteQuery(userText) {
       rewritten: true,
     };
 
-    // ✅ Cache the result — evict oldest entry if at capacity
+    // Cache it — evict oldest if at capacity
     if (rewriteCache.size >= CACHE_MAX) {
-      const firstKey = rewriteCache.keys().next().value;
-      rewriteCache.delete(firstKey);
+      rewriteCache.delete(rewriteCache.keys().next().value);
     }
     rewriteCache.set(cacheKey, result);
 
@@ -141,15 +114,6 @@ export async function rewriteQuery(userText) {
   }
 }
 
-/**
- * Applies numerical filters to already-retrieved chunks.
- * Scores chunks higher if their text contains values matching the filters.
- * This is a best-effort boost — it never removes chunks, only re-ranks.
- *
- * @param {Array} chunks
- * @param {object|null} filters
- * @returns {Array} re-ranked chunks
- */
 export function applyFiltersToChunks(chunks, filters) {
   if (!filters || !chunks.length) return chunks;
 
@@ -166,13 +130,11 @@ export function applyFiltersToChunks(chunks, filters) {
 
         const strValue = String(value).toLowerCase();
 
-        // String filters: location, category, type etc.
         if (typeof value === "string") {
           if (text.includes(strValue)) boost += 5;
           continue;
         }
 
-        // Numeric filters: price, bedrooms, area etc.
         if (typeof value === "number") {
           const nums = [...text.matchAll(/[\d,]+(?:\.\d+)?/g)]
             .map((m) => parseFloat(m[0].replace(/,/g, "")))
