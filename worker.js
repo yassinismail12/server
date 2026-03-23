@@ -229,7 +229,7 @@ async function processMessengerJob({ pageId, sender_psid, userMessage, eventKey 
   }
 
   await sendMarkAsRead(sender_psid, pageId);
-  await new Promise((r) => setTimeout(r, 1200));
+  await new Promise((r) => setTimeout(r, 400));
 
   const rulesPrompt = buildRulesPrompt(clientDoc);
   const botType = clientDoc?.knowledgeBotType || "default";
@@ -253,7 +253,7 @@ async function processMessengerJob({ pageId, sender_psid, userMessage, eventKey 
 
   // Retrieval + AI
   let grouped = {};
-  try { grouped = await retrieveChunks({ clientId, botType, userText: userMessage, retrievalQuery: userMessage, maxChunks: 6 }); }
+  try { grouped = await retrieveChunks({ clientId, botType, userText: userMessage, retrievalQuery: userMessage, maxChunks: 4}); }
   catch (e) { console.warn("⚠️ [worker/messenger] retrieveChunks failed:", e.message); }
 
   const { messages: base } = buildChatMessages({ rulesPrompt, groupedChunks: grouped, userText: userMessage, sectionsOrder });
@@ -355,7 +355,7 @@ async function processInstagramJob({ igBusinessId, senderId, userText, clientId,
 
   // Retrieval + AI
   let grouped = {};
-  try { grouped = await retrieveChunks({ clientId: resolvedClientId, botType, userText, retrievalQuery: userText, maxChunks: 6 }); }
+  try { grouped = await retrieveChunks({ clientId: resolvedClientId, botType, userText, retrievalQuery: userText, maxChunks: 4 }); }
   catch (e) { console.warn("⚠️ [worker/instagram] retrieveChunks failed:", e.message); }
 
   const { messages: base } = buildChatMessages({ rulesPrompt, groupedChunks: grouped, userText, sectionsOrder });
