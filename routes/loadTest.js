@@ -19,7 +19,7 @@ function stats(results) {
   };
 }
 
-async function runBatch(count, makeJob) {
+async function runBatch(count) {
   const started = [];
   const finished = [];
   const failed = [];
@@ -29,13 +29,21 @@ async function runBatch(count, makeJob) {
     started.push(n);
 
     try {
-      await makeJob(n);
+      await processMessengerJob({
+        pageId: process.env.TEST_PAGE_ID,
+        sender_psid: `test-user-${n}-${Date.now()}`,
+        userMessage: `Test message ${n}`,
+        eventKey: `test-${count}-${n}-${Date.now()}-${Math.random().toString(36).slice(2)}`,
+      });
+
       const ms = Date.now() - start;
       finished.push(n);
+
       return { n, ms, ok: true };
     } catch (err) {
       const ms = Date.now() - start;
       failed.push(n);
+
       return {
         n,
         ms,
