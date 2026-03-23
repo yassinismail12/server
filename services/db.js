@@ -9,15 +9,22 @@ let db;
 
 // Connect to the MongoDB database (only once)
 export async function connectToDB() {
-  if (!db) {
-    await client.connect();
-    db = client.db(dbName);
-    console.log("✅ Connected to MongoDB");
+  if (db) return db;
 
-    // ✅ add this (safe to run many times)
-    await ensureIndexes(db);
+  if (!connecting) {
+    connecting = (async () => {
+      await client.connect();
+      db = client.db(dbName);
+      console.log("✅ Connected to MongoDB");
+
+      await ensureIndexes(db);
+      console.log("✅ Mongo indexes ensured");
+
+      return db;
+    })();
   }
-  return db;
+
+  return connecting;
 }
 // Fetch a client from the 'Clients' collection using clientId
 export async function getClientById(clientId) {

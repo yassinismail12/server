@@ -316,7 +316,12 @@ async function processMessengerJob({ pageId, sender_psid, userMessage }) {
     const combined = greeting ? `${greeting}\n\n${assistantMessage}` : assistantMessage;
     history.push({ role: "user", content: userMessage, createdAt: new Date() }, { role: "assistant", content: combined, createdAt: new Date() });
     await saveConvoMessenger(db, pageIdStr, sender_psid, history, clientId);
+    if (process.env.LOAD_TEST_MODE === "true") {
+  console.log("LOAD TEST MODE: skipping Messenger send");
+} else {
     await sendMessengerReply(sender_psid, combined, pageId);
+}
+ 
 
   } finally {
     await releaseLock(lockKey);
