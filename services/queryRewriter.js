@@ -67,7 +67,7 @@ export async function rewriteQuery(userText) {
 
   // ✅ Skip rewrite for short messages — not worth a second API call
   // "hello", "thanks", "ok", "yes", "لأ", "اوكي", "is there delivery?" etc.
-  if (userText.trim().length < 20) return fallback;
+  if (userText.trim().length < 25) return fallback;
 
   // ✅ Return cached result for repeated queries
   const cacheKey = userText.trim().toLowerCase().slice(0, 200);

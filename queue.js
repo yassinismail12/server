@@ -53,18 +53,16 @@ export function createWorker(processor) {
 }
 
 // ─── JobId helpers ────────────────────────────────────────────────────────────
-// IG eventKeys are long base64 strings like:
-//   mid:aWdfZAG1faXRlbToxOklHTWVz...NAZDZD
-// They all share the same long prefix — only the LAST ~30 chars are unique.
-// Slicing to 128 from the START causes collisions → jobs silently dropped.
-// Fix: use the TAIL of the eventKey (the unique part) for the jobId.
+// IG eventKeys are long base64 strings — they all share the same long prefix
+// and only differ at the TAIL. Using the tail prevents jobId collisions that
+// cause BullMQ to silently drop jobs.
 
 function safeShort(str, maxLen = 20) {
   return String(str || "").replace(/[^a-zA-Z0-9]/g, "").slice(0, maxLen);
 }
 
 function uniqueTail(eventKey) {
-  // Take last 40 chars of the eventKey — this is where IG MIDs differ
+  // Last 40 chars of the eventKey — this is where IG MIDs are unique
   return String(eventKey || Date.now()).slice(-40).replace(/[^a-zA-Z0-9]/g, "").slice(0, 40);
 }
 
@@ -74,12 +72,11 @@ export async function enqueueMessengerMessage({ pageId, sender_psid, userMessage
   await messageQueue.add(
     "messenger",
     { pageId, sender_psid, userMessage, eventKey },
-    { jobId, delay: 300 }
+    { jobId }
   );
 }
 
 // ─── Enqueue: Instagram ───────────────────────────────────────────────────────
-// Uses tail of eventKey to avoid jobId collisions on long IG MIDs.
 export async function enqueueInstagramMessage({
   igBusinessId,
   senderId,
@@ -93,7 +90,7 @@ export async function enqueueInstagramMessage({
   await messageQueue.add(
     "instagram",
     { igBusinessId, senderId, userText, eventKey, clientId, pageId, pageToken },
-    { jobId, delay: 300 }
+    { jobId }
   );
 }
 
@@ -109,6 +106,6 @@ export async function enqueueWhatsAppMessage({
   await messageQueue.add(
     "whatsapp",
     { clientId, fromDigits, text, whatsappPhoneNumberId, msgId },
-    { jobId, delay: 300 }
+    { jobId }
   );
 }
