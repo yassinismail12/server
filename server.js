@@ -25,7 +25,7 @@ import knowledgeRoute from "./routes/knowledge.js";
 import engagementRoutes from "./routes/engagement.js";
 import Product from "./Product.js";
 import { startWorker } from "./worker.js";
-import loadTestRoute from "./routes/loadTest.js";
+
 dotenv.config();
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -1364,7 +1364,7 @@ app.get("/whatsapp/_ping", (req, res) => res.json({ ok: true }));
 app.use("/api", ordersRoute);
 app.use("/api/knowledge", knowledgeRoute);
 app.use("/api/engagement", verifyToken, attachClientId, engagementRoutes);
-app.use("/api/test", loadTestRoute);
+
 // ─────────────────────────────────────────────────────────────────────────────
 // Start
 // ─────────────────────────────────────────────────────────────────────────────
