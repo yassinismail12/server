@@ -24,7 +24,7 @@ import whatsappRoute from "./whatsapp.js";
 import knowledgeRoute from "./routes/knowledge.js";
 import engagementRoutes from "./routes/engagement.js";
 import Product from "./Product.js";
-
+import { startWorker } from "./worker.js";
 dotenv.config();
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -1371,6 +1371,7 @@ mongoose
   .then(async () => {
     console.log("✅ MongoDB connected:", mongoose.connection.name);
     await createAdmin();
+    startWorker();   
     app.listen(3000, () => console.log("🚀 Server running on port 3000"));
   })
   .catch((err) => console.error("❌ MongoDB connection error:", err));

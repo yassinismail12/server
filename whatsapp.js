@@ -1,4 +1,9 @@
 // whatsapp.js
+// ✅ SCALED: AI processing offloaded to BullMQ queue via worker.js
+// Source choice flow (1/2/3 menu) stays in webhook handler since it needs
+// immediate sendWhatsAppText response and doesn't involve AI.
+// All AI calls moved to worker.js processWhatsAppJob().
+
 import express from "express";
 import mongoose from "mongoose";
 import jwt from "jsonwebtoken";
@@ -8,11 +13,10 @@ import { buildRulesPrompt } from "./utils/systemPrompt.js";
 import { getChatCompletion } from "./services/openai.js";
 import { sendWhatsAppText } from "./services/whatsappText.js";
 import { sendWhatsAppTemplate } from "./services/whatsappTemplate.js";
+import { enqueueWhatsAppMessage } from "./queue.js";
 
 const router = express.Router();
 
-// ✅ Reuse the mongoose connection that server.js already opened.
-// Never open a second MongoClient — that causes connection limit issues at scale.
 function getDB() {
   return mongoose.connection.db;
 }
@@ -45,12 +49,7 @@ function detectUserLanguage(text = "") {
 function isNewDay(lastDate) {
   const today = new Date();
   const d = lastDate ? new Date(lastDate) : null;
-  return (
-    !d ||
-    d.getDate() !== today.getDate() ||
-    d.getMonth() !== today.getMonth() ||
-    d.getFullYear() !== today.getFullYear()
-  );
+  return !d || d.getDate() !== today.getDate() || d.getMonth() !== today.getMonth() || d.getFullYear() !== today.getFullYear();
 }
 
 function parseSourceChoice(text) {
@@ -73,7 +72,7 @@ function sourceMenuText() {
 }
 
 // ===============================
-// Auth (for dashboard endpoints)
+// Auth
 // ===============================
 function parseCookieHeader(cookieHeader = "") {
   const out = {};
@@ -119,7 +118,6 @@ function requireClient(req, res, next) {
 function getAccessTokenForClient(client) {
   const dbToken = String(client?.whatsappAccessToken || "").trim();
   if (dbToken) return dbToken;
-
   const key = String(client?.whatsappTokenKey || "").trim().toLowerCase();
   if (key && process.env[`WHATSAPP_TOKEN_${key.toUpperCase()}`]) {
     return process.env[`WHATSAPP_TOKEN_${key.toUpperCase()}`];
@@ -132,13 +130,7 @@ function getAccessTokenForClient(client) {
 // ===============================
 function buildRecentHistoryMessages(history = [], limit = 12) {
   return history
-    .filter(
-      (m) =>
-        m &&
-        (m.role === "user" || m.role === "assistant") &&
-        typeof m.content === "string" &&
-        m.content.trim()
-    )
+    .filter((m) => m && (m.role === "user" || m.role === "assistant") && typeof m.content === "string" && m.content.trim())
     .slice(-limit)
     .map((m) => ({ role: m.role, content: m.content.trim() }));
 }
@@ -152,7 +144,6 @@ function injectHistoryIntoMessages(baseMessages = [], history = []) {
 
   const systemMessages = [];
   const nonSystemMessages = [];
-
   for (const msg of msgs) {
     if (msg?.role === "system") systemMessages.push(msg);
     else nonSystemMessages.push(msg);
@@ -162,14 +153,8 @@ function injectHistoryIntoMessages(baseMessages = [], history = []) {
   const hasCurrentUserAtEnd = last?.role === "user";
 
   if (hasCurrentUserAtEnd) {
-    return [
-      ...systemMessages,
-      ...nonSystemMessages.slice(0, -1),
-      ...historyMessages,
-      last,
-    ];
+    return [...systemMessages, ...nonSystemMessages.slice(0, -1), ...historyMessages, last];
   }
-
   return [...systemMessages, ...historyMessages, ...nonSystemMessages];
 }
 
@@ -180,11 +165,7 @@ async function getClientByPhoneNumberId(whatsappPhoneNumberId) {
   const db = getDB();
   const pnid = normalizeIdString(whatsappPhoneNumberId);
 
-  let client = await db.collection("Clients").findOne({
-    whatsappPhoneNumberId: pnid,
-    active: { $ne: false },
-  });
-
+  let client = await db.collection("Clients").findOne({ whatsappPhoneNumberId: pnid, active: { $ne: false } });
   if (!client) {
     client = await db.collection("Clients").findOne({
       whatsappPhoneNumberId: { $in: [String(pnid), String(pnid).trim()] },
@@ -196,10 +177,7 @@ async function getClientByPhoneNumberId(whatsappPhoneNumberId) {
 
 async function getClientByClientId(clientId) {
   const db = getDB();
-  return db.collection("Clients").findOne({
-    clientId: String(clientId || "").trim(),
-    active: { $ne: false },
-  });
+  return db.collection("Clients").findOne({ clientId: String(clientId || "").trim(), active: { $ne: false } });
 }
 
 async function touchClientWebhook(clientMongoId, payload) {
@@ -207,13 +185,7 @@ async function touchClientWebhook(clientMongoId, payload) {
     const db = getDB();
     await db.collection("Clients").updateOne(
       { _id: clientMongoId },
-      {
-        $set: {
-          lastWebhookAt: new Date(),
-          lastWebhookType: "whatsapp",
-          lastWebhookPayload: payload,
-        },
-      }
+      { $set: { lastWebhookAt: new Date(), lastWebhookType: "whatsapp", lastWebhookPayload: payload } }
     );
   } catch (e) {
     log("warn", "Failed to update lastWebhook fields", { err: e.message });
@@ -225,36 +197,17 @@ async function touchClientWebhook(clientMongoId, payload) {
 // ===============================
 async function getConversation(clientId, userId) {
   const db = getDB();
-  return db.collection("Conversations").findOne({
-    clientId: String(clientId),
-    userId,
-    source: "whatsapp",
-  });
+  return db.collection("Conversations").findOne({ clientId: String(clientId), userId, source: "whatsapp" });
 }
 
-async function upsertConversation({
-  clientId,
-  userId,
-  history,
-  lastInteraction,
-  lastMessage,
-  lastMessageAt,
-  lastDirection,
-  awaitSource,
-  sourceChoice,
-  meta = {},
-}) {
+async function upsertConversation({ clientId, userId, history, lastInteraction, lastMessage, lastMessageAt, lastDirection, awaitSource, sourceChoice, meta = {} }) {
   const db = getDB();
   await db.collection("Conversations").updateOne(
     { clientId: String(clientId), userId, source: "whatsapp" },
     {
       $set: {
-        clientId: String(clientId),
-        userId,
-        source: "whatsapp",
-        sourceLabel: "WhatsApp",
-        history,
-        lastInteraction,
+        clientId: String(clientId), userId, source: "whatsapp", sourceLabel: "WhatsApp",
+        history, lastInteraction,
         lastMessage: lastMessage || "",
         lastMessageAt: lastMessageAt || lastInteraction,
         lastDirection: lastDirection || "",
@@ -263,10 +216,7 @@ async function upsertConversation({
         meta: { ...(meta || {}) },
         updatedAt: new Date(),
       },
-      $setOnInsert: {
-        humanEscalation: false,
-        createdAt: new Date(),
-      },
+      $setOnInsert: { humanEscalation: false, createdAt: new Date() },
     },
     { upsert: true }
   );
@@ -280,34 +230,19 @@ router.post("/send-test", requireClient, async (req, res) => {
     const { clientId, to, text } = req.body || {};
     const toDigits = normalizePhoneDigits(to);
 
-    if (!clientId || !toDigits || !text) {
-      return res.status(400).json({ ok: false, error: "Missing clientId, to, or text" });
-    }
-
-    if (String(clientId) !== String(req.user.clientId)) {
-      return res.status(403).json({ ok: false, error: "Forbidden" });
-    }
+    if (!clientId || !toDigits || !text) return res.status(400).json({ ok: false, error: "Missing clientId, to, or text" });
+    if (String(clientId) !== String(req.user.clientId)) return res.status(403).json({ ok: false, error: "Forbidden" });
 
     const client = await getClientByClientId(clientId);
     if (!client) return res.status(404).json({ ok: false, error: "Client not found" });
 
     const phoneNumberId = String(client.whatsappPhoneNumberId || "").trim();
-    if (!phoneNumberId) {
-      return res.status(400).json({ ok: false, error: "Client missing whatsappPhoneNumberId" });
-    }
+    if (!phoneNumberId) return res.status(400).json({ ok: false, error: "Client missing whatsappPhoneNumberId" });
 
     const accessToken = getAccessTokenForClient(client);
-    if (!accessToken) {
-      return res.status(500).json({ ok: false, error: "Missing WhatsApp access token" });
-    }
+    if (!accessToken) return res.status(500).json({ ok: false, error: "Missing WhatsApp access token" });
 
-    await sendWhatsAppText({
-      phoneNumberId,
-      to: toDigits,
-      text: String(text),
-      accessToken,
-    });
-
+    await sendWhatsAppText({ phoneNumberId, to: toDigits, text: String(text), accessToken });
     return res.json({ ok: true });
   } catch (e) {
     log("error", "WA send-test failed", { err: e.message });
@@ -320,30 +255,20 @@ router.post("/send-template-test", requireClient, async (req, res) => {
     const { clientId, to, templateName, languageCode, params } = req.body || {};
     const toDigits = normalizePhoneDigits(to);
 
-    if (!clientId || !toDigits || !templateName) {
-      return res.status(400).json({ ok: false, error: "Missing clientId, to, or templateName" });
-    }
-
-    if (String(clientId) !== String(req.user.clientId)) {
-      return res.status(403).json({ ok: false, error: "Forbidden" });
-    }
+    if (!clientId || !toDigits || !templateName) return res.status(400).json({ ok: false, error: "Missing clientId, to, or templateName" });
+    if (String(clientId) !== String(req.user.clientId)) return res.status(403).json({ ok: false, error: "Forbidden" });
 
     const client = await getClientByClientId(clientId);
     if (!client) return res.status(404).json({ ok: false, error: "Client not found" });
 
     const phoneNumberId = String(client.whatsappPhoneNumberId || "").trim();
-    if (!phoneNumberId) {
-      return res.status(400).json({ ok: false, error: "Client missing whatsappPhoneNumberId" });
-    }
+    if (!phoneNumberId) return res.status(400).json({ ok: false, error: "Client missing whatsappPhoneNumberId" });
 
     const accessToken = getAccessTokenForClient(client);
-    if (!accessToken) {
-      return res.status(500).json({ ok: false, error: "Missing WhatsApp access token" });
-    }
+    if (!accessToken) return res.status(500).json({ ok: false, error: "Missing WhatsApp access token" });
 
     await sendWhatsAppTemplate({
-      phoneNumberId,
-      to: toDigits,
+      phoneNumberId, to: toDigits,
       templateName: String(templateName).trim(),
       languageCode: String(languageCode || "en_US").trim(),
       bodyParams: Array.isArray(params) ? params.map(String) : [],
@@ -358,16 +283,13 @@ router.post("/send-template-test", requireClient, async (req, res) => {
 });
 
 // ===============================
-// LIST TEMPLATES
+// List templates
 // ===============================
 router.get("/templates", requireClient, async (req, res) => {
   try {
     const clientId = String(req.query.clientId || "").trim();
     if (!clientId) return res.status(400).json({ ok: false, error: "Missing clientId" });
-
-    if (String(clientId) !== String(req.user.clientId)) {
-      return res.status(403).json({ ok: false, error: "Forbidden" });
-    }
+    if (String(clientId) !== String(req.user.clientId)) return res.status(403).json({ ok: false, error: "Forbidden" });
 
     const client = await getClientByClientId(clientId);
     if (!client) return res.status(404).json({ ok: false, error: "Client not found" });
@@ -379,26 +301,16 @@ router.get("/templates", requireClient, async (req, res) => {
     if (!accessToken) return res.status(500).json({ ok: false, error: "Missing WhatsApp access token" });
 
     const API_VERSION = (process.env.WHATSAPP_API_VERSION || "v20.0").trim();
-    const url =
-      `https://graph.facebook.com/${API_VERSION}/${encodeURIComponent(wabaId)}/message_templates` +
-      `?fields=name,status,language&limit=200`;
+    const url = `https://graph.facebook.com/${API_VERSION}/${encodeURIComponent(wabaId)}/message_templates?fields=name,status,language&limit=200`;
 
-    const resp = await fetch(url, {
-      headers: { Authorization: `Bearer ${accessToken}` },
-    });
-
+    const resp = await fetch(url, { headers: { Authorization: `Bearer ${accessToken}` } });
     const rawText = await resp.text();
     let data;
     try { data = JSON.parse(rawText); } catch { data = { raw: rawText }; }
 
     if (!resp.ok) return res.status(resp.status).json({ ok: false, error: data });
 
-    const templates = (data?.data || []).map((t) => ({
-      name: t.name,
-      status: t.status,
-      language: t.language,
-    }));
-
+    const templates = (data?.data || []).map((t) => ({ name: t.name, status: t.status, language: t.language }));
     return res.json({ ok: true, templates });
   } catch (e) {
     log("error", "WA templates fetch failed", { err: e?.message });
@@ -429,7 +341,6 @@ router.get("/", (req, res) => {
 router.post("/", async (req, res) => {
   console.log("🔥 WA POST HIT", new Date().toISOString(), "topKeys:", Object.keys(req.body || {}));
 
-  // Always reply 200 to Meta immediately
   res.sendStatus(200);
 
   try {
@@ -437,9 +348,7 @@ router.post("/", async (req, res) => {
     const entries = body?.entry || [];
 
     if (!Array.isArray(entries) || !entries.length) {
-      log("warn", "Webhook body has no entry array", {
-        bodyPreview: JSON.stringify(body || {}).slice(0, 300),
-      });
+      log("warn", "Webhook body has no entry array", { bodyPreview: JSON.stringify(body || {}).slice(0, 300) });
       return;
     }
 
@@ -457,9 +366,7 @@ router.post("/", async (req, res) => {
 
         const client = await getClientByPhoneNumberId(whatsappPhoneNumberId);
         if (!client) {
-          log("warn", "No client matched whatsappPhoneNumberId", {
-            whatsappPhoneNumberId: String(whatsappPhoneNumberId),
-          });
+          log("warn", "No client matched whatsappPhoneNumberId", { whatsappPhoneNumberId: String(whatsappPhoneNumberId) });
           continue;
         }
 
@@ -485,9 +392,7 @@ router.post("/", async (req, res) => {
 
         const messages = value?.messages || [];
         if (!messages.length) {
-          log("info", "No inbound messages in webhook (likely statuses)", {
-            clientId: client.clientId,
-          });
+          log("info", "No inbound messages in webhook (likely statuses)", { clientId: client.clientId });
           continue;
         }
 
@@ -495,50 +400,23 @@ router.post("/", async (req, res) => {
           const fromDigits = normalizePhoneDigits(msg?.from);
           const text = msg?.text?.body || "";
 
-          if (!fromDigits) {
-            log("warn", "Message missing from", { msgId: msg?.id });
-            continue;
-          }
-          if (!text) {
-            log("info", "Ignoring non-text message", {
-              clientId: client.clientId,
-              from: fromDigits,
-              type: msg?.type,
-            });
-            continue;
-          }
-          if (staffDigits.includes(fromDigits)) {
-            log("info", "Ignoring staff message", { from: fromDigits, clientId: client.clientId });
-            continue;
-          }
+          if (!fromDigits) { log("warn", "Message missing from", { msgId: msg?.id }); continue; }
+          if (!text) { log("info", "Ignoring non-text message", { clientId: client.clientId, from: fromDigits, type: msg?.type }); continue; }
+          if (staffDigits.includes(fromDigits)) { log("info", "Ignoring staff message", { from: fromDigits, clientId: client.clientId }); continue; }
 
-          // Load conversation
           const convo = await getConversation(client.clientId, fromDigits);
 
-          // Skip if human has taken over
           if (convo?.humanEscalation === true) {
-            log("info", "Human escalation active; ignoring", {
-              from: fromDigits,
-              clientId: client.clientId,
-            });
+            log("info", "Human escalation active; ignoring", { from: fromDigits, clientId: client.clientId });
             continue;
           }
 
           const inboundAt = new Date();
           const inboundPreview = text.slice(0, 200);
           const history = Array.isArray(convo?.history) ? convo.history : [];
-
-          const botType = client?.knowledgeBotType || "default";
-          const sectionsOrder =
-            Array.isArray(client?.sectionsOrder) && client.sectionsOrder.length
-              ? client.sectionsOrder
-              : Array.isArray(client?.sectionsPresent) && client.sectionsPresent.length
-              ? client.sectionsPresent
-              : ["faqs", "listings", "paymentPlans"];
-
           const convoMeta = { whatsappPhoneNumberId: String(whatsappPhoneNumberId) };
 
-          // ── Source choice flow ──────────────────────────────────────────────
+          // ── Source choice flow (no AI — handle inline, fast) ────────────────
           const sourceChoiceExisting = convo?.sourceChoice || "";
           const needsChoice = clientAwaitSource && !sourceChoiceExisting;
 
@@ -547,157 +425,41 @@ router.post("/", async (req, res) => {
             const updatedHistory = [...history, { role: "user", content: text, createdAt: inboundAt }];
 
             if (!picked) {
-              // User hasn't picked yet — save and send menu if needed
-              const shouldSendMenu =
-                !convo || isNewDay(convo.lastInteraction) || convo?.awaitSource !== true;
-
+              const shouldSendMenu = !convo || isNewDay(convo.lastInteraction) || convo?.awaitSource !== true;
               await upsertConversation({
-                clientId: client.clientId,
-                userId: fromDigits,
-                history: updatedHistory,
-                lastInteraction: inboundAt,
-                lastMessage: inboundPreview,
-                lastMessageAt: inboundAt,
-                lastDirection: "in",
-                awaitSource: true,         // ✅ still waiting
-                sourceChoice: "",          // ✅ no choice yet
-                meta: convoMeta,
+                clientId: client.clientId, userId: fromDigits, history: updatedHistory,
+                lastInteraction: inboundAt, lastMessage: inboundPreview, lastMessageAt: inboundAt,
+                lastDirection: "in", awaitSource: true, sourceChoice: "", meta: convoMeta,
               });
-
               if (shouldSendMenu) {
-                await sendWhatsAppText({
-                  phoneNumberId: String(whatsappPhoneNumberId),
-                  to: fromDigits,
-                  text: sourceMenuText(),
-                  accessToken: whatsappAccessToken,
-                });
+                await sendWhatsAppText({ phoneNumberId: String(whatsappPhoneNumberId), to: fromDigits, text: sourceMenuText(), accessToken: whatsappAccessToken });
               }
               continue;
             }
 
-            // User picked a source — save the choice and acknowledge
             await upsertConversation({
-              clientId: client.clientId,
-              userId: fromDigits,
-              history: updatedHistory,
-              lastInteraction: inboundAt,
-              lastMessage: inboundPreview,
-              lastMessageAt: inboundAt,
-              lastDirection: "in",
-              awaitSource: false,          // ✅ choice made, no longer waiting
-              sourceChoice: picked,        // ✅ save what they picked
-              meta: convoMeta,
+              clientId: client.clientId, userId: fromDigits, history: updatedHistory,
+              lastInteraction: inboundAt, lastMessage: inboundPreview, lastMessageAt: inboundAt,
+              lastDirection: "in", awaitSource: false, sourceChoice: picked, meta: convoMeta,
             });
-
             await sendWhatsAppText({
-              phoneNumberId: String(whatsappPhoneNumberId),
-              to: fromDigits,
+              phoneNumberId: String(whatsappPhoneNumberId), to: fromDigits,
               text: `✅ Got it. You selected: ${picked}.\nHow can I help you?`,
               accessToken: whatsappAccessToken,
             });
             continue;
           }
 
-          // ── Normal AI reply flow ────────────────────────────────────────────
-
-          // Greeting on first message of the day
-          let greeting = "";
-          if (!convo || isNewDay(convo.lastInteraction)) {
-            const userLang = detectUserLanguage(text);
-            greeting = userLang === "ar" ? "أهلًا 👋" : "Hi 👋";
-          }
-
-          // Retrieve knowledge chunks
-          let grouped = {};
-          try {
-            grouped = await retrieveChunks({
-              clientId: client.clientId,
-              botType,
-              userText: text,
-              retrievalQuery: text,
-              maxChunks: 8,
-            });
-          } catch (e) {
-            log("warn", "WA retrieveChunks failed", {
-              err: e.message,
-              clientId: client.clientId,
-              from: fromDigits,
-            });
-          }
-
-          // Build prompt
-          const rulesPrompt = buildRulesPrompt(client);
-          const { messages: baseMessagesForOpenAI, meta: promptMeta } = buildChatMessages({
-            rulesPrompt,
-            groupedChunks: grouped,
-            userText: text,
-            sectionsOrder,
-          });
-
-          const messagesForOpenAI = injectHistoryIntoMessages(baseMessagesForOpenAI, history);
-
-          if (promptMeta?.code) {
-            log("warn", "WA prompt builder warning", {
-              clientId: client.clientId,
-              from: fromDigits,
-              meta: promptMeta,
-            });
-          }
-
-          // Call OpenAI
-          let assistantMessage = "";
-          try {
-            assistantMessage = await getChatCompletion(messagesForOpenAI);
-          } catch (err) {
-            log("error", "OpenAI error", {
-              err: err.message,
-              clientId: client.clientId,
-              from: fromDigits,
-            });
-            assistantMessage = "⚠️ I'm having trouble right now. Please try again shortly.";
-          }
-
-          const combined = greeting ? `${greeting}\n\n${assistantMessage}` : assistantMessage;
-          const outboundAt = new Date();
-
-          // ✅ Save conversation correctly:
-          // - awaitSource reflects the actual client setting (not hardcoded true)
-          // - sourceChoice carries over from the existing conversation
-          // - lastDirection "out" because we're about to send a reply
-          const updatedHistory = [
-            ...history,
-            { role: "user", content: text, createdAt: inboundAt },
-            { role: "assistant", content: combined, createdAt: outboundAt },
-          ];
-
-          await upsertConversation({
+          // ── 🚀 QUEUE: hand off to worker for AI processing ─────────────────
+          await enqueueWhatsAppMessage({
             clientId: client.clientId,
-            userId: fromDigits,
-            history: updatedHistory,
-            lastInteraction: outboundAt,
-            lastMessage: combined.slice(0, 200),
-            lastMessageAt: outboundAt,
-            lastDirection: "out",                          // ✅ correct direction
-            awaitSource: clientAwaitSource,                // ✅ from client config, not hardcoded
-            sourceChoice: sourceChoiceExisting,            // ✅ carry over existing choice
-            meta: convoMeta,
+            fromDigits,
+            text,
+            whatsappPhoneNumberId: String(whatsappPhoneNumberId),
+            msgId: msg?.id,
           });
 
-          // Send reply
-          try {
-            await sendWhatsAppText({
-              phoneNumberId: String(whatsappPhoneNumberId),
-              to: fromDigits,
-              text: combined,
-              accessToken: whatsappAccessToken,
-            });
-          } catch (e) {
-            log("error", "WhatsApp send failed", {
-              clientId: client.clientId,
-              to: fromDigits,
-              err: e.message,
-            });
-          }
+          log("info", "WA message enqueued for processing", { clientId: client.clientId, from: fromDigits });
         }
       }
     }
