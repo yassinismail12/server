@@ -54,12 +54,18 @@ export function createWorker(processor) {
   return worker;
 }
 
+// ─── Safe jobId helper — BullMQ forbids colons in job IDs ────────────────────
+function safeId(str) {
+  return String(str || "").replace(/:/g, "-").replace(/[^a-zA-Z0-9_\-\.]/g, "").slice(0, 128);
+}
+
 // ─── Enqueue: Messenger ───────────────────────────────────────────────────────
 export async function enqueueMessengerMessage({ pageId, sender_psid, userMessage, eventKey }) {
+  const jobId = `msng-${safeId(pageId)}-${safeId(sender_psid)}-${safeId(eventKey || Date.now())}`;
   await messageQueue.add(
     "messenger",
     { pageId, sender_psid, userMessage, eventKey },
-    { jobId: `messenger:${pageId}:${sender_psid}:${eventKey || Date.now()}` }
+    { jobId }
   );
 }
 
@@ -73,10 +79,11 @@ export async function enqueueInstagramMessage({
   pageId,
   pageToken,
 }) {
+  const jobId = `ig-${safeId(igBusinessId)}-${safeId(senderId)}-${safeId(eventKey || Date.now())}`;
   await messageQueue.add(
     "instagram",
     { igBusinessId, senderId, userText, eventKey, clientId, pageId, pageToken },
-    { jobId: `instagram:${igBusinessId}:${senderId}:${eventKey || Date.now()}` }
+    { jobId }
   );
 }
 
@@ -88,9 +95,10 @@ export async function enqueueWhatsAppMessage({
   whatsappPhoneNumberId,
   msgId,
 }) {
+  const jobId = `wa-${safeId(clientId)}-${safeId(fromDigits)}-${safeId(msgId || Date.now())}`;
   await messageQueue.add(
     "whatsapp",
     { clientId, fromDigits, text, whatsappPhoneNumberId, msgId },
-    { jobId: `whatsapp:${clientId}:${fromDigits}:${msgId || Date.now()}` }
+    { jobId }
   );
 }
