@@ -58,7 +58,7 @@ function normalizeHistory(history = []) {
     }));
 }
 
-function trimHistoryToBudget(history = [], maxHistoryTokens = 800) {
+function trimHistoryToBudget(history = [], maxHistoryTokens = 700) {
   const normalized = normalizeHistory(history);
   const picked = [];
   let used = 0;

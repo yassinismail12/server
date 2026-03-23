@@ -56,7 +56,7 @@ function waSafe(v) {
 
 function normalizePhone(p) { return String(p || "").trim().replace(/[^\d]/g, ""); }
 
-function trimHistory(history = [], max = 20) {
+function trimHistory(history = [], max = 10) {
   return (Array.isArray(history) ? history : []).slice(-max);
 }
 
