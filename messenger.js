@@ -719,8 +719,10 @@ router.post("/", async (req, res) => {
           }
 
         
-
-         await enqueueMessengerMessage({ pageId, sender_psid, userMessage, eventKey });
+console.log("🔵 About to enqueue message for", sender_psid);
+await enqueueMessengerMessage({ pageId, sender_psid, userMessage, eventKey });
+console.log("🟢 Enqueue successful for", sender_psid);
+      
         }
 
         if (webhook_event.postback?.payload) {
