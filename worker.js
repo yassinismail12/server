@@ -1,8 +1,6 @@
 // worker.js
 // Runs inside your existing server.js process — no separate Render service needed.
 // Call startWorker() once after mongoose connects in server.js.
-//
-// Handles: messenger, instagram, whatsapp jobs from the shared BullMQ queue.
 
 import { createWorker } from "./queue.js";
 import { connectToDB as connectDB } from "./services/db.js";
@@ -55,7 +53,6 @@ function waSafe(v) {
 
 function normalizePhone(p) { return String(p || "").trim().replace(/[^\d]/g, ""); }
 
-// History helpers
 function trimHistory(history = [], max = 20) {
   return (Array.isArray(history) ? history : []).slice(-max);
 }
@@ -74,7 +71,6 @@ function injectHistory(baseMessages = [], history = []) {
     : [...sys, ...histMsgs, ...nonSys];
 }
 
-// Shared flag parser
 function parseFlags(msg) {
   let text = msg;
   const flags = { human: false, order: false, tour: false };
@@ -100,7 +96,7 @@ async function sendIgDM(pageId, pageToken, recipientId, text) {
   }
 }
 
-// ─── Quota helper (shared across platforms) ───────────────────────────────────
+// ─── Quota helper ─────────────────────────────────────────────────────────────
 
 async function checkAndIncrementQuota(db, filter, pageIdOrIgStr) {
   await db.collection("Clients").updateOne(filter, {
@@ -161,9 +157,9 @@ async function saveConvoWhatsApp(db, clientId, userId, history, extra = {}) {
   );
 }
 
-// ─── Order flow helper (shared) ───────────────────────────────────────────────
+// ─── Order flow helper ────────────────────────────────────────────────────────
 
-async function handleOrderFlow({ db, clientId, assistantMessage, externalUserId, channel, pageIdOrIgStr }) {
+async function handleOrderFlow({ db, clientId, assistantMessage, externalUserId, channel }) {
   const customerName = extractLine(assistantMessage, "Customer Name") || "Unknown";
   const customerPhone = extractLine(assistantMessage, "Customer Phone") || "N/A";
   const itemsText = extractLine(assistantMessage, "Items") || assistantMessage;
@@ -189,12 +185,9 @@ async function handleOrderFlow({ db, clientId, assistantMessage, externalUserId,
 
   try {
     await Order.create({
-      clientId,
-      channel,
+      clientId, channel,
       customer: { name: customerName, phone: customerPhone === "N/A" ? "" : customerPhone, externalUserId },
-      itemsText: assistantMessage,
-      notes,
-      status: "new",
+      itemsText: assistantMessage, notes, status: "new",
     });
   } catch (e) {
     console.warn(`⚠️ [worker/${channel}] order save failed:`, e.message);
@@ -214,27 +207,24 @@ async function processMessengerJob({ pageId, sender_psid, userMessage, eventKey 
 
   const clientId = clientDoc.clientId;
 
-  // Human escalation check
   let convoCheck = await db.collection("Conversations").findOne({ pageId: pageIdStr, userId: sender_psid, source: "messenger" });
-
   if (convoCheck?.humanEscalation === true) {
     if (convoCheck?.botResumeAt && new Date() >= new Date(convoCheck.botResumeAt)) {
       await db.collection("Conversations").updateOne(
         { pageId: pageIdStr, userId: sender_psid, source: "messenger" },
         { $set: { humanEscalation: false, botResumeAt: null, autoResumedAt: new Date() } }
       );
-    } else {
-      return; // still in human escalation, bot stays silent
-    }
+    } else return;
   }
 
   await sendMarkAsRead(sender_psid, pageId);
-  await new Promise((r) => setTimeout(r, 400));
+  // removed 1200ms delay — no longer needed
 
   const rulesPrompt = buildRulesPrompt(clientDoc);
   const botType = clientDoc?.knowledgeBotType || "default";
   const sectionsOrder = Array.isArray(clientDoc?.sectionsOrder) && clientDoc.sectionsOrder.length
     ? clientDoc.sectionsOrder : ["menu", "offers", "hours"];
+  const maxChunks = clientDoc?.maxChunks || 4; // ✅ correct variable
 
   const convo = await db.collection("Conversations").findOne({ pageId: pageIdStr, userId: sender_psid, source: "messenger" });
   const history = trimHistory(Array.isArray(convo?.history) ? convo.history : []);
@@ -244,23 +234,22 @@ async function processMessengerJob({ pageId, sender_psid, userMessage, eventKey 
     greeting = detectLang(userMessage) === "ar" ? "أهلًا، سعيدين بوجودك اليوم 👋" : "Hi, good to see you today 👋";
   }
 
-  // Quota
   const quota = await checkAndIncrementQuota(db, { pageId: pageIdStr }, pageIdStr);
   if (!quota.allowed) {
     if (quota.reason === "quota_exceeded") await sendMessengerReply(sender_psid, "⚠️ Message limit reached.", pageId);
     return;
   }
 
-  // Retrieval + AI
   let grouped = {};
-  try { const maxChunks = clientDoc?.maxChunks || 4;
-
-grouped = await retrieveChunks({
-  clientId, botType, userText: userMessage,
-  retrievalQuery: userMessage,
-  maxChunks,
-}); }
-  catch (e) { console.warn("⚠️ [worker/messenger] retrieveChunks failed:", e.message); }
+  try {
+    grouped = await retrieveChunks({
+      clientId,
+      botType,
+      userText: userMessage,       // ✅ correct variable
+      retrievalQuery: userMessage, // ✅ correct variable
+      maxChunks,
+    });
+  } catch (e) { console.warn("⚠️ [worker/messenger] retrieveChunks failed:", e.message); }
 
   const { messages: base } = buildChatMessages({ rulesPrompt, groupedChunks: grouped, userText: userMessage, sectionsOrder });
   const messagesForAI = injectHistory(base, history);
@@ -275,7 +264,6 @@ grouped = await retrieveChunks({
 
   const { text: assistantMessage, flags } = parseFlags(raw);
 
-  // Human escalation
   if (flags.human) {
     const botResumeAt = new Date(Date.now() + 2 * 60 * 60 * 1000);
     await db.collection("Conversations").updateOne(
@@ -285,7 +273,6 @@ grouped = await retrieveChunks({
     );
     try { await notifyClientStaffHumanNeeded({ clientId, pageId: pageIdStr, userId: sender_psid, source: "messenger" }); }
     catch (e) { console.warn("⚠️ [worker/messenger] human notify failed:", e.message); }
-
     const msg = "👤 A human agent will take over shortly.\nThe assistant will return when staff reactivate it from the dashboard.\n\nسيقوم أحد موظفي الدعم بالرد عليك قريبًا وسيعود المساعد عند إعادة تفعيله من لوحة التحكم.";
     await sendMessengerReply(sender_psid, msg, pageId);
     history.push({ role: "user", content: userMessage, createdAt: new Date() }, { role: "assistant", content: msg, createdAt: new Date() });
@@ -293,10 +280,9 @@ grouped = await retrieveChunks({
     return;
   }
 
-  // Order
   if (flags.order) {
     await db.collection("Conversations").updateOne({ pageId: pageIdStr, userId: sender_psid, source: "messenger" }, { $inc: { orderRequestCount: 1 } }, { upsert: true });
-    await handleOrderFlow({ db, clientId, assistantMessage, externalUserId: sender_psid, channel: "messenger", pageIdOrIgStr: pageIdStr });
+    await handleOrderFlow({ db, clientId, assistantMessage, externalUserId: sender_psid, channel: "messenger" });
     const msg = "✅ Your order request has been received.\nA staff member will contact you shortly.\n\nتم استلام طلبك وسيتم التواصل معك قريبًا.";
     await sendMessengerReply(sender_psid, msg, pageId);
     history.push({ role: "user", content: userMessage, createdAt: new Date() }, { role: "assistant", content: msg, createdAt: new Date() });
@@ -304,7 +290,6 @@ grouped = await retrieveChunks({
     return;
   }
 
-  // Normal reply
   const combined = greeting ? `${greeting}\n\n${assistantMessage}` : assistantMessage;
   history.push({ role: "user", content: userMessage, createdAt: new Date() }, { role: "assistant", content: combined, createdAt: new Date() });
   await saveConvoMessenger(db, pageIdStr, sender_psid, history, clientId);
@@ -327,7 +312,6 @@ async function processInstagramJob({ igBusinessId, senderId, userText, clientId,
   const resolvedPageToken = sanitizeToken(pageToken || clientDoc.pageAccessToken || clientDoc.PAGE_ACCESS_TOKEN || "");
   if (!resolvedPageId || !isLikelyValidToken(resolvedPageToken)) return;
 
-  // Human escalation check
   let convoCheck = await db.collection("Conversations").findOne({ igBusinessId: igStr, userId: senderId, source: "instagram" });
   if (convoCheck?.humanEscalation === true) {
     if (convoCheck?.botResumeAt && new Date() >= new Date(convoCheck.botResumeAt)) {
@@ -342,6 +326,7 @@ async function processInstagramJob({ igBusinessId, senderId, userText, clientId,
   const botType = clientDoc?.knowledgeBotType || "default";
   const sectionsOrder = Array.isArray(clientDoc?.sectionsOrder) && clientDoc.sectionsOrder.length
     ? clientDoc.sectionsOrder : ["menu", "offers", "hours"];
+  const maxChunks = clientDoc?.maxChunks || 4; // ✅ correct variable
 
   const convo = await db.collection("Conversations").findOne({ igBusinessId: igStr, userId: senderId, source: "instagram" });
   const history = trimHistory(Array.isArray(convo?.history) ? convo.history : []);
@@ -351,7 +336,6 @@ async function processInstagramJob({ igBusinessId, senderId, userText, clientId,
     greeting = detectLang(userText) === "ar" ? "أهلًا، سعيدين بوجودك اليوم 👋" : "Hi, good to see you today 👋";
   }
 
-  // Quota
   const filter = { $or: [{ igBusinessId: igStr }, { igId: igStr }] };
   const quota = await checkAndIncrementQuota(db, filter, igStr);
   if (!quota.allowed) {
@@ -359,16 +343,16 @@ async function processInstagramJob({ igBusinessId, senderId, userText, clientId,
     return;
   }
 
-  // Retrieval + AI
   let grouped = {};
-  try { const maxChunks = clientDoc?.maxChunks || 4;
-
-grouped = await retrieveChunks({
-  clientId, botType, userText: userMessage,
-  retrievalQuery: userMessage,
-  maxChunks,
-});}
-  catch (e) { console.warn("⚠️ [worker/instagram] retrieveChunks failed:", e.message); }
+  try {
+    grouped = await retrieveChunks({
+      clientId: resolvedClientId, // ✅ correct variable
+      botType,
+      userText,                   // ✅ correct variable
+      retrievalQuery: userText,   // ✅ correct variable
+      maxChunks,
+    });
+  } catch (e) { console.warn("⚠️ [worker/instagram] retrieveChunks failed:", e.message); }
 
   const { messages: base } = buildChatMessages({ rulesPrompt, groupedChunks: grouped, userText, sectionsOrder });
   const messagesForAI = injectHistory(base, history);
@@ -383,7 +367,6 @@ grouped = await retrieveChunks({
 
   const { text: assistantMessage, flags } = parseFlags(raw);
 
-  // Human escalation
   if (flags.human) {
     const botResumeAt = new Date(Date.now() + 2 * 60 * 60 * 1000);
     await db.collection("Conversations").updateOne(
@@ -393,7 +376,6 @@ grouped = await retrieveChunks({
     );
     try { await notifyClientStaffHumanNeeded({ clientId: resolvedClientId, pageId: resolvedPageId, userId: senderId, source: "instagram" }); }
     catch (e) { console.warn("⚠️ [worker/instagram] human notify failed:", e.message); }
-
     const msg = "👤 A human agent will take over shortly.\nThe assistant will return when staff reactivate it from the dashboard.\n\nسيقوم أحد موظفي الدعم بالرد عليك قريبًا وسيعود المساعد عند إعادة تفعيله من لوحة التحكم.";
     await sendIgDM(resolvedPageId, resolvedPageToken, senderId, msg);
     history.push({ role: "user", content: userText, createdAt: new Date() }, { role: "assistant", content: msg, createdAt: new Date() });
@@ -401,10 +383,9 @@ grouped = await retrieveChunks({
     return;
   }
 
-  // Order
   if (flags.order) {
     await db.collection("Conversations").updateOne({ igBusinessId: igStr, userId: senderId, source: "instagram" }, { $inc: { orderRequestCount: 1 } }, { upsert: true });
-    await handleOrderFlow({ db, clientId: resolvedClientId, assistantMessage, externalUserId: senderId, channel: "instagram", pageIdOrIgStr: igStr });
+    await handleOrderFlow({ db, clientId: resolvedClientId, assistantMessage, externalUserId: senderId, channel: "instagram" });
     const msg = "✅ Your order request has been received.\nA staff member will contact you shortly.\n\nتم استلام طلبك وسيتم التواصل معك قريبًا.";
     await sendIgDM(resolvedPageId, resolvedPageToken, senderId, msg);
     history.push({ role: "user", content: userText, createdAt: new Date() }, { role: "assistant", content: msg, createdAt: new Date() });
@@ -412,7 +393,6 @@ grouped = await retrieveChunks({
     return;
   }
 
-  // Normal reply
   const combined = greeting ? `${greeting}\n\n${assistantMessage}` : assistantMessage;
   history.push({ role: "user", content: userText, createdAt: new Date() }, { role: "assistant", content: combined, createdAt: new Date() });
   await saveConvoIG(db, igStr, senderId, history, resolvedClientId);
@@ -444,13 +424,9 @@ function getWaToken(client) {
 }
 
 async function processWhatsAppJob({ clientId, fromDigits, text, whatsappPhoneNumberId, msgId }) {
-  // Use mongoose connection directly (same as whatsapp.js does)
   const db = mongoose.connection.db;
 
-  const client = await db.collection("Clients").findOne({
-    clientId: String(clientId),
-    active: { $ne: false },
-  });
+  const client = await db.collection("Clients").findOne({ clientId: String(clientId), active: { $ne: false } });
   if (!client) return;
 
   const whatsappAccessToken = getWaToken(client);
@@ -458,19 +434,13 @@ async function processWhatsAppJob({ clientId, fromDigits, text, whatsappPhoneNum
 
   const phoneIdStr = String(whatsappPhoneNumberId);
 
-  // Staff number check
   const staffDigits = [
     ...(Array.isArray(client.staffNumbers) ? client.staffNumbers : []),
     ...(client.staffWhatsApp ? [client.staffWhatsApp] : []),
   ].map(normalizePhone);
   if (staffDigits.includes(fromDigits)) return;
 
-  // Load conversation
-  const convo = await db.collection("Conversations").findOne({
-    clientId: String(clientId), userId: fromDigits, source: "whatsapp",
-  });
-
-  // Human escalation
+  const convo = await db.collection("Conversations").findOne({ clientId: String(clientId), userId: fromDigits, source: "whatsapp" });
   if (convo?.humanEscalation === true) return;
 
   const inboundAt = new Date();
@@ -478,6 +448,7 @@ async function processWhatsAppJob({ clientId, fromDigits, text, whatsappPhoneNum
   const clientAwaitSource = Boolean(client.awaitSource);
   const sourceChoiceExisting = convo?.sourceChoice || "";
   const convoMeta = { whatsappPhoneNumberId: phoneIdStr };
+  const maxChunks = client?.maxChunks || 4; // ✅ correct variable (client not clientDoc)
 
   const botType = client?.knowledgeBotType || "default";
   const sectionsOrder = Array.isArray(client?.sectionsOrder) && client.sectionsOrder.length
@@ -486,7 +457,7 @@ async function processWhatsAppJob({ clientId, fromDigits, text, whatsappPhoneNum
     ? client.sectionsPresent
     : ["faqs", "listings", "paymentPlans"];
 
-  // ── Source choice flow ──────────────────────────────────────────────────────
+  // Source choice flow
   const needsChoice = clientAwaitSource && !sourceChoiceExisting;
   if (needsChoice) {
     const picked = parseSourceChoice(text);
@@ -516,21 +487,22 @@ async function processWhatsAppJob({ clientId, fromDigits, text, whatsappPhoneNum
     return;
   }
 
-  // ── Normal AI reply flow ────────────────────────────────────────────────────
+  // Normal AI flow
   let greeting = "";
   if (!convo || isNewDay(convo.lastInteraction)) {
     greeting = detectLang(text) === "ar" ? "أهلًا 👋" : "Hi 👋";
   }
 
   let grouped = {};
-  try { const maxChunks = clientDoc?.maxChunks || 4;
-
-grouped = await retrieveChunks({
-  clientId, botType, userText: userMessage,
-  retrievalQuery: userMessage,
-  maxChunks,
-});}
-  catch (e) { console.warn("⚠️ [worker/whatsapp] retrieveChunks failed:", e.message); }
+  try {
+    grouped = await retrieveChunks({
+      clientId: String(clientId), // ✅ correct variable
+      botType,
+      userText: text,             // ✅ correct variable
+      retrievalQuery: text,       // ✅ correct variable
+      maxChunks,
+    });
+  } catch (e) { console.warn("⚠️ [worker/whatsapp] retrieveChunks failed:", e.message); }
 
   const rulesPrompt = buildRulesPrompt(client);
   const { messages: base } = buildChatMessages({ rulesPrompt, groupedChunks: grouped, userText: text, sectionsOrder });
@@ -565,7 +537,7 @@ grouped = await retrieveChunks({
 }
 
 // ═════════════════════════════════════════════════════════════════════════════
-// START WORKER — export and call from server.js
+// START WORKER
 // ═════════════════════════════════════════════════════════════════════════════
 
 export function startWorker() {
