@@ -20,8 +20,7 @@ const connection = {
 };
 
 // ─── Shared queue ─────────────────────────────────────────────────────────────
-// attempts: 1 — errors are handled INSIDE each processor with guaranteed replies.
-// Retrying message jobs causes duplicate replies and adds 14+ seconds of delay.
+// attempts: 1 — errors handled inside processors with guaranteed replies.
 export const messageQueue = new Queue("messages", {
   connection,
   defaultJobOptions: {
@@ -32,7 +31,6 @@ export const messageQueue = new Queue("messages", {
 });
 
 // ─── Worker factory ───────────────────────────────────────────────────────────
-// Called once from server.js after mongoose connects.
 export function createWorker(processor) {
   const worker = new Worker("messages", processor, {
     connection,
@@ -44,7 +42,6 @@ export function createWorker(processor) {
   });
 
   worker.on("failed", (job, err) => {
-    // This should rarely fire now since processors catch their own errors
     console.error(`❌ [queue] Job ${job?.id} (${job?.name}) failed: ${err.message}`);
   });
 
@@ -55,22 +52,34 @@ export function createWorker(processor) {
   return worker;
 }
 
-// ─── Safe jobId helper — BullMQ forbids colons in job IDs ────────────────────
-function safeId(str) {
-  return String(str || "").replace(/:/g, "-").replace(/[^a-zA-Z0-9_\-\.]/g, "").slice(0, 128);
+// ─── JobId helpers ────────────────────────────────────────────────────────────
+// IG eventKeys are long base64 strings like:
+//   mid:aWdfZAG1faXRlbToxOklHTWVz...NAZDZD
+// They all share the same long prefix — only the LAST ~30 chars are unique.
+// Slicing to 128 from the START causes collisions → jobs silently dropped.
+// Fix: use the TAIL of the eventKey (the unique part) for the jobId.
+
+function safeShort(str, maxLen = 20) {
+  return String(str || "").replace(/[^a-zA-Z0-9]/g, "").slice(0, maxLen);
+}
+
+function uniqueTail(eventKey) {
+  // Take last 40 chars of the eventKey — this is where IG MIDs differ
+  return String(eventKey || Date.now()).slice(-40).replace(/[^a-zA-Z0-9]/g, "").slice(0, 40);
 }
 
 // ─── Enqueue: Messenger ───────────────────────────────────────────────────────
 export async function enqueueMessengerMessage({ pageId, sender_psid, userMessage, eventKey }) {
-  const jobId = `msng-${safeId(pageId)}-${safeId(sender_psid)}-${safeId(eventKey || Date.now())}`;
+  const jobId = `msng-${safeShort(pageId)}-${safeShort(sender_psid)}-${uniqueTail(eventKey)}`;
   await messageQueue.add(
     "messenger",
     { pageId, sender_psid, userMessage, eventKey },
-    { jobId }
+    { jobId, delay: 300 }
   );
 }
 
 // ─── Enqueue: Instagram ───────────────────────────────────────────────────────
+// Uses tail of eventKey to avoid jobId collisions on long IG MIDs.
 export async function enqueueInstagramMessage({
   igBusinessId,
   senderId,
@@ -80,11 +89,11 @@ export async function enqueueInstagramMessage({
   pageId,
   pageToken,
 }) {
-  const jobId = `ig-${safeId(igBusinessId)}-${safeId(senderId)}-${safeId(eventKey || Date.now())}`;
+  const jobId = `ig-${safeShort(igBusinessId)}-${safeShort(senderId)}-${uniqueTail(eventKey)}`;
   await messageQueue.add(
     "instagram",
     { igBusinessId, senderId, userText, eventKey, clientId, pageId, pageToken },
-    { jobId }
+    { jobId, delay: 300 }
   );
 }
 
@@ -96,10 +105,10 @@ export async function enqueueWhatsAppMessage({
   whatsappPhoneNumberId,
   msgId,
 }) {
-  const jobId = `wa-${safeId(clientId)}-${safeId(fromDigits)}-${safeId(msgId || Date.now())}`;
+  const jobId = `wa-${safeShort(clientId)}-${safeShort(fromDigits)}-${uniqueTail(msgId)}`;
   await messageQueue.add(
     "whatsapp",
     { clientId, fromDigits, text, whatsappPhoneNumberId, msgId },
-    { jobId }
+    { jobId, delay: 300 }
   );
 }
