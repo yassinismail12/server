@@ -6,10 +6,20 @@
 //
 // Cost: ~50-100 tokens per call. Fast (gpt-4o-mini).
 // Falls back silently to the raw query if anything fails.
+//
+// ✅ OPTIMIZATIONS:
+// 1. Skip rewrite for short messages (<15 chars) — saves a full API call
+// 2. In-memory cache for repeated queries — near-instant for common questions
 
 import OpenAI from "openai";
 
 const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
+
+// ─── In-memory cache ──────────────────────────────────────────────────────────
+// Resets on server restart — that's fine, common questions warm up fast.
+// Saves a full OpenAI call for any repeated query.
+const rewriteCache = new Map();
+const CACHE_MAX = 500; // max entries before oldest gets evicted
 
 // ─── Canonical section list (must match your KnowledgeChunk sections) ────────
 const ALL_SECTIONS = [
@@ -79,29 +89,36 @@ export async function rewriteQuery(userText) {
 
   if (!userText || !userText.trim()) return fallback;
 
+  // ✅ Skip rewrite for short/simple messages — not worth a second API call.
+  // "hello", "thanks", "ok", "yes", "لأ", "اوكي" etc. don't need intent extraction.
+  if (userText.trim().length < 15) return fallback;
+
+  // ✅ Return cached result for repeated queries — zero API cost.
+  const cacheKey = userText.trim().toLowerCase().slice(0, 200);
+  if (rewriteCache.has(cacheKey)) {
+    return rewriteCache.get(cacheKey);
+  }
+
   try {
     const completion = await openai.chat.completions.create({
-      model: "gpt-4o-mini",        // cheap + fast — perfect for this
+      model: "gpt-4o-mini",
       messages: [
         { role: "system", content: REWRITE_SYSTEM_PROMPT },
         { role: "user", content: String(userText).slice(0, 500) },
       ],
       max_tokens: 200,
-      temperature: 0,              // deterministic
+      temperature: 0, // deterministic — same input always gets same output
     });
 
     const raw = completion.choices[0].message.content.trim();
-
-    // Strip any accidental markdown fences
     const cleaned = raw.replace(/^```json\s*/i, "").replace(/```\s*$/, "").trim();
     const parsed = JSON.parse(cleaned);
 
-    // Validate sections against allowed list
     const safeSections = Array.isArray(parsed.sections)
       ? parsed.sections.filter((s) => ALL_SECTIONS.includes(s))
       : [];
 
-    return {
+    const result = {
       intent: String(parsed.intent || userText).trim(),
       sections: safeSections,
       filters: parsed.filters && typeof parsed.filters === "object" ? parsed.filters : null,
@@ -109,8 +126,16 @@ export async function rewriteQuery(userText) {
       language: parsed.language === "ar" ? "ar" : "en",
       rewritten: true,
     };
+
+    // ✅ Cache the result — evict oldest entry if at capacity
+    if (rewriteCache.size >= CACHE_MAX) {
+      const firstKey = rewriteCache.keys().next().value;
+      rewriteCache.delete(firstKey);
+    }
+    rewriteCache.set(cacheKey, result);
+
+    return result;
   } catch (err) {
-    // Silent fallback — never break the chat for a rewrite failure
     console.warn("⚠️ queryRewriter fallback:", err?.message);
     return fallback;
   }
@@ -149,7 +174,6 @@ export function applyFiltersToChunks(chunks, filters) {
 
         // Numeric filters: price, bedrooms, area etc.
         if (typeof value === "number") {
-          // Extract all numbers from the chunk text
           const nums = [...text.matchAll(/[\d,]+(?:\.\d+)?/g)]
             .map((m) => parseFloat(m[0].replace(/,/g, "")))
             .filter((n) => !isNaN(n));
@@ -158,27 +182,22 @@ export function applyFiltersToChunks(chunks, filters) {
 
           const keyLower = key.toLowerCase();
 
-          // max price / max budget
           if (keyLower.includes("max") && keyLower.includes("price")) {
             if (nums.some((n) => n <= value)) boost += 6;
             continue;
           }
-          // min price
           if (keyLower.includes("min") && keyLower.includes("price")) {
             if (nums.some((n) => n >= value)) boost += 6;
             continue;
           }
-          // bedrooms
           if (keyLower.includes("bedroom")) {
             if (nums.some((n) => n === value)) boost += 8;
             continue;
           }
-          // area / sqm
           if (keyLower.includes("area") || keyLower.includes("sqm")) {
             if (nums.some((n) => Math.abs(n - value) / value < 0.2)) boost += 4;
             continue;
           }
-          // generic: any matching number
           if (nums.some((n) => n === value)) boost += 3;
         }
       }
