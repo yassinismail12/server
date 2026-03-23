@@ -3,10 +3,6 @@ import { processMessengerJob } from "../worker.js";
 
 const router = express.Router();
 
-function sleep(ms) {
-  return new Promise((resolve) => setTimeout(resolve, ms));
-}
-
 function stats(results) {
   if (!results.length) {
     return { count: 0, avgMs: 0, minMs: 0, maxMs: 0 };
@@ -23,19 +19,26 @@ function stats(results) {
   };
 }
 
-async function runBatch(count, makeJob) {
+async function runBatch(count) {
+  const makeMessengerJob = async (n) => {
+    await processMessengerJob({
+      pageId: process.env.TEST_PAGE_ID,
+      sender_psid: `test-user-${n}-${Date.now()}`,
+      userMessage: `Test message ${n}`,
+      eventKey: `test-${Date.now()}-${n}-${Math.random().toString(36).slice(2)}`,
+    });
+  };
+
   const jobs = Array.from({ length: count }, (_, i) => i + 1).map(async (n) => {
     const start = Date.now();
 
     try {
-      await makeJob(n);
-      const end = Date.now();
-      return { n, ms: end - start, ok: true };
+      await makeMessengerJob(n);
+      return { n, ms: Date.now() - start, ok: true };
     } catch (err) {
-      const end = Date.now();
       return {
         n,
-        ms: end - start,
+        ms: Date.now() - start,
         ok: false,
         error: err?.message || String(err),
       };
@@ -51,32 +54,23 @@ async function runBatch(count, makeJob) {
   };
 }
 
-router.post("/load-test", async (req, res) => {
+router.post("/load-test/:count", async (req, res) => {
   try {
-    const testClientId = process.env.LOAD_TEST_CLIENT_ID || "realestate";
-    const testPhoneId = process.env.LOAD_TEST_PHONE_ID || "123456789";
+    const count = Number(req.params.count);
 
-   const makeMessengerJob = async (n) => {
-  await processMessengerJob({
-    pageId: process.env.TEST_PAGE_ID,        // your FB page ID
-    sender_psid: `test-user-${n}`,           // fake user
-    userMessage: `Test message ${n}`,
-    eventKey: `test-${Date.now()}-${n}`,     // unique
-  });
-};
-const batch10 = await runBatch(10, makeMessengerJob);
-await sleep(2000);
+    if (![10, 50, 100].includes(count)) {
+      return res.status(400).json({
+        ok: false,
+        error: "Count must be 10, 50, or 100",
+      });
+    }
 
-const batch50 = await runBatch(50, makeMessengerJob);
-await sleep(3000);
+    const batch = await runBatch(count);
 
-const batch100 = await runBatch(100, makeMessengerJob);
     return res.json({
       ok: true,
-      testClientId,
-      batch10,
-      batch50,
-      batch100,
+      count,
+      ...batch,
     });
   } catch (err) {
     console.error("Load test route failed:", err);
