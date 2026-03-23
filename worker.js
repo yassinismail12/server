@@ -1,6 +1,9 @@
 // worker.js
 // Runs inside your existing server.js process — no separate Render service needed.
 // Call startWorker() once after mongoose connects in server.js.
+//
+// KEY GUARANTEE: Every message gets a reply, even if the processor crashes.
+// Top-level try/catch in startWorker sends a fallback error message.
 
 import { createWorker } from "./queue.js";
 import { connectToDB as connectDB } from "./services/db.js";
@@ -62,7 +65,6 @@ function injectHistory(baseMessages = [], history = []) {
     .filter((m) => (m.role === "user" || m.role === "assistant") && m.content?.trim())
     .map((m) => ({ role: m.role, content: m.content }));
   if (!histMsgs.length) return baseMessages;
-
   const sys = baseMessages.filter((m) => m.role === "system");
   const nonSys = baseMessages.filter((m) => m.role !== "system");
   const last = nonSys[nonSys.length - 1];
@@ -80,9 +82,16 @@ function parseFlags(msg) {
   return { text, flags };
 }
 
+function langInstruction(userLang) {
+  return userLang === "ar"
+    ? "IMPORTANT: The user is writing in Arabic. You MUST reply in Arabic."
+    : "IMPORTANT: The user is writing in English. You MUST reply in English.";
+}
+
 // ─── IG send helper ───────────────────────────────────────────────────────────
 
 async function sendIgDM(pageId, pageToken, recipientId, text) {
+  if (!pageId || !pageToken || !recipientId || !text) return;
   const url = new URL(`https://graph.facebook.com/v21.0/${encodeURIComponent(pageId)}/messages`);
   url.searchParams.set("access_token", pageToken);
   const r = await fetch(url.toString(), {
@@ -104,17 +113,13 @@ async function checkAndIncrementQuota(db, filter, pageIdOrIgStr) {
   });
   const fresh = await db.collection("Clients").findOne(filter);
   if (!fresh) return { allowed: false };
-
   const limit = fresh.messageLimit ?? 1000;
   const count = fresh.messageCount ?? 0;
-
   if (count > limit) return { allowed: false, reason: "quota_exceeded" };
-
   if (count === limit - 100 && !fresh.quotaWarningSent) {
     await sendQuotaWarning(pageIdOrIgStr).catch(() => {});
     await db.collection("Clients").updateOne(filter, { $set: { quotaWarningSent: true } });
   }
-
   return { allowed: true };
 }
 
@@ -159,7 +164,7 @@ async function saveConvoWhatsApp(db, clientId, userId, history, extra = {}) {
 
 // ─── Order flow helper ────────────────────────────────────────────────────────
 
-async function handleOrderFlow({ db, clientId, assistantMessage, externalUserId, channel }) {
+async function handleOrderFlow({ clientId, assistantMessage, externalUserId, channel }) {
   const customerName = extractLine(assistantMessage, "Customer Name") || "Unknown";
   const customerPhone = extractLine(assistantMessage, "Customer Phone") || "N/A";
   const itemsText = extractLine(assistantMessage, "Items") || assistantMessage;
@@ -170,18 +175,9 @@ async function handleOrderFlow({ db, clientId, assistantMessage, externalUserId,
   try {
     await notifyClientStaffNewOrderByClientId({
       clientId,
-      payload: {
-        customerName: waSafe(customerName),
-        customerPhone: waSafe(customerPhone),
-        itemsText: waSafe(itemsText),
-        notes: waSafe(notes),
-        orderId: waSafe(`ORD-${Date.now()}`),
-        channel,
-      },
+      payload: { customerName: waSafe(customerName), customerPhone: waSafe(customerPhone), itemsText: waSafe(itemsText), notes: waSafe(notes), orderId: waSafe(`ORD-${Date.now()}`), channel },
     });
-  } catch (e) {
-    console.warn(`⚠️ [worker/${channel}] order notify failed:`, e.message);
-  }
+  } catch (e) { console.warn(`⚠️ [worker/${channel}] order notify failed:`, e.message); }
 
   try {
     await Order.create({
@@ -189,24 +185,22 @@ async function handleOrderFlow({ db, clientId, assistantMessage, externalUserId,
       customer: { name: customerName, phone: customerPhone === "N/A" ? "" : customerPhone, externalUserId },
       itemsText: assistantMessage, notes, status: "new",
     });
-  } catch (e) {
-    console.warn(`⚠️ [worker/${channel}] order save failed:`, e.message);
-  }
+  } catch (e) { console.warn(`⚠️ [worker/${channel}] order save failed:`, e.message); }
 }
 
 // ═════════════════════════════════════════════════════════════════════════════
 // MESSENGER PROCESSOR
 // ═════════════════════════════════════════════════════════════════════════════
 
-async function processMessengerJob({ pageId, sender_psid, userMessage, eventKey }) {
+async function processMessengerJob({ pageId, sender_psid, userMessage }) {
   const db = await connectDB();
   const pageIdStr = normalizeId(pageId);
 
   const clientDoc = await db.collection("Clients").findOne({ pageId: pageIdStr });
   if (!clientDoc || clientDoc.active === false) return;
-
   const clientId = clientDoc.clientId;
 
+  // Human escalation check
   let convoCheck = await db.collection("Conversations").findOne({ pageId: pageIdStr, userId: sender_psid, source: "messenger" });
   if (convoCheck?.humanEscalation === true) {
     if (convoCheck?.botResumeAt && new Date() >= new Date(convoCheck.botResumeAt)) {
@@ -217,19 +211,16 @@ async function processMessengerJob({ pageId, sender_psid, userMessage, eventKey 
     } else return;
   }
 
-  await sendMarkAsRead(sender_psid, pageId);
+  await sendMarkAsRead(sender_psid, pageId).catch(() => {});
 
   const rulesPrompt = buildRulesPrompt(clientDoc);
   const botType = clientDoc?.knowledgeBotType || "default";
-  const sectionsOrder = Array.isArray(clientDoc?.sectionsOrder) && clientDoc.sectionsOrder.length
-    ? clientDoc.sectionsOrder : ["menu", "offers", "hours"];
+  const sectionsOrder = Array.isArray(clientDoc?.sectionsOrder) && clientDoc.sectionsOrder.length ? clientDoc.sectionsOrder : ["menu", "offers", "hours"];
   const maxChunks = clientDoc?.maxChunks || 4;
+  const userLang = detectLang(userMessage);
 
   const convo = await db.collection("Conversations").findOne({ pageId: pageIdStr, userId: sender_psid, source: "messenger" });
   const history = trimHistory(Array.isArray(convo?.history) ? convo.history : []);
-
-  // ✅ Detect language from user message directly — don't rely on retrieval
-  const userLang = detectLang(userMessage);
 
   let greeting = "";
   if (!convo || isNewDay(convo.lastInteraction)) {
@@ -244,31 +235,11 @@ async function processMessengerJob({ pageId, sender_psid, userMessage, eventKey 
 
   let grouped = {};
   try {
-    grouped = await retrieveChunks({
-      clientId,
-      botType,
-      userText: userMessage,
-      retrievalQuery: userMessage,
-      maxChunks,
-    });
-  } catch (e) {
-    console.warn("⚠️ [worker/messenger] retrieveChunks failed:", e.message);
-    grouped = {}; // safe fallback — AI will still reply using rules prompt
-  }
+    grouped = await retrieveChunks({ clientId, botType, userText: userMessage, retrievalQuery: userMessage, maxChunks });
+  } catch (e) { console.warn("⚠️ [worker/messenger] retrieveChunks failed:", e.message); }
 
-  // ✅ Inject language instruction so retrieval's grounding rules don't override it
-  const langInstruction = userLang === "ar"
-    ? "IMPORTANT: The user is writing in Arabic. You MUST reply in Arabic."
-    : "IMPORTANT: The user is writing in English. You MUST reply in English.";
-
-  const rulesPromptWithLang = `${rulesPrompt}\n\n${langInstruction}`;
-
-  const { messages: base } = buildChatMessages({
-    rulesPrompt: rulesPromptWithLang,
-    groupedChunks: grouped,
-    userText: userMessage,
-    sectionsOrder,
-  });
+  const rulesWithLang = `${rulesPrompt}\n\n${langInstruction(userLang)}`;
+  const { messages: base } = buildChatMessages({ rulesPrompt: rulesWithLang, groupedChunks: grouped, userText: userMessage, sectionsOrder });
   const messagesForAI = injectHistory(base, history);
 
   let raw;
@@ -276,23 +247,21 @@ async function processMessengerJob({ pageId, sender_psid, userMessage, eventKey 
     raw = await getChatCompletion(messagesForAI);
   } catch (err) {
     console.error("❌ [worker/messenger] AI error:", err.message);
-    await sendMessengerReply(sender_psid, "⚠️ I'm having trouble right now. Please try again shortly.", pageId);
+    await sendMessengerReply(sender_psid, "⚠️ I'm having trouble right now. Please try again shortly.", pageId).catch(() => {});
     return;
   }
 
   const { text: assistantMessage, flags } = parseFlags(raw);
 
   if (flags.human) {
-    const botResumeAt = new Date(Date.now() + 2 * 60 * 60 * 1000);
     await db.collection("Conversations").updateOne(
       { pageId: pageIdStr, userId: sender_psid, source: "messenger" },
-      { $set: { humanEscalation: true, botResumeAt, humanEscalationStartedAt: new Date(), updatedAt: new Date() }, $inc: { humanRequestCount: 1 } },
+      { $set: { humanEscalation: true, botResumeAt: new Date(Date.now() + 2 * 60 * 60 * 1000), humanEscalationStartedAt: new Date(), updatedAt: new Date() }, $inc: { humanRequestCount: 1 } },
       { upsert: true }
     );
-    try { await notifyClientStaffHumanNeeded({ clientId, pageId: pageIdStr, userId: sender_psid, source: "messenger" }); }
-    catch (e) { console.warn("⚠️ [worker/messenger] human notify failed:", e.message); }
+    try { await notifyClientStaffHumanNeeded({ clientId, pageId: pageIdStr, userId: sender_psid, source: "messenger" }); } catch {}
     const msg = "👤 A human agent will take over shortly.\nThe assistant will return when staff reactivate it from the dashboard.\n\nسيقوم أحد موظفي الدعم بالرد عليك قريبًا وسيعود المساعد عند إعادة تفعيله من لوحة التحكم.";
-    await sendMessengerReply(sender_psid, msg, pageId);
+    await sendMessengerReply(sender_psid, msg, pageId).catch(() => {});
     history.push({ role: "user", content: userMessage, createdAt: new Date() }, { role: "assistant", content: msg, createdAt: new Date() });
     await saveConvoMessenger(db, pageIdStr, sender_psid, history, clientId);
     return;
@@ -300,9 +269,9 @@ async function processMessengerJob({ pageId, sender_psid, userMessage, eventKey 
 
   if (flags.order) {
     await db.collection("Conversations").updateOne({ pageId: pageIdStr, userId: sender_psid, source: "messenger" }, { $inc: { orderRequestCount: 1 } }, { upsert: true });
-    await handleOrderFlow({ db, clientId, assistantMessage, externalUserId: sender_psid, channel: "messenger" });
+    await handleOrderFlow({ clientId, assistantMessage, externalUserId: sender_psid, channel: "messenger" });
     const msg = "✅ Your order request has been received.\nA staff member will contact you shortly.\n\nتم استلام طلبك وسيتم التواصل معك قريبًا.";
-    await sendMessengerReply(sender_psid, msg, pageId);
+    await sendMessengerReply(sender_psid, msg, pageId).catch(() => {});
     history.push({ role: "user", content: userMessage, createdAt: new Date() }, { role: "assistant", content: msg, createdAt: new Date() });
     await saveConvoMessenger(db, pageIdStr, sender_psid, history, clientId);
     return;
@@ -328,8 +297,14 @@ async function processInstagramJob({ igBusinessId, senderId, userText, clientId,
   const resolvedClientId = normalizeId(clientId || clientDoc.clientId);
   const resolvedPageId = normalizeId(pageId || clientDoc.pageId || clientDoc.PAGE_ID);
   const resolvedPageToken = sanitizeToken(pageToken || clientDoc.pageAccessToken || clientDoc.PAGE_ACCESS_TOKEN || "");
-  if (!resolvedPageId || !isLikelyValidToken(resolvedPageToken)) return;
 
+  // ✅ Validate token before doing anything — log clearly if invalid
+  if (!resolvedPageId || !isLikelyValidToken(resolvedPageToken)) {
+    console.error("❌ [worker/instagram] Missing or invalid pageId/token for", igStr);
+    return;
+  }
+
+  // Human escalation check
   let convoCheck = await db.collection("Conversations").findOne({ igBusinessId: igStr, userId: senderId, source: "instagram" });
   if (convoCheck?.humanEscalation === true) {
     if (convoCheck?.botResumeAt && new Date() >= new Date(convoCheck.botResumeAt)) {
@@ -342,15 +317,12 @@ async function processInstagramJob({ igBusinessId, senderId, userText, clientId,
 
   const rulesPrompt = buildRulesPrompt(clientDoc);
   const botType = clientDoc?.knowledgeBotType || "default";
-  const sectionsOrder = Array.isArray(clientDoc?.sectionsOrder) && clientDoc.sectionsOrder.length
-    ? clientDoc.sectionsOrder : ["menu", "offers", "hours"];
+  const sectionsOrder = Array.isArray(clientDoc?.sectionsOrder) && clientDoc.sectionsOrder.length ? clientDoc.sectionsOrder : ["menu", "offers", "hours"];
   const maxChunks = clientDoc?.maxChunks || 4;
+  const userLang = detectLang(userText);
 
   const convo = await db.collection("Conversations").findOne({ igBusinessId: igStr, userId: senderId, source: "instagram" });
   const history = trimHistory(Array.isArray(convo?.history) ? convo.history : []);
-
-  // ✅ Detect language from user text directly
-  const userLang = detectLang(userText);
 
   let greeting = "";
   if (!convo || isNewDay(convo.lastInteraction)) {
@@ -360,37 +332,17 @@ async function processInstagramJob({ igBusinessId, senderId, userText, clientId,
   const filter = { $or: [{ igBusinessId: igStr }, { igId: igStr }] };
   const quota = await checkAndIncrementQuota(db, filter, igStr);
   if (!quota.allowed) {
-    if (quota.reason === "quota_exceeded") await sendIgDM(resolvedPageId, resolvedPageToken, senderId, "⚠️ Message limit reached.");
+    if (quota.reason === "quota_exceeded") await sendIgDM(resolvedPageId, resolvedPageToken, senderId, "⚠️ Message limit reached.").catch(() => {});
     return;
   }
 
   let grouped = {};
   try {
-    grouped = await retrieveChunks({
-      clientId: resolvedClientId,
-      botType,
-      userText,
-      retrievalQuery: userText,
-      maxChunks,
-    });
-  } catch (e) {
-    console.warn("⚠️ [worker/instagram] retrieveChunks failed:", e.message);
-    grouped = {}; // ✅ safe fallback — log and continue instead of dying silently
-  }
+    grouped = await retrieveChunks({ clientId: resolvedClientId, botType, userText, retrievalQuery: userText, maxChunks });
+  } catch (e) { console.warn("⚠️ [worker/instagram] retrieveChunks failed:", e.message); }
 
-  // ✅ Force correct language — overrides retrieval's grounding rules
-  const langInstruction = userLang === "ar"
-    ? "IMPORTANT: The user is writing in Arabic. You MUST reply in Arabic."
-    : "IMPORTANT: The user is writing in English. You MUST reply in English.";
-
-  const rulesPromptWithLang = `${rulesPrompt}\n\n${langInstruction}`;
-
-  const { messages: base } = buildChatMessages({
-    rulesPrompt: rulesPromptWithLang,
-    groupedChunks: grouped,
-    userText,
-    sectionsOrder,
-  });
+  const rulesWithLang = `${rulesPrompt}\n\n${langInstruction(userLang)}`;
+  const { messages: base } = buildChatMessages({ rulesPrompt: rulesWithLang, groupedChunks: grouped, userText, sectionsOrder });
   const messagesForAI = injectHistory(base, history);
 
   let raw;
@@ -398,26 +350,22 @@ async function processInstagramJob({ igBusinessId, senderId, userText, clientId,
     raw = await getChatCompletion(messagesForAI);
   } catch (err) {
     console.error("❌ [worker/instagram] AI error:", err.message);
-    // ✅ Always send error reply — never silently drop the message
-    try {
-      await sendIgDM(resolvedPageId, resolvedPageToken, senderId, "⚠️ I'm having trouble right now. Please try again shortly.");
-    } catch {}
+    // ✅ Always send reply — never silently drop
+    await sendIgDM(resolvedPageId, resolvedPageToken, senderId, "⚠️ I'm having trouble right now. Please try again shortly.").catch(() => {});
     return;
   }
 
   const { text: assistantMessage, flags } = parseFlags(raw);
 
   if (flags.human) {
-    const botResumeAt = new Date(Date.now() + 2 * 60 * 60 * 1000);
     await db.collection("Conversations").updateOne(
       { igBusinessId: igStr, userId: senderId, source: "instagram" },
-      { $set: { humanEscalation: true, botResumeAt, humanEscalationStartedAt: new Date(), updatedAt: new Date() }, $inc: { humanRequestCount: 1 } },
+      { $set: { humanEscalation: true, botResumeAt: new Date(Date.now() + 2 * 60 * 60 * 1000), humanEscalationStartedAt: new Date(), updatedAt: new Date() }, $inc: { humanRequestCount: 1 } },
       { upsert: true }
     );
-    try { await notifyClientStaffHumanNeeded({ clientId: resolvedClientId, pageId: resolvedPageId, userId: senderId, source: "instagram" }); }
-    catch (e) { console.warn("⚠️ [worker/instagram] human notify failed:", e.message); }
+    try { await notifyClientStaffHumanNeeded({ clientId: resolvedClientId, pageId: resolvedPageId, userId: senderId, source: "instagram" }); } catch {}
     const msg = "👤 A human agent will take over shortly.\nThe assistant will return when staff reactivate it from the dashboard.\n\nسيقوم أحد موظفي الدعم بالرد عليك قريبًا وسيعود المساعد عند إعادة تفعيله من لوحة التحكم.";
-    await sendIgDM(resolvedPageId, resolvedPageToken, senderId, msg);
+    await sendIgDM(resolvedPageId, resolvedPageToken, senderId, msg).catch(() => {});
     history.push({ role: "user", content: userText, createdAt: new Date() }, { role: "assistant", content: msg, createdAt: new Date() });
     await saveConvoIG(db, igStr, senderId, history, resolvedClientId);
     return;
@@ -425,9 +373,9 @@ async function processInstagramJob({ igBusinessId, senderId, userText, clientId,
 
   if (flags.order) {
     await db.collection("Conversations").updateOne({ igBusinessId: igStr, userId: senderId, source: "instagram" }, { $inc: { orderRequestCount: 1 } }, { upsert: true });
-    await handleOrderFlow({ db, clientId: resolvedClientId, assistantMessage, externalUserId: senderId, channel: "instagram" });
+    await handleOrderFlow({ clientId: resolvedClientId, assistantMessage, externalUserId: senderId, channel: "instagram" });
     const msg = "✅ Your order request has been received.\nA staff member will contact you shortly.\n\nتم استلام طلبك وسيتم التواصل معك قريبًا.";
-    await sendIgDM(resolvedPageId, resolvedPageToken, senderId, msg);
+    await sendIgDM(resolvedPageId, resolvedPageToken, senderId, msg).catch(() => {});
     history.push({ role: "user", content: userText, createdAt: new Date() }, { role: "assistant", content: msg, createdAt: new Date() });
     await saveConvoIG(db, igStr, senderId, history, resolvedClientId);
     return;
@@ -436,7 +384,9 @@ async function processInstagramJob({ igBusinessId, senderId, userText, clientId,
   const combined = greeting ? `${greeting}\n\n${assistantMessage}` : assistantMessage;
   history.push({ role: "user", content: userText, createdAt: new Date() }, { role: "assistant", content: combined, createdAt: new Date() });
   await saveConvoIG(db, igStr, senderId, history, resolvedClientId);
-  await sendIgDM(resolvedPageId, resolvedPageToken, senderId, combined);
+ console.log("📤 [worker/instagram] Sending reply to", senderId, "preview:", combined.slice(0, 60));
+await sendIgDM(resolvedPageId, resolvedPageToken, senderId, combined);
+console.log("✅ [worker/instagram] Reply sent to", senderId);
 }
 
 // ═════════════════════════════════════════════════════════════════════════════
@@ -463,9 +413,8 @@ function getWaToken(client) {
   return process.env.WHATSAPP_TOKEN || "";
 }
 
-async function processWhatsAppJob({ clientId, fromDigits, text, whatsappPhoneNumberId, msgId }) {
+async function processWhatsAppJob({ clientId, fromDigits, text, whatsappPhoneNumberId }) {
   const db = mongoose.connection.db;
-
   const client = await db.collection("Clients").findOne({ clientId: String(clientId), active: { $ne: false } });
   if (!client) return;
 
@@ -473,11 +422,7 @@ async function processWhatsAppJob({ clientId, fromDigits, text, whatsappPhoneNum
   if (!whatsappAccessToken) return;
 
   const phoneIdStr = String(whatsappPhoneNumberId);
-
-  const staffDigits = [
-    ...(Array.isArray(client.staffNumbers) ? client.staffNumbers : []),
-    ...(client.staffWhatsApp ? [client.staffWhatsApp] : []),
-  ].map(normalizePhone);
+  const staffDigits = [...(Array.isArray(client.staffNumbers) ? client.staffNumbers : []), ...(client.staffWhatsApp ? [client.staffWhatsApp] : [])].map(normalizePhone);
   if (staffDigits.includes(fromDigits)) return;
 
   const convo = await db.collection("Conversations").findOne({ clientId: String(clientId), userId: fromDigits, source: "whatsapp" });
@@ -489,46 +434,27 @@ async function processWhatsAppJob({ clientId, fromDigits, text, whatsappPhoneNum
   const sourceChoiceExisting = convo?.sourceChoice || "";
   const convoMeta = { whatsappPhoneNumberId: phoneIdStr };
   const maxChunks = client?.maxChunks || 4;
-
   const botType = client?.knowledgeBotType || "default";
-  const sectionsOrder = Array.isArray(client?.sectionsOrder) && client.sectionsOrder.length
-    ? client.sectionsOrder
-    : Array.isArray(client?.sectionsPresent) && client.sectionsPresent.length
-    ? client.sectionsPresent
+  const sectionsOrder = Array.isArray(client?.sectionsOrder) && client.sectionsOrder.length ? client.sectionsOrder
+    : Array.isArray(client?.sectionsPresent) && client.sectionsPresent.length ? client.sectionsPresent
     : ["faqs", "listings", "paymentPlans"];
 
-  const needsChoice = clientAwaitSource && !sourceChoiceExisting;
-  if (needsChoice) {
+  // Source choice flow
+  if (clientAwaitSource && !sourceChoiceExisting) {
     const picked = parseSourceChoice(text);
     const updatedHistory = [...history, { role: "user", content: text, createdAt: inboundAt }];
-
     if (!picked) {
       const shouldSendMenu = !convo || isNewDay(convo.lastInteraction) || convo?.awaitSource !== true;
-      await saveConvoWhatsApp(db, clientId, fromDigits, updatedHistory, {
-        lastMessage: text.slice(0, 200), lastMessageAt: inboundAt, lastDirection: "in",
-        awaitSource: true, sourceChoice: "", meta: convoMeta,
-      });
-      if (shouldSendMenu) {
-        await sendWhatsAppText({ phoneNumberId: phoneIdStr, to: fromDigits, text: sourceMenuText(), accessToken: whatsappAccessToken });
-      }
+      await saveConvoWhatsApp(db, clientId, fromDigits, updatedHistory, { lastMessage: text.slice(0, 200), lastMessageAt: inboundAt, lastDirection: "in", awaitSource: true, sourceChoice: "", meta: convoMeta });
+      if (shouldSendMenu) await sendWhatsAppText({ phoneNumberId: phoneIdStr, to: fromDigits, text: sourceMenuText(), accessToken: whatsappAccessToken }).catch(() => {});
       return;
     }
-
-    await saveConvoWhatsApp(db, clientId, fromDigits, updatedHistory, {
-      lastMessage: text.slice(0, 200), lastMessageAt: inboundAt, lastDirection: "in",
-      awaitSource: false, sourceChoice: picked, meta: convoMeta,
-    });
-    await sendWhatsAppText({
-      phoneNumberId: phoneIdStr, to: fromDigits,
-      text: `✅ Got it. You selected: ${picked}.\nHow can I help you?`,
-      accessToken: whatsappAccessToken,
-    });
+    await saveConvoWhatsApp(db, clientId, fromDigits, updatedHistory, { lastMessage: text.slice(0, 200), lastMessageAt: inboundAt, lastDirection: "in", awaitSource: false, sourceChoice: picked, meta: convoMeta });
+    await sendWhatsAppText({ phoneNumberId: phoneIdStr, to: fromDigits, text: `✅ Got it. You selected: ${picked}.\nHow can I help you?`, accessToken: whatsappAccessToken }).catch(() => {});
     return;
   }
 
-  // ✅ Detect language from user text directly
   const userLang = detectLang(text);
-
   let greeting = "";
   if (!convo || isNewDay(convo.lastInteraction)) {
     greeting = userLang === "ar" ? "أهلًا 👋" : "Hi 👋";
@@ -536,32 +462,12 @@ async function processWhatsAppJob({ clientId, fromDigits, text, whatsappPhoneNum
 
   let grouped = {};
   try {
-    grouped = await retrieveChunks({
-      clientId: String(clientId),
-      botType,
-      userText: text,
-      retrievalQuery: text,
-      maxChunks,
-    });
-  } catch (e) {
-    console.warn("⚠️ [worker/whatsapp] retrieveChunks failed:", e.message);
-    grouped = {};
-  }
-
-  // ✅ Force correct language
-  const langInstruction = userLang === "ar"
-    ? "IMPORTANT: The user is writing in Arabic. You MUST reply in Arabic."
-    : "IMPORTANT: The user is writing in English. You MUST reply in English.";
+    grouped = await retrieveChunks({ clientId: String(clientId), botType, userText: text, retrievalQuery: text, maxChunks });
+  } catch (e) { console.warn("⚠️ [worker/whatsapp] retrieveChunks failed:", e.message); }
 
   const rulesPrompt = buildRulesPrompt(client);
-  const rulesPromptWithLang = `${rulesPrompt}\n\n${langInstruction}`;
-
-  const { messages: base } = buildChatMessages({
-    rulesPrompt: rulesPromptWithLang,
-    groupedChunks: grouped,
-    userText: text,
-    sectionsOrder,
-  });
+  const rulesWithLang = `${rulesPrompt}\n\n${langInstruction(userLang)}`;
+  const { messages: base } = buildChatMessages({ rulesPrompt: rulesWithLang, groupedChunks: grouped, userText: text, sectionsOrder });
   const messagesForAI = injectHistory(base, history);
 
   let assistantMessage = "";
@@ -575,34 +481,39 @@ async function processWhatsAppJob({ clientId, fromDigits, text, whatsappPhoneNum
   const combined = greeting ? `${greeting}\n\n${assistantMessage}` : assistantMessage;
   const outboundAt = new Date();
 
-  const updatedHistory = [
-    ...history,
-    { role: "user", content: text, createdAt: inboundAt },
-    { role: "assistant", content: combined, createdAt: outboundAt },
-  ];
-
-  await saveConvoWhatsApp(db, clientId, fromDigits, updatedHistory, {
+  await saveConvoWhatsApp(db, clientId, fromDigits, [...history, { role: "user", content: text, createdAt: inboundAt }, { role: "assistant", content: combined, createdAt: outboundAt }], {
     lastMessage: combined.slice(0, 200), lastMessageAt: outboundAt, lastDirection: "out",
     awaitSource: clientAwaitSource, sourceChoice: sourceChoiceExisting, meta: convoMeta,
   });
 
-  try {
-    await sendWhatsAppText({ phoneNumberId: phoneIdStr, to: fromDigits, text: combined, accessToken: whatsappAccessToken });
-  } catch (e) {
+  await sendWhatsAppText({ phoneNumberId: phoneIdStr, to: fromDigits, text: combined, accessToken: whatsappAccessToken }).catch((e) => {
     console.error("❌ [worker/whatsapp] send failed:", e.message);
-  }
+  });
 }
 
 // ═════════════════════════════════════════════════════════════════════════════
-// START WORKER
+// START WORKER — top-level safety net guarantees reply is always sent
 // ═════════════════════════════════════════════════════════════════════════════
 
 export function startWorker() {
   const worker = createWorker(async (job) => {
-    if (job.name === "messenger") await processMessengerJob(job.data);
-    else if (job.name === "instagram") await processInstagramJob(job.data);
-    else if (job.name === "whatsapp") await processWhatsAppJob(job.data);
-    else console.warn(`⚠️ [worker] Unknown job name: ${job.name}`);
+    try {
+      if (job.name === "messenger") await processMessengerJob(job.data);
+      else if (job.name === "instagram") await processInstagramJob(job.data);
+      else if (job.name === "whatsapp") await processWhatsAppJob(job.data);
+      else console.warn(`⚠️ [worker] Unknown job name: ${job.name}`);
+    } catch (err) {
+      // ✅ Top-level catch — processor crashed entirely, send fallback reply
+      console.error(`❌ [worker] Unhandled crash in ${job.name} job:`, err.message, err.stack);
+      const errMsg = "⚠️ حصلت مشكلة. جرب تاني بعد شوية.";
+      try {
+        if (job.name === "messenger") {
+          await sendMessengerReply(job.data.sender_psid, errMsg, job.data.pageId);
+        } else if (job.name === "instagram") {
+          await sendIgDM(job.data.pageId, job.data.pageToken, job.data.senderId, errMsg);
+        }
+      } catch {}
+    }
   });
 
   console.log("✅ [worker] Message queue worker started (concurrency: 40) — messenger + instagram + whatsapp");

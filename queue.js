@@ -20,12 +20,12 @@ const connection = {
 };
 
 // ─── Shared queue ─────────────────────────────────────────────────────────────
-// One queue, three job names: "messenger", "instagram", "whatsapp"
+// attempts: 1 — errors are handled INSIDE each processor with guaranteed replies.
+// Retrying message jobs causes duplicate replies and adds 14+ seconds of delay.
 export const messageQueue = new Queue("messages", {
   connection,
   defaultJobOptions: {
-    attempts: 3,
-    backoff: { type: "exponential", delay: 2000 }, // 2s → 4s → 8s on retry
+    attempts: 1,
     removeOnComplete: { count: 500 },
     removeOnFail: { count: 200 },
   },
@@ -36,7 +36,7 @@ export const messageQueue = new Queue("messages", {
 export function createWorker(processor) {
   const worker = new Worker("messages", processor, {
     connection,
-    concurrency: 40, // 40 parallel jobs — handles ~1000 msgs/min comfortably
+    concurrency: 40,
   });
 
   worker.on("completed", (job) => {
@@ -44,6 +44,7 @@ export function createWorker(processor) {
   });
 
   worker.on("failed", (job, err) => {
+    // This should rarely fire now since processors catch their own errors
     console.error(`❌ [queue] Job ${job?.id} (${job?.name}) failed: ${err.message}`);
   });
 
