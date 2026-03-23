@@ -109,6 +109,7 @@ const clientSchema = new mongoose.Schema({
   knowledgeStatus: { type: String, default: "empty" },
   knowledgeVersion: { type: Number, default: 0 },
   knowledgeBotType: { type: String, default: "default" },
+  maxChunks: { type: Number, default: 4 },
   knowledgeBuiltAt: { type: Date, default: null },
   sectionsPresent: { type: [String], default: [] },
   coverageWarnings: { type: [String], default: [] },

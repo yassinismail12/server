@@ -253,7 +253,13 @@ async function processMessengerJob({ pageId, sender_psid, userMessage, eventKey 
 
   // Retrieval + AI
   let grouped = {};
-  try { grouped = await retrieveChunks({ clientId, botType, userText: userMessage, retrievalQuery: userMessage, maxChunks: 4}); }
+  try { const maxChunks = clientDoc?.maxChunks || 4;
+
+grouped = await retrieveChunks({
+  clientId, botType, userText: userMessage,
+  retrievalQuery: userMessage,
+  maxChunks,
+}); }
   catch (e) { console.warn("⚠️ [worker/messenger] retrieveChunks failed:", e.message); }
 
   const { messages: base } = buildChatMessages({ rulesPrompt, groupedChunks: grouped, userText: userMessage, sectionsOrder });
@@ -355,7 +361,13 @@ async function processInstagramJob({ igBusinessId, senderId, userText, clientId,
 
   // Retrieval + AI
   let grouped = {};
-  try { grouped = await retrieveChunks({ clientId: resolvedClientId, botType, userText, retrievalQuery: userText, maxChunks: 4 }); }
+  try { const maxChunks = clientDoc?.maxChunks || 4;
+
+grouped = await retrieveChunks({
+  clientId, botType, userText: userMessage,
+  retrievalQuery: userMessage,
+  maxChunks,
+});}
   catch (e) { console.warn("⚠️ [worker/instagram] retrieveChunks failed:", e.message); }
 
   const { messages: base } = buildChatMessages({ rulesPrompt, groupedChunks: grouped, userText, sectionsOrder });
@@ -511,7 +523,13 @@ async function processWhatsAppJob({ clientId, fromDigits, text, whatsappPhoneNum
   }
 
   let grouped = {};
-  try { grouped = await retrieveChunks({ clientId: String(clientId), botType, userText: text, retrievalQuery: text, maxChunks: 8 }); }
+  try { const maxChunks = clientDoc?.maxChunks || 4;
+
+grouped = await retrieveChunks({
+  clientId, botType, userText: userMessage,
+  retrievalQuery: userMessage,
+  maxChunks,
+});}
   catch (e) { console.warn("⚠️ [worker/whatsapp] retrieveChunks failed:", e.message); }
 
   const rulesPrompt = buildRulesPrompt(client);
