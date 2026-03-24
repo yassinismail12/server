@@ -17,7 +17,7 @@ export async function getChatCompletion(messages, retries = 3) {
       const completion = await openai.chat.completions.create({
         model: "gpt-4o-mini",
         messages,
-        max_tokens: 1000,
+        max_tokens: 500,
         temperature: 0.4,
       });
 
