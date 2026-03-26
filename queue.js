@@ -25,8 +25,8 @@ export const messageQueue = new Queue("messages", {
   connection,
   defaultJobOptions: {
     attempts: 1,
-    removeOnComplete: { count: 500 },
-    removeOnFail: { count: 200 },
+    removeOnComplete: { count: 100 },
+    removeOnFail: { count: 50 },
   },
 });
 
@@ -34,7 +34,8 @@ export const messageQueue = new Queue("messages", {
 export function createWorker(processor) {
   const worker = new Worker("messages", processor, {
     connection,
-    concurrency: 40,
+    concurrency: 5,
+    lockDuration: 60000,
   });
 
   worker.on("completed", (job) => {
@@ -63,11 +64,19 @@ function safeShort(str, maxLen = 20) {
 
 function uniqueTail(eventKey) {
   // Last 40 chars of the eventKey — this is where IG MIDs are unique
-  return String(eventKey || Date.now()).slice(-40).replace(/[^a-zA-Z0-9]/g, "").slice(0, 40);
+  return String(eventKey || Date.now())
+    .slice(-40)
+    .replace(/[^a-zA-Z0-9]/g, "")
+    .slice(0, 40);
 }
 
 // ─── Enqueue: Messenger ───────────────────────────────────────────────────────
-export async function enqueueMessengerMessage({ pageId, sender_psid, userMessage, eventKey }) {
+export async function enqueueMessengerMessage({
+  pageId,
+  sender_psid,
+  userMessage,
+  eventKey,
+}) {
   const jobId = `msng-${safeShort(pageId)}-${safeShort(sender_psid)}-${uniqueTail(eventKey)}`;
   await messageQueue.add(
     "messenger",
