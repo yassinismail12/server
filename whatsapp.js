@@ -14,6 +14,7 @@ import { getChatCompletion } from "./services/openai.js";
 import { sendWhatsAppText } from "./services/whatsappText.js";
 import { sendWhatsAppTemplate } from "./services/whatsappTemplate.js";
 import { enqueueWhatsAppMessage } from "./queue.js";
+import { processWhatsAppDirect } from "./worker.js";
 
 const router = express.Router();
 
@@ -451,7 +452,7 @@ router.post("/", async (req, res) => {
           }
 
           // ── 🚀 QUEUE: hand off to worker for AI processing ─────────────────
-          await enqueueWhatsAppMessage({
+         await processWhatsAppDirect({
             clientId: client.clientId,
             fromDigits,
             text,

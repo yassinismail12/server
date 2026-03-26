@@ -2,8 +2,9 @@
 // Runs inside your existing server.js process — no separate Render service needed.
 // Call startWorker() once after mongoose connects in server.js.
 //
-// KEY GUARANTEE: Every message gets a reply, even if the processor crashes.
-// Top-level try/catch in startWorker sends a fallback error message.
+// KEY GUARANTEE:
+// 1) If a queued job crashes after starting, top-level catch sends fallback reply.
+// 2) If Redis enqueue fails, routes can call the exported direct processors below.
 
 import { createWorker } from "./queue.js";
 import { connectToDB as connectDB } from "./services/db.js";
@@ -22,7 +23,9 @@ import fetch from "node-fetch";
 
 // ─── Shared utils ─────────────────────────────────────────────────────────────
 
-function normalizeId(id) { return String(id || "").trim(); }
+function normalizeId(id) {
+  return String(id || "").trim();
+}
 
 function sanitizeToken(token) {
   return String(token || "")
@@ -664,10 +667,7 @@ async function processInstagramJob({
     { role: "assistant", content: combined, createdAt: new Date() }
   );
   await saveConvoIG(db, igStr, senderId, history, resolvedClientId);
-
-  console.log("📤 [worker/instagram] Sending reply to", senderId, "preview:", combined.slice(0, 60));
   await sendIgDM(resolvedPageId, resolvedPageToken, senderId, combined);
-  console.log("✅ [worker/instagram] Reply sent to", senderId);
 }
 
 // ═════════════════════════════════════════════════════════════════════════════
@@ -863,8 +863,22 @@ async function processWhatsAppJob({
   });
 }
 
+// ─── Direct fallback exports ──────────────────────────────────────────────────
+
+export async function processMessengerDirect(data) {
+  return processMessengerJob(data);
+}
+
+export async function processInstagramDirect(data) {
+  return processInstagramJob(data);
+}
+
+export async function processWhatsAppDirect(data) {
+  return processWhatsAppJob(data);
+}
+
 // ═════════════════════════════════════════════════════════════════════════════
-// START WORKER — top-level safety net guarantees reply is always sent
+// START WORKER — worker-side crash safety
 // ═════════════════════════════════════════════════════════════════════════════
 
 export function startWorker() {

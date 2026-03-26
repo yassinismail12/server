@@ -1372,8 +1372,7 @@ mongoose
   .connect(process.env.MONGODB_URI, { dbName: "Agent" })
   .then(async () => {
     console.log("✅ MongoDB connected:", mongoose.connection.name);
-    await createAdmin();
-    startWorker();   
+    await createAdmin(); 
     app.listen(3000, () => console.log("🚀 Server running on port 3000"));
   })
   .catch((err) => console.error("❌ MongoDB connection error:", err));

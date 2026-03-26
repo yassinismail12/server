@@ -16,6 +16,7 @@ import Order from "./order.js";
 import { notifyClientStaffNewOrderByClientId } from "./utils/notifyClientStaffWhatsApp.js";
 import { notifyClientStaffHumanNeeded } from "./utils/notifyClientStaffHumanNeeded.js";
 import { enqueueMessengerMessage } from "./queue.js";
+import { processMessengerDirect } from "./worker.js";
 const router = express.Router();
 
 const mongoClient = new MongoClient(process.env.MONGODB_URI);
@@ -720,7 +721,7 @@ router.post("/", async (req, res) => {
 
         
 console.log("🔵 About to enqueue message for", sender_psid);
-await enqueueMessengerMessage({ pageId, sender_psid, userMessage, eventKey });
+await processMessengerDirect({ pageId, sender_psid, userMessage, eventKey });
 console.log("🟢 Enqueue successful for", sender_psid);
       
         }

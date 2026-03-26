@@ -1,12 +1,6 @@
 // queue.js
 // BullMQ queue for scaling messenger, instagram, and whatsapp message processing.
 // Uses Upstash Redis (free tier) or any Redis instance via env vars.
-//
-// Render env vars to set:
-//   REDIS_HOST     → e.g. alive-xxx.upstash.io
-//   REDIS_PORT     → 6379
-//   REDIS_PASSWORD → your Upstash password
-//   REDIS_TLS      → "true"  (required for Upstash)
 
 import { Queue, Worker } from "bullmq";
 
@@ -16,11 +10,10 @@ const connection = {
   port: Number(process.env.REDIS_PORT || 6379),
   password: process.env.REDIS_PASSWORD || undefined,
   tls: process.env.REDIS_TLS === "true" ? {} : undefined,
-  maxRetriesPerRequest: null, // required by BullMQ
+  maxRetriesPerRequest: null,
 };
 
 // ─── Shared queue ─────────────────────────────────────────────────────────────
-// attempts: 1 — errors handled inside processors with guaranteed replies.
 export const messageQueue = new Queue("messages", {
   connection,
   defaultJobOptions: {
@@ -54,20 +47,35 @@ export function createWorker(processor) {
 }
 
 // ─── JobId helpers ────────────────────────────────────────────────────────────
-// IG eventKeys are long base64 strings — they all share the same long prefix
-// and only differ at the TAIL. Using the tail prevents jobId collisions that
-// cause BullMQ to silently drop jobs.
 
 function safeShort(str, maxLen = 20) {
   return String(str || "").replace(/[^a-zA-Z0-9]/g, "").slice(0, maxLen);
 }
 
 function uniqueTail(eventKey) {
-  // Last 40 chars of the eventKey — this is where IG MIDs are unique
   return String(eventKey || Date.now())
     .slice(-40)
     .replace(/[^a-zA-Z0-9]/g, "")
     .slice(0, 40);
+}
+
+// ─── Generic safe enqueue helper ─────────────────────────────────────────────
+
+async function addOrFallback(jobName, payload, jobId, fallbackProcessor) {
+  try {
+    await messageQueue.add(jobName, payload, { jobId });
+    return { mode: "queued" };
+  } catch (err) {
+    console.error(`❌ [queue] enqueue failed for ${jobName}, using direct fallback:`, err.message);
+
+    try {
+      await fallbackProcessor(payload);
+      return { mode: "direct-fallback" };
+    } catch (fallbackErr) {
+      console.error(`❌ [queue] direct fallback also failed for ${jobName}:`, fallbackErr.message);
+      throw fallbackErr;
+    }
+  }
 }
 
 // ─── Enqueue: Messenger ───────────────────────────────────────────────────────
@@ -77,12 +85,12 @@ export async function enqueueMessengerMessage({
   userMessage,
   eventKey,
 }) {
+  const { processMessengerDirect } = await import("./worker.js");
+
+  const payload = { pageId, sender_psid, userMessage, eventKey };
   const jobId = `msng-${safeShort(pageId)}-${safeShort(sender_psid)}-${uniqueTail(eventKey)}`;
-  await messageQueue.add(
-    "messenger",
-    { pageId, sender_psid, userMessage, eventKey },
-    { jobId }
-  );
+
+  return addOrFallback("messenger", payload, jobId, processMessengerDirect);
 }
 
 // ─── Enqueue: Instagram ───────────────────────────────────────────────────────
@@ -95,12 +103,21 @@ export async function enqueueInstagramMessage({
   pageId,
   pageToken,
 }) {
+  const { processInstagramDirect } = await import("./worker.js");
+
+  const payload = {
+    igBusinessId,
+    senderId,
+    userText,
+    eventKey,
+    clientId,
+    pageId,
+    pageToken,
+  };
+
   const jobId = `ig-${safeShort(igBusinessId)}-${safeShort(senderId)}-${uniqueTail(eventKey)}`;
-  await messageQueue.add(
-    "instagram",
-    { igBusinessId, senderId, userText, eventKey, clientId, pageId, pageToken },
-    { jobId }
-  );
+
+  return addOrFallback("instagram", payload, jobId, processInstagramDirect);
 }
 
 // ─── Enqueue: WhatsApp ────────────────────────────────────────────────────────
@@ -111,10 +128,17 @@ export async function enqueueWhatsAppMessage({
   whatsappPhoneNumberId,
   msgId,
 }) {
+  const { processWhatsAppDirect } = await import("./worker.js");
+
+  const payload = {
+    clientId,
+    fromDigits,
+    text,
+    whatsappPhoneNumberId,
+    msgId,
+  };
+
   const jobId = `wa-${safeShort(clientId)}-${safeShort(fromDigits)}-${uniqueTail(msgId)}`;
-  await messageQueue.add(
-    "whatsapp",
-    { clientId, fromDigits, text, whatsappPhoneNumberId, msgId },
-    { jobId }
-  );
+
+  return addOrFallback("whatsapp", payload, jobId, processWhatsAppDirect);
 }

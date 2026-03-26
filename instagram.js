@@ -31,6 +31,7 @@ import { sendTourEmail } from "./sendEmail.js";
 import { extractTourData } from "./extractTourData.js";
 import { enqueueInstagramMessage } from "./queue.js";
 import { sendWhatsAppTemplate } from "./services/Whatsapp.js";
+import { processInstagramDirect } from "./worker.js";
 
 const router = express.Router();
 
@@ -856,7 +857,7 @@ router.post("/", async (req, res) => {
         }
 
         // ── 🚀 QUEUE: hand off to worker for AI processing ───────────────────
-        await enqueueInstagramMessage({
+        await processInstagramDirect({
           igBusinessId,
           senderId,
           userText,
