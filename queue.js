@@ -1,30 +1,53 @@
 // queue.js
-// BullMQ queue for scaling messenger, instagram, and whatsapp message processing.
-// Uses Upstash Redis (free tier) or any Redis instance via env vars.
+// Safe BullMQ queue with automatic fallback if Redis is not configured
 
 import { Queue, Worker } from "bullmq";
 
-// ─── Redis connection ─────────────────────────────────────────────────────────
-const connection = {
-  host: process.env.REDIS_HOST || "127.0.0.1",
-  port: Number(process.env.REDIS_PORT || 6379),
-  password: process.env.REDIS_PASSWORD || undefined,
-  tls: process.env.REDIS_TLS === "true" ? {} : undefined,
-  maxRetriesPerRequest: null,
-};
+// ─────────────────────────────────────────────────────────────────────────────
+// 🧠 Detect if Redis is enabled
+// ─────────────────────────────────────────────────────────────────────────────
 
-// ─── Shared queue ─────────────────────────────────────────────────────────────
-export const messageQueue = new Queue("messages", {
-  connection,
-  defaultJobOptions: {
-    attempts: 1,
-    removeOnComplete: { count: 100 },
-    removeOnFail: { count: 50 },
-  },
-});
+const hasRedis = !!process.env.REDIS_URL;
 
-// ─── Worker factory ───────────────────────────────────────────────────────────
+// ─────────────────────────────────────────────────────────────────────────────
+// 🔌 Connection (ONLY if Redis exists)
+// ─────────────────────────────────────────────────────────────────────────────
+
+let connection = null;
+let messageQueue = null;
+
+if (hasRedis) {
+  connection = {
+    connectionString: process.env.REDIS_URL,
+    maxRetriesPerRequest: null,
+  };
+
+  messageQueue = new Queue("messages", {
+    connection,
+    defaultJobOptions: {
+      attempts: 1,
+      removeOnComplete: { count: 100 },
+      removeOnFail: { count: 50 },
+    },
+  });
+
+  console.log("✅ Queue enabled (Redis connected)");
+} else {
+  console.log("⚠️ Queue disabled (no REDIS_URL) → using direct processing");
+}
+
+export { messageQueue };
+
+// ─────────────────────────────────────────────────────────────────────────────
+// 🏗 Worker factory (SAFE)
+// ─────────────────────────────────────────────────────────────────────────────
+
 export function createWorker(processor) {
+  if (!hasRedis) {
+    console.log("⚠️ Worker not started (no Redis)");
+    return null;
+  }
+
   const worker = new Worker("messages", processor, {
     connection,
     concurrency: 5,
@@ -36,7 +59,7 @@ export function createWorker(processor) {
   });
 
   worker.on("failed", (job, err) => {
-    console.error(`❌ [queue] Job ${job?.id} (${job?.name}) failed: ${err.message}`);
+    console.error(`❌ [queue] Job ${job?.id} failed: ${err.message}`);
   });
 
   worker.on("error", (err) => {
@@ -46,7 +69,9 @@ export function createWorker(processor) {
   return worker;
 }
 
-// ─── JobId helpers ────────────────────────────────────────────────────────────
+// ─────────────────────────────────────────────────────────────────────────────
+// 🧩 Helpers
+// ─────────────────────────────────────────────────────────────────────────────
 
 function safeShort(str, maxLen = 20) {
   return String(str || "").replace(/[^a-zA-Z0-9]/g, "").slice(0, maxLen);
@@ -59,26 +84,32 @@ function uniqueTail(eventKey) {
     .slice(0, 40);
 }
 
-// ─── Generic safe enqueue helper ─────────────────────────────────────────────
+// ─────────────────────────────────────────────────────────────────────────────
+// 🚀 Safe enqueue (queue OR direct fallback)
+// ─────────────────────────────────────────────────────────────────────────────
 
 async function addOrFallback(jobName, payload, jobId, fallbackProcessor) {
+  // 🔥 No Redis → always direct
+  if (!messageQueue) {
+    await fallbackProcessor(payload);
+    return { mode: "direct" };
+  }
+
   try {
     await messageQueue.add(jobName, payload, { jobId });
     return { mode: "queued" };
   } catch (err) {
-    console.error(`❌ [queue] enqueue failed for ${jobName}, using direct fallback:`, err.message);
+    console.error(`❌ [queue] enqueue failed → fallback`, err.message);
 
-    try {
-      await fallbackProcessor(payload);
-      return { mode: "direct-fallback" };
-    } catch (fallbackErr) {
-      console.error(`❌ [queue] direct fallback also failed for ${jobName}:`, fallbackErr.message);
-      throw fallbackErr;
-    }
+    await fallbackProcessor(payload);
+    return { mode: "direct-fallback" };
   }
 }
 
-// ─── Enqueue: Messenger ───────────────────────────────────────────────────────
+// ─────────────────────────────────────────────────────────────────────────────
+// 📩 Messenger
+// ─────────────────────────────────────────────────────────────────────────────
+
 export async function enqueueMessengerMessage({
   pageId,
   sender_psid,
@@ -93,7 +124,10 @@ export async function enqueueMessengerMessage({
   return addOrFallback("messenger", payload, jobId, processMessengerDirect);
 }
 
-// ─── Enqueue: Instagram ───────────────────────────────────────────────────────
+// ─────────────────────────────────────────────────────────────────────────────
+// 📸 Instagram
+// ─────────────────────────────────────────────────────────────────────────────
+
 export async function enqueueInstagramMessage({
   igBusinessId,
   senderId,
@@ -120,7 +154,10 @@ export async function enqueueInstagramMessage({
   return addOrFallback("instagram", payload, jobId, processInstagramDirect);
 }
 
-// ─── Enqueue: WhatsApp ────────────────────────────────────────────────────────
+// ─────────────────────────────────────────────────────────────────────────────
+// 💬 WhatsApp
+// ─────────────────────────────────────────────────────────────────────────────
+
 export async function enqueueWhatsAppMessage({
   clientId,
   fromDigits,
