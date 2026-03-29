@@ -1,39 +1,55 @@
 // queue.js
-// Safe BullMQ queue with automatic fallback if Redis is not configured
+// Bulletproof BullMQ setup with ZERO Redis errors if not configured
 
 import { Queue, Worker } from "bullmq";
+import IORedis from "ioredis";
 
 // ─────────────────────────────────────────────────────────────────────────────
-// 🧠 Detect if Redis is enabled
+// 🧠 Detect Redis safely
 // ─────────────────────────────────────────────────────────────────────────────
 
-const hasRedis = !!process.env.REDIS_URL;
+const redisUrl = String(process.env.REDIS_URL || "").trim();
+
+// Only enable if it's a REAL URL (not empty / not localhost default)
+const hasRedis =
+  redisUrl &&
+  redisUrl.startsWith("redis://") &&
+  !redisUrl.includes("127.0.0.1");
 
 // ─────────────────────────────────────────────────────────────────────────────
-// 🔌 Connection (ONLY if Redis exists)
+// 🔌 Connection (SAFE)
 // ─────────────────────────────────────────────────────────────────────────────
 
 let connection = null;
 let messageQueue = null;
 
 if (hasRedis) {
-  connection = {
-    connectionString: process.env.REDIS_URL,
-    maxRetriesPerRequest: null,
-  };
+  try {
+    connection = new IORedis(redisUrl, {
+      maxRetriesPerRequest: null,
+      enableReadyCheck: false,
+    });
 
-  messageQueue = new Queue("messages", {
-    connection,
-    defaultJobOptions: {
-      attempts: 1,
-      removeOnComplete: { count: 100 },
-      removeOnFail: { count: 50 },
-    },
-  });
+    connection.on("error", (err) => {
+      console.error("❌ Redis connection error:", err.message);
+    });
 
-  console.log("✅ Queue enabled (Redis connected)");
+    messageQueue = new Queue("messages", {
+      connection,
+      defaultJobOptions: {
+        attempts: 1,
+        removeOnComplete: { count: 100 },
+        removeOnFail: { count: 50 },
+      },
+    });
+
+    console.log("✅ Queue enabled (Redis connected)");
+  } catch (err) {
+    console.error("❌ Redis init failed → fallback to direct mode:", err.message);
+    messageQueue = null;
+  }
 } else {
-  console.log("⚠️ Queue disabled (no REDIS_URL) → using direct processing");
+  console.log("⚠️ Queue disabled (no valid REDIS_URL) → using direct processing");
 }
 
 export { messageQueue };
@@ -43,7 +59,7 @@ export { messageQueue };
 // ─────────────────────────────────────────────────────────────────────────────
 
 export function createWorker(processor) {
-  if (!hasRedis) {
+  if (!messageQueue || !connection) {
     console.log("⚠️ Worker not started (no Redis)");
     return null;
   }
@@ -74,7 +90,9 @@ export function createWorker(processor) {
 // ─────────────────────────────────────────────────────────────────────────────
 
 function safeShort(str, maxLen = 20) {
-  return String(str || "").replace(/[^a-zA-Z0-9]/g, "").slice(0, maxLen);
+  return String(str || "")
+    .replace(/[^a-zA-Z0-9]/g, "")
+    .slice(0, maxLen);
 }
 
 function uniqueTail(eventKey) {
@@ -89,7 +107,7 @@ function uniqueTail(eventKey) {
 // ─────────────────────────────────────────────────────────────────────────────
 
 async function addOrFallback(jobName, payload, jobId, fallbackProcessor) {
-  // 🔥 No Redis → always direct
+  // 🔥 Always fallback if queue disabled
   if (!messageQueue) {
     await fallbackProcessor(payload);
     return { mode: "direct" };
