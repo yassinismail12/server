@@ -423,7 +423,7 @@ async function processMessengerJob({ pageId, sender_psid, userMessage }) {
     } catch {}
 
     const msg =
-      "👤 A human agent will take over shortly.\nThe assistant will return when staff reactivate it from the dashboard.\n\nسيقوم أحد موظفي الدعم بالرد عليك قريبًا وسيعود المساعد عند إعادة تفعيله من لوحة التحكم.";
+      "👤 An agent will take over shortly.\n\nسيقوم أحد موظفي الدعم بالرد عليك قريبًا .";
 
     await sendMessengerReply(sender_psid, msg, pageId).catch(() => {});
     history.push(
