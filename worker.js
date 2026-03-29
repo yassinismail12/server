@@ -623,8 +623,8 @@ async function processInstagramJob({
       });
     } catch {}
 
-    const msg =
-      "👤 A human agent will take over shortly.\nThe assistant will return when staff reactivate it from the dashboard.\n\nسيقوم أحد موظفي الدعم بالرد عليك قريبًا وسيعود المساعد عند إعادة تفعيله من لوحة التحكم.";
+   const msg =
+      "👤 An agent will take over shortly.\n\nسيقوم أحد موظفي الدعم بالرد عليك قريبًا .";
 
     await sendIgDM(resolvedPageId, resolvedPageToken, senderId, msg).catch(() => {});
     history.push(
