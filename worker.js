@@ -413,14 +413,19 @@ async function processMessengerJob({ pageId, sender_psid, userMessage }) {
       { upsert: true }
     );
 
-    try {
-      await notifyClientStaffHumanNeeded({
-        clientId,
-        pageId: pageIdStr,
-        userId: sender_psid,
-        source: "messenger",
-      });
-    } catch {}
+try {
+  const res = await notifyClientStaffHumanNeeded({
+    clientId,
+    pageId: pageIdStr,
+    userId: sender_psid,
+    source: "messenger",
+  });
+
+  console.log("📲 WA notify result:", res);
+
+} catch (e) {
+  console.error("❌ WA notify error:", e.message);
+}
 
     const msg =
       "👤 An agent will take over shortly.\n\nسيقوم أحد موظفي الدعم بالرد عليك قريبًا .";
