@@ -56,6 +56,17 @@ const promptConfigSchema = new mongoose.Schema(
         default: ["notes"],
       },
     },
+    leadFlow: {
+  enabled: { type: Boolean, default: false },
+  token: { type: String, default: "[LEAD_REQUEST]" },
+  templateName: { type: String, default: "" },
+  templateLang: { type: String, default: "ar" },
+  confirmationMessage: {
+    type: String,
+    default:
+      "شكرًا! سيتواصل معك أحد من فريقنا قريبًا.\nThank you! A team member will contact you shortly.",
+  },
+},
   },
   { _id: false }
 );

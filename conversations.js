@@ -56,6 +56,7 @@ const conversationSchema = new mongoose.Schema(
       type: Number,
       default: 0,
     },
+    leadRequestCount: { type: Number, default: 0 },
 orderRequestCount: {
   type: Number,
   default: 0,

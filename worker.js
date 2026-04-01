@@ -17,6 +17,7 @@ import { sendWhatsAppText } from "./services/whatsappText.js";
 import { notifyClientStaffHumanNeeded } from "./utils/notifyClientStaffHumanNeeded.js";
 import { notifyClientStaffNewOrderByClientId } from "./utils/notifyClientStaffWhatsApp.js";
 import { sendQuotaWarning } from "./sendQuotaWarning.js";
+import { notifyClientStaffLead } from "./utils/notifyClientStaffLead.js";
 import Order from "./order.js";
 import mongoose from "mongoose";
 import fetch from "node-fetch";
@@ -96,7 +97,8 @@ function injectHistory(baseMessages = [], history = []) {
 
 function parseFlags(msg) {
   let text = msg;
-  const flags = { human: false, order: false, tour: false };
+  const flags = { human: false, tour: false, order: false, lead: false };
+  const leadData = { name: "Unknown", phone: "Unknown" };
 
   if (text.includes("[Human_request]")) {
     flags.human = true;
@@ -110,8 +112,24 @@ function parseFlags(msg) {
     flags.tour = true;
     text = text.replace("[TOUR_REQUEST]", "").trim();
   }
+  if (text.includes("[LEAD_REQUEST]")) {
+    flags.lead = true;
 
-  return { text, flags };
+    const nameMatch = text.match(/^Lead Name:\s*(.+)$/im);
+    const phoneMatch = text.match(/^Lead Phone:\s*(.+)$/im);
+
+    if (nameMatch) leadData.name = nameMatch[1].trim();
+    if (phoneMatch) leadData.phone = phoneMatch[1].trim();
+
+    // clean the structured lines from the reply before sending to customer
+    text = text
+      .replace("[LEAD_REQUEST]", "")
+      .replace(/^Lead Name:.*$/im, "")
+      .replace(/^Lead Phone:.*$/im, "")
+      .trim();
+  }
+
+  return { text, flags, leadData };
 }
 
 function langInstruction(userLang) {
@@ -396,7 +414,7 @@ async function processMessengerJob({ pageId, sender_psid, userMessage }) {
     return;
   }
 
-  const { text: assistantMessage, flags } = parseFlags(raw);
+const { text: assistantMessage, flags, leadData } = parseFlags(raw);
 
   if (flags.human) {
     await db.collection("Conversations").updateOne(
@@ -464,7 +482,23 @@ try {
     await saveConvoMessenger(db, pageIdStr, sender_psid, history, clientId);
     return;
   }
+if (flags.lead) {
+  await db.collection("Conversations").updateOne(
+    { pageId: pageIdStr, userId: sender_psid, source: "messenger" },
+    { $inc: { leadRequestCount: 1 } },
+    { upsert: true }
+  );
 
+  try {
+    await notifyClientStaffLead({
+      clientId,
+      customerName: leadData.name,
+      customerPhone: leadData.phone,
+    });
+  } catch (e) {
+    console.warn("⚠️ [worker/messenger] lead notify failed:", e.message);
+  }
+}
   const combined = greeting ? `${greeting}\n\n${assistantMessage}` : assistantMessage;
   history.push(
     { role: "user", content: userMessage, createdAt: new Date() },
@@ -602,7 +636,7 @@ async function processInstagramJob({
     return;
   }
 
-  const { text: assistantMessage, flags } = parseFlags(raw);
+ const { text: assistantMessage, flags, leadData } = parseFlags(raw);
 
   if (flags.human) {
     await db.collection("Conversations").updateOne(
@@ -665,7 +699,23 @@ async function processInstagramJob({
     await saveConvoIG(db, igStr, senderId, history, resolvedClientId);
     return;
   }
+if (flags.lead) {
+  await db.collection("Conversations").updateOne(
+    { igBusinessId: igStr, userId: senderId, source: "instagram" },
+    { $inc: { leadRequestCount: 1 } },
+    { upsert: true }
+  );
 
+  try {
+    await notifyClientStaffLead({
+      clientId: resolvedClientId,
+      customerName: leadData.name,
+      customerPhone: leadData.phone,
+    });
+  } catch (e) {
+    console.warn("⚠️ [worker/instagram] lead notify failed:", e.message);
+  }
+}
   const combined = greeting ? `${greeting}\n\n${assistantMessage}` : assistantMessage;
   history.push(
     { role: "user", content: userText, createdAt: new Date() },

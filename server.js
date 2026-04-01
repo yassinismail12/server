@@ -410,18 +410,19 @@ app.get("/api/clients/:id", verifyToken, requireClientOwnership, async (req, res
     const client = await Client.findOne({ clientId: id });
     if (!client) return res.status(404).json({ error: "Client not found" });
 
-    const stats = await Conversation.aggregate([
-      { $match: { clientId: id } },
-      {
-        $group: {
-          _id: "$clientId",
-          totalHumanRequests: { $sum: "$humanRequestCount" },
-          totalTourRequests: { $sum: "$tourRequestCount" },
-          totalorderRequests: { $sum: "$orderRequestCount" },
-          activeHumanChats: { $sum: { $cond: ["$humanEscalation", 1, 0] } },
-        },
-      },
-    ]);
+   const stats = await Conversation.aggregate([
+  { $match: { clientId: id } },
+  {
+    $group: {
+      _id: "$clientId",
+      totalHumanRequests: { $sum: "$humanRequestCount" },
+      totalTourRequests: { $sum: "$tourRequestCount" },
+      totalorderRequests: { $sum: "$orderRequestCount" },
+      totalLeadRequests: { $sum: "$leadRequestCount" },
+      activeHumanChats: { $sum: { $cond: ["$humanEscalation", 1, 0] } },
+    },
+  },
+]);
 
     const convoStats = stats[0] || {};
 
@@ -447,6 +448,7 @@ app.get("/api/clients/:id", verifyToken, requireClientOwnership, async (req, res
       totalHumanRequests: convoStats.totalHumanRequests || 0,
       totalTourRequests: convoStats.totalTourRequests || 0,
       totalorderRequests: convoStats.totalorderRequests || 0,
+      totalLeadRequests: convoStats.totalLeadRequests || 0,
       activeHumanChats: convoStats.activeHumanChats || 0,
       whatsappWabaId: client.whatsappWabaId,
       whatsappPhoneNumberId: client.whatsappPhoneNumberId,
@@ -617,6 +619,7 @@ app.get("/api/stats/:clientId", verifyToken, requireClientOwnership, async (req,
     const totalHumanRequests = clientConvos.reduce((sum, c) => sum + (c.humanRequestCount || 0), 0);
     const totalTourRequests = clientConvos.reduce((sum, c) => sum + (c.tourRequestCount || 0), 0);
     const orderRequestCount = clientConvos.reduce((sum, c) => sum + (c.orderRequestCount || 0), 0);
+    const totalLeadRequests = clientConvos.reduce((sum, c) => sum + (c.leadRequestCount || 0), 0);
     const activeHumanChats = clientConvos.reduce((sum, c) => sum + (c.humanEscalation ? 1 : 0), 0);
 
     res.json({
@@ -636,6 +639,7 @@ app.get("/api/stats/:clientId", verifyToken, requireClientOwnership, async (req,
       chartResults,
       totalHumanRequests, totalTourRequests,
       totalorderRequests: orderRequestCount,
+      totalLeadRequests,
       activeHumanChats,
     });
   } catch (err) {

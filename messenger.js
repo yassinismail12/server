@@ -3,7 +3,7 @@ import express from "express";
 import fetch from "node-fetch";
 import { MongoClient } from "mongodb";
 import crypto from "crypto";
-
+import { notifyClientStaffLead } from "./utils/notifyClientStaffLead.js";
 import { retrieveChunks } from "./services/retrieval.js";
 import { buildChatMessages } from "./services/promptBuilder.js";
 

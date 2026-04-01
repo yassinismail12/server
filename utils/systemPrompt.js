@@ -1,3 +1,5 @@
+// utils/systemPrompt.js
+
 function safeText(value = "") {
   return String(value ?? "").trim();
 }
@@ -184,6 +186,49 @@ ${confirmationMessage}
 `.trim();
 }
 
+function buildLeadFlowBlock(clientData = {}) {
+  const promptConfig = clientData.promptConfig || {};
+  const leadFlow = promptConfig.leadFlow || {};
+
+  if (!leadFlow.enabled) return "";
+
+  const token = safeText(leadFlow.token) || "[LEAD_REQUEST]";
+  const confirmationMessage =
+    safeText(leadFlow.confirmationMessage) ||
+    "شكرًا! سيتواصل معك أحد من فريقنا قريبًا.\nThank you! A team member will contact you shortly.";
+
+  return `
+LEAD COLLECTION FLOW
+- Use this flow when the user wants to join, sign up, book a free trial, enquire about membership, or requests to be contacted by the team.
+- Do NOT trigger this for general questions or browsing.
+- Ask for the following details ONE question at a time in this exact order:
+  1) Customer Name
+  2) Customer Phone
+
+FIELD RULES
+- Customer Name is required.
+- Customer Phone is required.
+- Do not ask both questions at once. Ask name first, then phone.
+- Do not skip ahead if an earlier field is still missing.
+- Do not show the summary until both fields are collected.
+
+COMPLETION STEP
+Once both Customer Name and Customer Phone are collected:
+1) Reply with this confirmation message to the customer:
+${confirmationMessage}
+2) Then on new lines output exactly:
+Lead Name: <name>
+Lead Phone: <phone>
+${token}
+
+IMPORTANT
+- Always output Lead Name and Lead Phone on separate lines before the token.
+- Do not output ${token} unless both fields are collected.
+- Do not mention the token or the internal lines to the customer.
+- The confirmation message is the last thing the customer sees. The structured lines and token are invisible to them.
+`.trim();
+}
+
 function buildCustomPromptBlock(clientData = {}) {
   const businessData = safeText(clientData.systemPrompt);
   if (!businessData) return "";
@@ -201,6 +246,7 @@ export function buildRulesPrompt(clientData = {}) {
     buildHumanEscalationBlock(clientData),
     buildOrderFlowBlock(clientData),
     buildTourFlowBlock(clientData),
+    buildLeadFlowBlock(clientData),
     buildCustomPromptBlock(clientData),
   ]
     .filter(Boolean)
