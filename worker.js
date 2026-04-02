@@ -483,6 +483,10 @@ try {
     return;
   }
 if (flags.lead) {
+  console.log("🎯 LEAD FLAG HIT — messenger");
+  console.log("📋 leadData:", JSON.stringify(leadData));
+  console.log("🔑 clientId:", clientId);
+
   await db.collection("Conversations").updateOne(
     { pageId: pageIdStr, userId: sender_psid, source: "messenger" },
     { $inc: { leadRequestCount: 1 } },
@@ -490,13 +494,14 @@ if (flags.lead) {
   );
 
   try {
-    await notifyClientStaffLead({
+    const result = await notifyClientStaffLead({
       clientId,
       customerName: leadData.name,
       customerPhone: leadData.phone,
     });
+    console.log("✅ LEAD NOTIFY RESULT:", JSON.stringify(result));
   } catch (e) {
-    console.warn("⚠️ [worker/messenger] lead notify failed:", e.message);
+    console.error("❌ LEAD NOTIFY EXCEPTION:", e.message);
   }
 }
   const combined = greeting ? `${greeting}\n\n${assistantMessage}` : assistantMessage;
