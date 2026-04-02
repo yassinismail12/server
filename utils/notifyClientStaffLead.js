@@ -1,3 +1,11 @@
+// utils/notifyClientStaffLead.js
+import { sendWhatsAppTemplate } from "../services/Whatsapp.js";
+import { connectToDB as connectDB } from "../services/db.js";
+
+function normalizeId(id) {
+  return String(id || "").trim();
+}
+
 export async function notifyClientStaffLead({ clientId, customerName, customerPhone }) {
   try {
     console.log("📞 notifyClientStaffLead called:", { clientId, customerName, customerPhone });
